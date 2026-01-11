@@ -31,6 +31,11 @@ def build_dataloader(cfg: Config) -> DataLoader:
             num_regions=cfg.data.num_regions,
             patch_size=cfg.model.patch_size,
             rng_seed=cfg.train.seed,
+            fixed_region_seed=cfg.data.fixed_region_seed,
+            patch_divider=cfg.data.patch_divider,
+            fixed_region_sizes=cfg.data.fixed_region_sizes,
+            fixed_region_positions_global=cfg.data.fixed_region_positions_global,
+            fixed_single_region=cfg.data.fixed_single_region,
         )
     elif cfg.data.dataset_name == "thu-eact":
         dataset = THUEACTDataset(
@@ -48,6 +53,12 @@ def build_dataloader(cfg: Config) -> DataLoader:
             max_samples=cfg.data.max_samples,
             max_events=cfg.data.max_events,
             subset_seed=cfg.data.subset_seed,
+            fixed_region_seed=cfg.data.fixed_region_seed,
+            patch_divider=cfg.data.patch_divider,
+            fixed_region_sizes=cfg.data.fixed_region_sizes,
+            fixed_region_positions_global=cfg.data.fixed_region_positions_global,
+            fixed_single_region=cfg.data.fixed_single_region,
+            cache_max_samples=cfg.data.cache_max_samples,
         )
     else:
         raise ValueError(f"Unknown dataset_name: {cfg.data.dataset_name}")
@@ -68,6 +79,7 @@ def build_model(cfg: Config) -> EventMAE:
         metadata_dim=cfg.model.metadata_dim,
         num_tokens=cfg.data.num_regions,
         num_planes=len(cfg.data.plane_types),
+        use_pos_embedding=cfg.model.use_pos_embedding,
     )
 
 
@@ -77,12 +89,25 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     mask_ratio: float,
+    patch_loss_blur_radius: int = 0,
+    count_loss_weight: float = 1.0,
 ) -> Dict[str, float]:
     model.train()
     total_loss = 0.0
     total_steps = 0
     loss_fn = nn.MSELoss(reduction="sum")
     l1 = nn.L1Loss(reduction="sum")
+
+    blur_kernel = None
+    if patch_loss_blur_radius > 0:
+        radius = int(patch_loss_blur_radius)
+        ksize = radius * 2 + 1
+        coords = torch.arange(ksize, device=device) - radius
+        sigma = max(1e-6, radius / 2.0)
+        gauss_1d = torch.exp(-(coords**2) / (2 * sigma * sigma))
+        gauss_1d = gauss_1d / gauss_1d.sum()
+        gauss_2d = gauss_1d[:, None] * gauss_1d[None, :]
+        blur_kernel = gauss_2d.view(1, 1, ksize, ksize)
 
     for batch in loader:
         patches = batch["patches"].to(device)
@@ -98,13 +123,34 @@ def train_one_epoch(
         pred_patches, pred_counts, _ = model(patches, metadata, plane_ids, mask=mask)
 
         mask_patch = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-        masked_patch_loss = loss_fn(pred_patches * mask_patch, patches * mask_patch)
-        pred_counts_pos = F.softplus(pred_counts)
-        count_target = torch.log1p(counts)
-        count_pred = torch.log1p(pred_counts_pos)
-        masked_count_loss = l1(count_pred * mask.unsqueeze(-1), count_target * mask.unsqueeze(-1))
+        if blur_kernel is not None:
+            c = patches.shape[2]
+            kernel = blur_kernel.expand(c, 1, -1, -1)
+            pred_blur = F.conv2d(
+                pred_patches.view(-1, c, pred_patches.shape[-2], pred_patches.shape[-1]),
+                kernel,
+                padding=patch_loss_blur_radius,
+                groups=c,
+            ).view_as(pred_patches)
+            patch_blur = F.conv2d(
+                patches.view(-1, c, patches.shape[-2], patches.shape[-1]),
+                kernel,
+                padding=patch_loss_blur_radius,
+                groups=c,
+            ).view_as(patches)
+            masked_patch_loss = loss_fn(pred_blur * mask_patch, patch_blur * mask_patch)
+        else:
+            masked_patch_loss = loss_fn(pred_patches * mask_patch, patches * mask_patch)
+        masked_count_loss = torch.tensor(0.0, device=device)
+        if count_loss_weight > 0:
+            pred_counts_pos = F.softplus(pred_counts)
+            count_target = torch.log1p(counts)
+            count_pred = torch.log1p(pred_counts_pos)
+            masked_count_loss = l1(
+                count_pred * mask.unsqueeze(-1), count_target * mask.unsqueeze(-1)
+            )
         denom = mask.sum().clamp(min=1.0)
-        loss = (masked_patch_loss + masked_count_loss) / denom
+        loss = (masked_patch_loss + count_loss_weight * masked_count_loss) / denom
 
         if not torch.isfinite(loss):
             optimizer.zero_grad()
@@ -133,9 +179,34 @@ def dump_reconstructions(
     out_dir: str,
     num_patches: int,
     upscale: int,
+    patch_loss_blur_radius: int = 0,
 ) -> None:
     out_path = Path(out_dir) / f"step_{step:06d}"
     out_path.mkdir(parents=True, exist_ok=True)
+
+    if patch_loss_blur_radius > 0:
+        radius = int(patch_loss_blur_radius)
+        ksize = radius * 2 + 1
+        coords = torch.arange(ksize, device=patches.device) - radius
+        sigma = max(1e-6, radius / 2.0)
+        gauss_1d = torch.exp(-(coords**2) / (2 * sigma * sigma))
+        gauss_1d = gauss_1d / gauss_1d.sum()
+        gauss_2d = gauss_1d[:, None] * gauss_1d[None, :]
+        blur_kernel = gauss_2d.view(1, 1, ksize, ksize)
+        c = patches.shape[2]
+        kernel = blur_kernel.expand(c, 1, -1, -1)
+        pred_patches = torch.nn.functional.conv2d(
+            pred_patches.view(-1, c, pred_patches.shape[-2], pred_patches.shape[-1]),
+            kernel,
+            padding=radius,
+            groups=c,
+        ).view_as(pred_patches)
+        patches = torch.nn.functional.conv2d(
+            patches.view(-1, c, patches.shape[-2], patches.shape[-1]),
+            kernel,
+            padding=radius,
+            groups=c,
+        ).view_as(patches)
 
     patches = patches.detach().cpu().numpy()
     pred_patches = pred_patches.detach().cpu().numpy()
@@ -152,8 +223,13 @@ def dump_reconstructions(
             continue
         plane = plane_types[int(plane_ids[0, i])]
         for ch in range(2):
-            gt = np.clip(patches[0, i, ch] * 255.0, 0, 255).astype(np.uint8)
+            gt = patches[0, i, ch]
             pred = np.nan_to_num(pred_patches[0, i, ch], nan=0.0, posinf=0.0, neginf=0.0)
+            shared_max = float(max(gt.max(initial=0.0), pred.max(initial=0.0)))
+            if shared_max > 0:
+                gt = gt / shared_max
+                pred = pred / shared_max
+            gt = np.clip(gt * 255.0, 0, 255).astype(np.uint8)
             pred = np.clip(pred * 255.0, 0, 255).astype(np.uint8)
             if upscale > 1:
                 gt = np.repeat(np.repeat(gt, upscale, axis=0), upscale, axis=1)

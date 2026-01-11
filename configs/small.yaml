@@ -8,6 +8,17 @@ train:
   recon_num_patches: 4
   recon_out_dir: outputs/recon
   recon_upscale: 4
+  probe_every: 0
+  probe_subset_size: 0
+  probe_subset_seed: 0
+  probe_region_seed: 0
+  probe_regions_per_sample: 32
+  probe_epochs: 10
+  probe_batch_size: 64
+  probe_lr: 0.001
+  probe_cache_dir: outputs/linear_probe_cache
+  patch_loss_blur_radius: 0
+  count_loss_weight: 0.0
 
 model:
   patch_size: 16
@@ -21,6 +32,7 @@ model:
   plane_embed_dim: 64
   metadata_dim: 9
   mask_ratio: 0.6
+  use_pos_embedding: true
 
 data:
   dataset_name: "synthetic"
@@ -35,6 +47,12 @@ data:
   time_bins: 32
   region_scales: [16, 32, 64]
   region_time_scales: [0.1, 0.25, 0.5]
+  fixed_region_sizes: false
   plane_types: ["xy", "xt", "yt"]
   num_regions: 32
   subset_seed: 0
+  fixed_region_seed: -1
+  fixed_region_positions_global: false
+  fixed_single_region: false
+  patch_divider: 100.0
+  cache_max_samples: 0

@@ -23,10 +23,12 @@ class EventMAE(nn.Module):
         metadata_dim: int,
         num_tokens: int,
         num_planes: int,
+        use_pos_embedding: bool = True,
     ) -> None:
         super().__init__()
         self.patch_size = patch_size
         self.num_tokens = num_tokens
+        self.use_pos_embedding = use_pos_embedding
 
         self.patch_encoder = PatchEncoder(patch_size, embed_dim)
         self.metadata_mlp = nn.Sequential(
@@ -74,25 +76,39 @@ class EventMAE(nn.Module):
         mask: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         bsz, num_tokens = patches.shape[:2]
+        encoded = self.encode(patches, metadata, plane_ids, mask=mask)
+        decoder_in = self.decoder_proj(encoded)
+        if self.use_pos_embedding:
+            decoder_in = decoder_in + self.decoder_pos_embedding
+        decoded = self.decoder(decoder_in)
+        pred_patch = self.patch_decoder(decoded).reshape(
+            bsz, num_tokens, 2, self.patch_size, self.patch_size
+        )
+        pred_count = self.count_decoder(decoded)
+        return pred_patch, pred_count, decoded
+
+    def encode(
+        self,
+        patches: torch.Tensor,
+        metadata: torch.Tensor,
+        plane_ids: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        bsz, num_tokens = patches.shape[:2]
         if num_tokens != self.num_tokens:
             raise ValueError("num_tokens mismatch with configured model")
 
         patches_flat = patches.reshape(bsz * num_tokens, 2, self.patch_size, self.patch_size)
         patch_emb = self.patch_encoder(patches_flat).reshape(bsz, num_tokens, -1)
         meta_emb = self.metadata_mlp(metadata)
-        token = patch_emb + meta_emb
-
         plane_emb = self.plane_proj(self.plane_embedding(plane_ids))
-        token = token + plane_emb + self.pos_embedding
 
         if mask is not None:
             mask_token = self.mask_token.expand(bsz, num_tokens, -1)
-            token = torch.where(mask.unsqueeze(-1), mask_token, token)
+            patch_emb = torch.where(mask.unsqueeze(-1), mask_token, patch_emb)
 
-        encoded = self.encoder(token)
-        decoded = self.decoder(self.decoder_proj(encoded) + self.decoder_pos_embedding)
-        pred_patch = self.patch_decoder(decoded).reshape(
-            bsz, num_tokens, 2, self.patch_size, self.patch_size
-        )
-        pred_count = self.count_decoder(decoded)
-        return pred_patch, pred_count, decoded
+        token = patch_emb + meta_emb + plane_emb
+        if self.use_pos_embedding:
+            token = token + self.pos_embedding
+
+        return self.encoder(token)

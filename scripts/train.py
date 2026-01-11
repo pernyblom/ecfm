@@ -11,6 +11,12 @@ from ecfm.training.train import (
     dump_reconstructions,
     train_one_epoch,
 )
+from ecfm.training.linear_probe import (
+    build_token_cache,
+    compute_embeddings,
+    load_split,
+    train_linear_probe,
+)
 from ecfm.utils.config import load_config
 from ecfm.utils.masking import random_mask
 
@@ -38,6 +44,14 @@ def main() -> None:
 
     ema_loss = None
     ema_alpha = 0.9
+    probe_cache = None
+    probe_enabled = cfg.train.probe_every > 0
+
+    if probe_enabled and cfg.data.dataset_name != "thu-eact":
+        print("Linear probe only supports thu-eact right now; disabling.")
+        probe_enabled = False
+    if probe_enabled and cfg.train.probe_regions_per_sample != cfg.data.num_regions:
+        raise ValueError("probe_regions_per_sample must match data.num_regions")
 
     for step in range(cfg.train.num_steps):
         metrics = train_one_epoch(
@@ -46,6 +60,8 @@ def main() -> None:
             optimizer,
             device,
             mask_ratio=cfg.model.mask_ratio,
+            patch_loss_blur_radius=cfg.train.patch_loss_blur_radius,
+            count_loss_weight=cfg.train.count_loss_weight,
         )
         loss = metrics["loss"]
         if ema_loss is None:
@@ -83,7 +99,76 @@ def main() -> None:
                 out_dir=cfg.train.recon_out_dir,
                 num_patches=cfg.train.recon_num_patches,
                 upscale=cfg.train.recon_upscale,
+                patch_loss_blur_radius=cfg.train.patch_loss_blur_radius,
             )
+
+        if probe_enabled and step % cfg.train.probe_every == 0:
+            if probe_cache is None:
+                root = Path(cfg.data.dataset_path)
+                train_entries = load_split(root, "train")
+                test_entries = load_split(root, "test")
+                cache_dir = Path(cfg.train.probe_cache_dir)
+                train_cache = cache_dir / (
+                    f"train_n{cfg.train.probe_subset_size}_s{cfg.train.probe_subset_seed}"
+                    f"_r{cfg.train.probe_region_seed}.npz"
+                )
+                test_cache = cache_dir / (
+                    f"test_n{cfg.train.probe_subset_size}_s{cfg.train.probe_subset_seed}"
+                    f"_r{cfg.train.probe_region_seed}.npz"
+                )
+                train_patches, train_metadata, train_plane_ids, train_labels = build_token_cache(
+                    cfg,
+                    train_entries,
+                    cfg.train.probe_subset_size,
+                    cfg.train.probe_subset_seed,
+                    cfg.train.probe_region_seed,
+                    cfg.train.probe_regions_per_sample,
+                    train_cache,
+                )
+                test_patches, test_metadata, test_plane_ids, test_labels = build_token_cache(
+                    cfg,
+                    test_entries,
+                    cfg.train.probe_subset_size,
+                    cfg.train.probe_subset_seed,
+                    cfg.train.probe_region_seed,
+                    cfg.train.probe_regions_per_sample,
+                    test_cache,
+                )
+                probe_cache = {
+                    "train": (train_patches, train_metadata, train_plane_ids, train_labels),
+                    "test": (test_patches, test_metadata, test_plane_ids, test_labels),
+                }
+
+            train_patches, train_metadata, train_plane_ids, train_labels = probe_cache["train"]
+            test_patches, test_metadata, test_plane_ids, test_labels = probe_cache["test"]
+
+            train_emb = compute_embeddings(
+                model,
+                train_patches,
+                train_metadata,
+                train_plane_ids,
+                cfg.train.probe_batch_size,
+                device,
+            )
+            test_emb = compute_embeddings(
+                model,
+                test_patches,
+                test_metadata,
+                test_plane_ids,
+                cfg.train.probe_batch_size,
+                device,
+            )
+            train_acc, test_acc = train_linear_probe(
+                train_emb=train_emb,
+                train_labels=train_labels,
+                test_emb=test_emb,
+                test_labels=test_labels,
+                epochs=cfg.train.probe_epochs,
+                batch_size=cfg.train.probe_batch_size,
+                lr=cfg.train.probe_lr,
+                device=device,
+            )
+            print(f"probe step={step} train_acc={train_acc:.4f} test_acc={test_acc:.4f}")
 
 
 if __name__ == "__main__":

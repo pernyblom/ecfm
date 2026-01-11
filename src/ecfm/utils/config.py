@@ -18,6 +18,17 @@ class TrainConfig:
     recon_num_patches: int
     recon_out_dir: str
     recon_upscale: int
+    probe_every: int
+    probe_subset_size: int
+    probe_subset_seed: int
+    probe_region_seed: int
+    probe_regions_per_sample: int
+    probe_epochs: int
+    probe_batch_size: int
+    probe_lr: float
+    probe_cache_dir: str
+    patch_loss_blur_radius: int
+    count_loss_weight: float
 
 
 @dataclass
@@ -33,6 +44,7 @@ class ModelConfig:
     plane_embed_dim: int
     metadata_dim: int
     mask_ratio: float
+    use_pos_embedding: bool
 
 
 @dataclass
@@ -49,9 +61,15 @@ class DataConfig:
     time_bins: int
     region_scales: list[int]
     region_time_scales: list[float]
+    fixed_region_sizes: bool
     plane_types: list[str]
     num_regions: int
     subset_seed: int
+    fixed_region_seed: int
+    fixed_region_positions_global: bool
+    fixed_single_region: bool
+    patch_divider: float
+    cache_max_samples: int
 
 
 @dataclass
