@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: ecfm
+Version: 0.1.0
+Summary: Event Camera Foundation Model scaffolding
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: torch
+Requires-Dist: torchvision
+Requires-Dist: numpy
+Requires-Dist: pyyaml
+
+# Event Camera Foundation Model (ECFM)
+
+This repo scaffolds a PyTorch project for a transformer-based foundation model
+over event camera data. See `DESIGN.md` for the design draft.
+
+## Layout
+- `src/ecfm`: library code
+- `configs`: YAML configs
+- `scripts`: training and utility entrypoints
+- `data`: placeholder for datasets
+- `tests`: basic unit tests
+- `docs`: extra docs
+
+## Quick Start
+1) Create a venv and install dependencies.
+2) Run a dry training loop with synthetic events.
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
+python scripts\train.py --config configs\small.yaml
+```
+

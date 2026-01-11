@@ -1,0 +1,30 @@
+train:
+  batch_size: 8
+  num_steps: 2
+  lr: 0.0003
+  device: cpu
+  seed: 0
+
+model:
+  patch_size: 16
+  embed_dim: 192
+  num_heads: 3
+  num_layers: 4
+  mlp_ratio: 2.0
+  plane_embed_dim: 64
+  metadata_dim: 9
+  mask_ratio: 0.6
+
+data:
+  dataset_name: "synthetic"
+  dataset_path: ""
+  split: "train"
+  num_samples: 1000
+  max_samples: 0
+  max_events: 5000
+  image_width: 128
+  image_height: 128
+  time_bins: 32
+  region_scales: [16, 32, 64]
+  plane_types: ["xy", "xt", "yt"]
+  num_regions: 32

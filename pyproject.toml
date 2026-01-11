@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecfm"
+version = "0.1.0"
+description = "Event Camera Foundation Model scaffolding"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "torch",
+  "torchvision",
+  "numpy",
+  "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
