@@ -2,14 +2,21 @@ train:
   batch_size: 8
   num_steps: 2
   lr: 0.0003
-  device: cpu
+  device: cuda
   seed: 0
+  recon_every: 1
+  recon_num_patches: 4
+  recon_out_dir: outputs/recon
+  recon_upscale: 4
 
 model:
   patch_size: 16
   embed_dim: 192
   num_heads: 3
   num_layers: 4
+  decoder_embed_dim: 128
+  decoder_num_heads: 4
+  decoder_num_layers: 2
   mlp_ratio: 2.0
   plane_embed_dim: 64
   metadata_dim: 9
@@ -24,7 +31,10 @@ data:
   max_events: 5000
   image_width: 128
   image_height: 128
+  time_unit: 1.0
   time_bins: 32
   region_scales: [16, 32, 64]
+  region_time_scales: [0.1, 0.25, 0.5]
   plane_types: ["xy", "xt", "yt"]
   num_regions: 32
+  subset_seed: 0

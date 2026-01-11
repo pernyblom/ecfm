@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from ecfm.data.event_dataset import SyntheticEventDataset, THUEACTDataset
 from ecfm.models.mae import EventMAE
 from ecfm.utils.config import Config
 from ecfm.utils.masking import random_mask
+
+import numpy as np
+from pathlib import Path
+from PIL import Image
 
 
 def build_dataloader(cfg: Config) -> DataLoader:
@@ -21,6 +26,7 @@ def build_dataloader(cfg: Config) -> DataLoader:
             image_height=cfg.data.image_height,
             time_bins=cfg.data.time_bins,
             region_scales=cfg.data.region_scales,
+            region_time_scales=cfg.data.region_time_scales,
             plane_types=cfg.data.plane_types,
             num_regions=cfg.data.num_regions,
             patch_size=cfg.model.patch_size,
@@ -32,12 +38,16 @@ def build_dataloader(cfg: Config) -> DataLoader:
             split=cfg.data.split,
             image_width=cfg.data.image_width,
             image_height=cfg.data.image_height,
+            time_unit=cfg.data.time_unit,
             time_bins=cfg.data.time_bins,
             region_scales=cfg.data.region_scales,
+            region_time_scales=cfg.data.region_time_scales,
             plane_types=cfg.data.plane_types,
             num_regions=cfg.data.num_regions,
             patch_size=cfg.model.patch_size,
             max_samples=cfg.data.max_samples,
+            max_events=cfg.data.max_events,
+            subset_seed=cfg.data.subset_seed,
         )
     else:
         raise ValueError(f"Unknown dataset_name: {cfg.data.dataset_name}")
@@ -50,6 +60,9 @@ def build_model(cfg: Config) -> EventMAE:
         embed_dim=cfg.model.embed_dim,
         num_heads=cfg.model.num_heads,
         num_layers=cfg.model.num_layers,
+        decoder_embed_dim=cfg.model.decoder_embed_dim,
+        decoder_num_heads=cfg.model.decoder_num_heads,
+        decoder_num_layers=cfg.model.decoder_num_layers,
         mlp_ratio=cfg.model.mlp_ratio,
         plane_embed_dim=cfg.model.plane_embed_dim,
         metadata_dim=cfg.model.metadata_dim,
@@ -86,15 +99,67 @@ def train_one_epoch(
 
         mask_patch = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         masked_patch_loss = loss_fn(pred_patches * mask_patch, patches * mask_patch)
-        masked_count_loss = l1(pred_counts * mask.unsqueeze(-1), counts * mask.unsqueeze(-1))
+        pred_counts_pos = F.softplus(pred_counts)
+        count_target = torch.log1p(counts)
+        count_pred = torch.log1p(pred_counts_pos)
+        masked_count_loss = l1(count_pred * mask.unsqueeze(-1), count_target * mask.unsqueeze(-1))
         denom = mask.sum().clamp(min=1.0)
         loss = (masked_patch_loss + masked_count_loss) / denom
 
+        if not torch.isfinite(loss):
+            optimizer.zero_grad()
+            continue
+
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         total_loss += float(loss.item())
         total_steps += 1
 
-    return {"loss": total_loss / max(1, total_steps)}
+    if total_steps == 0:
+        return {"loss": float("nan")}
+    return {"loss": total_loss / total_steps}
+
+
+def dump_reconstructions(
+    step: int,
+    patches: torch.Tensor,
+    pred_patches: torch.Tensor,
+    mask: torch.Tensor,
+    plane_ids: torch.Tensor,
+    plane_types: List[str],
+    out_dir: str,
+    num_patches: int,
+    upscale: int,
+) -> None:
+    out_path = Path(out_dir) / f"step_{step:06d}"
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    patches = patches.detach().cpu().numpy()
+    pred_patches = pred_patches.detach().cpu().numpy()
+    plane_ids = plane_ids.detach().cpu().numpy()
+    mask = mask.detach().cpu().numpy()
+
+    count = min(num_patches, patches.shape[1])
+    if upscale < 1:
+        raise ValueError("upscale must be >= 1")
+
+    saved = 0
+    for i in range(patches.shape[1]):
+        if not mask[0, i]:
+            continue
+        plane = plane_types[int(plane_ids[0, i])]
+        for ch in range(2):
+            gt = np.clip(patches[0, i, ch] * 255.0, 0, 255).astype(np.uint8)
+            pred = np.nan_to_num(pred_patches[0, i, ch], nan=0.0, posinf=0.0, neginf=0.0)
+            pred = np.clip(pred * 255.0, 0, 255).astype(np.uint8)
+            if upscale > 1:
+                gt = np.repeat(np.repeat(gt, upscale, axis=0), upscale, axis=1)
+                pred = np.repeat(np.repeat(pred, upscale, axis=0), upscale, axis=1)
+            Image.fromarray(gt, mode="L").save(out_path / f"token_{i:03d}_{plane}_p{ch}_gt.png")
+            Image.fromarray(pred, mode="L").save(out_path / f"token_{i:03d}_{plane}_p{ch}_pred.png")
+        saved += 1
+        if saved >= count:
+            break

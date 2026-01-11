@@ -15,5 +15,7 @@ outputs/
 *.pth
 *.ckpt
 wandb/
+.venv312
+
 
 datasets

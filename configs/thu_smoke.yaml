@@ -1,16 +1,23 @@
 train:
-  batch_size: 2
-  num_steps: 2
-  lr: 0.0003
-  device: cpu
+  batch_size: 128
+  num_steps: 1000
+  lr: 0.0002
+  device: cuda
   seed: 0
+  recon_every: 20
+  recon_num_patches: 6
+  recon_out_dir: outputs/recon
+  recon_upscale: 16
 
 model:
   patch_size: 16
-  embed_dim: 192
-  num_heads: 3
-  num_layers: 4
-  mlp_ratio: 2.0
+  embed_dim: 256
+  num_heads: 4
+  num_layers: 6
+  decoder_embed_dim: 256
+  decoder_num_heads: 4
+  decoder_num_layers: 6
+  mlp_ratio: 4.0
   plane_embed_dim: 64
   metadata_dim: 9
   mask_ratio: 0.6
@@ -20,11 +27,14 @@ data:
   dataset_path: "datasets/THU-EACT-50-CHL"
   split: "train"
   num_samples: 0
-  max_samples: 8
+  max_samples: 1024
   max_events: 0
   image_width: 346
   image_height: 260
+  time_unit: 0.000001
   time_bins: 32
-  region_scales: [16, 32, 64]
+  region_scales: [32, 64, 128]
+  region_time_scales: [0.2, 0.4, 0.6, 0.8]
   plane_types: ["xy", "xt", "yt"]
   num_regions: 32
+  subset_seed: 17333

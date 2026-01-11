@@ -14,6 +14,10 @@ class TrainConfig:
     lr: float
     device: str
     seed: int
+    recon_every: int
+    recon_num_patches: int
+    recon_out_dir: str
+    recon_upscale: int
 
 
 @dataclass
@@ -22,6 +26,9 @@ class ModelConfig:
     embed_dim: int
     num_heads: int
     num_layers: int
+    decoder_embed_dim: int
+    decoder_num_heads: int
+    decoder_num_layers: int
     mlp_ratio: float
     plane_embed_dim: int
     metadata_dim: int
@@ -38,10 +45,13 @@ class DataConfig:
     max_events: int
     image_width: int
     image_height: int
+    time_unit: float
     time_bins: int
     region_scales: list[int]
+    region_time_scales: list[float]
     plane_types: list[str]
     num_regions: int
+    subset_seed: int
 
 
 @dataclass

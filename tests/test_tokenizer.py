@@ -14,6 +14,5 @@ def test_build_patch_shape():
     )
     region = Region(x=0, y=0, t=0.0, dx=4, dy=4, dt=1.0, plane="xy")
     patch, total = build_patch(events, region, patch_size=8, time_bins=4)
-    assert patch.shape == (1, 8, 8)
+    assert patch.shape == (2, 8, 8)
     assert total == 3.0
-

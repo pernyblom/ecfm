@@ -33,3 +33,8 @@ pip install -e .
 python scripts\train.py --config configs\small.yaml
 ```
 
+## THU-EACT-50-CHL Smoke Run
+If the dataset is placed at `datasets/THU-EACT-50-CHL`, run:
+```powershell
+python scripts\train.py --config configs\thu_smoke.yaml
+```

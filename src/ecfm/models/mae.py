@@ -15,6 +15,9 @@ class EventMAE(nn.Module):
         embed_dim: int,
         num_heads: int,
         num_layers: int,
+        decoder_embed_dim: int,
+        decoder_num_heads: int,
+        decoder_num_layers: int,
         mlp_ratio: float,
         plane_embed_dim: int,
         metadata_dim: int,
@@ -44,11 +47,24 @@ class EventMAE(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        self.patch_decoder = nn.Linear(embed_dim, patch_size * patch_size)
-        self.count_decoder = nn.Linear(embed_dim, 1)
+        self.decoder_proj = nn.Linear(embed_dim, decoder_embed_dim)
+        self.decoder_pos_embedding = nn.Parameter(
+            torch.zeros(1, num_tokens, decoder_embed_dim)
+        )
+        decoder_layer = nn.TransformerEncoderLayer(
+            d_model=decoder_embed_dim,
+            nhead=decoder_num_heads,
+            dim_feedforward=int(decoder_embed_dim * mlp_ratio),
+            batch_first=True,
+        )
+        self.decoder = nn.TransformerEncoder(decoder_layer, num_layers=decoder_num_layers)
+
+        self.patch_decoder = nn.Linear(decoder_embed_dim, 2 * patch_size * patch_size)
+        self.count_decoder = nn.Linear(decoder_embed_dim, 1)
 
         nn.init.trunc_normal_(self.pos_embedding, std=0.02)
         nn.init.trunc_normal_(self.mask_token, std=0.02)
+        nn.init.trunc_normal_(self.decoder_pos_embedding, std=0.02)
 
     def forward(
         self,
@@ -61,7 +77,7 @@ class EventMAE(nn.Module):
         if num_tokens != self.num_tokens:
             raise ValueError("num_tokens mismatch with configured model")
 
-        patches_flat = patches.reshape(bsz * num_tokens, 1, self.patch_size, self.patch_size)
+        patches_flat = patches.reshape(bsz * num_tokens, 2, self.patch_size, self.patch_size)
         patch_emb = self.patch_encoder(patches_flat).reshape(bsz, num_tokens, -1)
         meta_emb = self.metadata_mlp(metadata)
         token = patch_emb + meta_emb
@@ -74,7 +90,9 @@ class EventMAE(nn.Module):
             token = torch.where(mask.unsqueeze(-1), mask_token, token)
 
         encoded = self.encoder(token)
-        pred_patch = self.patch_decoder(encoded).reshape(bsz, num_tokens, 1, self.patch_size, self.patch_size)
-        pred_count = self.count_decoder(encoded)
-        return pred_patch, pred_count, encoded
-
+        decoded = self.decoder(self.decoder_proj(encoded) + self.decoder_pos_embedding)
+        pred_patch = self.patch_decoder(decoded).reshape(
+            bsz, num_tokens, 2, self.patch_size, self.patch_size
+        )
+        pred_count = self.count_decoder(decoded)
+        return pred_patch, pred_count, decoded
