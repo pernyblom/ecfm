@@ -4,7 +4,7 @@ train:
   lr: 0.0002
   device: cuda
   seed: 0
-  recon_every: 0
+  recon_every: 200
   recon_num_patches: 8
   recon_out_dir: outputs/recon
   recon_upscale: 8
