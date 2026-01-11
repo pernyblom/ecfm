@@ -19,6 +19,16 @@ from PIL import Image
 
 def build_dataloader(cfg: Config) -> DataLoader:
     if cfg.data.dataset_name == "synthetic":
+        if cfg.data.cache_token_variants_per_sample > 0 and cfg.data.fixed_region_seed < 0:
+            print(
+                "Warning: cache_token_variants_per_sample is enabled but fixed_region_seed < 0; "
+                "token variants will not be reproducible across runs."
+            )
+        if cfg.data.cache_token_max_samples > 0 and cfg.data.fixed_region_seed < 0:
+            print(
+                "Warning: cache_token_max_samples is enabled but fixed_region_seed < 0; "
+                "token caching will freeze randomly sampled regions."
+            )
         dataset = SyntheticEventDataset(
             num_samples=cfg.data.num_samples,
             max_events=cfg.data.max_events,
@@ -36,8 +46,23 @@ def build_dataloader(cfg: Config) -> DataLoader:
             fixed_region_sizes=cfg.data.fixed_region_sizes,
             fixed_region_positions_global=cfg.data.fixed_region_positions_global,
             fixed_single_region=cfg.data.fixed_single_region,
+            cache_token_max_samples=cfg.data.cache_token_max_samples,
+            cache_token_variants_per_sample=cfg.data.cache_token_variants_per_sample,
+            cache_token_dir=cfg.data.cache_token_dir,
+            cache_token_variant_mode=cfg.data.cache_token_variant_mode,
+            cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
         )
     elif cfg.data.dataset_name == "thu-eact":
+        if cfg.data.cache_token_variants_per_sample > 0 and cfg.data.fixed_region_seed < 0:
+            print(
+                "Warning: cache_token_variants_per_sample is enabled but fixed_region_seed < 0; "
+                "token variants will not be reproducible across runs."
+            )
+        if cfg.data.cache_token_max_samples > 0 and cfg.data.fixed_region_seed < 0:
+            print(
+                "Warning: cache_token_max_samples is enabled but fixed_region_seed < 0; "
+                "token caching will freeze randomly sampled regions."
+            )
         dataset = THUEACTDataset(
             root=cfg.data.dataset_path,
             split=cfg.data.split,
@@ -59,6 +84,11 @@ def build_dataloader(cfg: Config) -> DataLoader:
             fixed_region_positions_global=cfg.data.fixed_region_positions_global,
             fixed_single_region=cfg.data.fixed_single_region,
             cache_max_samples=cfg.data.cache_max_samples,
+            cache_token_max_samples=cfg.data.cache_token_max_samples,
+            cache_token_variants_per_sample=cfg.data.cache_token_variants_per_sample,
+            cache_token_dir=cfg.data.cache_token_dir,
+            cache_token_variant_mode=cfg.data.cache_token_variant_mode,
+            cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
         )
     else:
         raise ValueError(f"Unknown dataset_name: {cfg.data.dataset_name}")

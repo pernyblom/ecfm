@@ -1,20 +1,20 @@
 train:
   batch_size: 16
-  num_steps: 3000
+  num_steps: 10000
   lr: 0.0002
   device: cuda
   seed: 0
-  recon_every: 20
+  recon_every: 0
   recon_num_patches: 8
   recon_out_dir: outputs/recon
   recon_upscale: 8
   probe_every: 0
-  probe_subset_size: 0
+  probe_subset_size: 16
   probe_subset_seed: 0
   probe_region_seed: 0
-  probe_regions_per_sample: 32
+  probe_regions_per_sample: 16
   probe_epochs: 10
-  probe_batch_size: 64
+  probe_batch_size: 16
   probe_lr: 0.001
   probe_cache_dir: outputs/linear_probe_cache
   patch_loss_blur_radius: 1
@@ -45,14 +45,19 @@ data:
   image_height: 260
   time_unit: 0.000001
   time_bins: 64
-  region_scales: [128]
-  region_time_scales: [0.3, 0.6]
+  region_scales: [64, 128, 192]
+  region_time_scales: [0.25, 0.5, 0.75]
   fixed_region_sizes: false
-  plane_types: ["yt"]
+  plane_types: ["xt", "yt"]
   num_regions: 16
-  subset_seed: 17333
-  fixed_region_seed: 1234
+  subset_seed: 1733
+  fixed_region_seed: -1
   fixed_region_positions_global: false
   fixed_single_region: false
   patch_divider: 100.0
-  cache_max_samples: 32
+  cache_max_samples: 0
+  cache_token_max_samples: 0
+  cache_token_variants_per_sample: 5
+  cache_token_dir: outputs/token_cache
+  cache_token_variant_mode: random
+  cache_token_clear_on_start: true

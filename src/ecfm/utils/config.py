@@ -70,6 +70,11 @@ class DataConfig:
     fixed_single_region: bool
     patch_divider: float
     cache_max_samples: int
+    cache_token_max_samples: int
+    cache_token_variants_per_sample: int
+    cache_token_dir: str
+    cache_token_variant_mode: str
+    cache_token_clear_on_start: bool
 
 
 @dataclass
