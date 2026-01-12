@@ -19,6 +19,10 @@ train:
   probe_cache_dir: outputs/linear_probe_cache
   patch_loss_blur_radius: 0
   count_loss_weight: 0.0
+  checkpoint_dir: outputs/checkpoints
+  checkpoint_every: 0
+  resume_path: ""
+  load_model_only: false
 
 model:
   patch_size: 16

@@ -41,6 +41,15 @@ def main() -> None:
     loader = build_dataloader(cfg)
     model = build_model(cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.lr)
+    start_step = 0
+
+    if cfg.train.resume_path:
+        ckpt = torch.load(cfg.train.resume_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        if not cfg.train.load_model_only and "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            start_step = int(ckpt.get("step", 0)) + 1
+        print(f"Loaded checkpoint {cfg.train.resume_path} (start_step={start_step})")
 
     ema_loss = None
     ema_alpha = 0.9
@@ -53,7 +62,7 @@ def main() -> None:
     if probe_enabled and cfg.train.probe_regions_per_sample != cfg.data.num_regions:
         raise ValueError("probe_regions_per_sample must match data.num_regions")
 
-    for step in range(cfg.train.num_steps):
+    for step in range(start_step, cfg.train.num_steps):
         metrics = train_one_epoch(
             model,
             loader,
@@ -101,6 +110,16 @@ def main() -> None:
                 upscale=cfg.train.recon_upscale,
                 patch_loss_blur_radius=cfg.train.patch_loss_blur_radius,
             )
+
+        if cfg.train.checkpoint_every > 0 and step % cfg.train.checkpoint_every == 0:
+            ckpt_dir = Path(cfg.train.checkpoint_dir)
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = ckpt_dir / f"step_{step:06d}.pt"
+            torch.save(
+                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step},
+                ckpt_path,
+            )
+            print(f"Saved checkpoint {ckpt_path}")
 
         if probe_enabled and step % cfg.train.probe_every == 0:
             if probe_cache is None:
@@ -169,6 +188,16 @@ def main() -> None:
                 device=device,
             )
             print(f"probe step={step} train_acc={train_acc:.4f} test_acc={test_acc:.4f}")
+
+    if cfg.train.checkpoint_every >= 0:
+        ckpt_dir = Path(cfg.train.checkpoint_dir)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = ckpt_dir / "last.pt"
+        torch.save(
+            {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": cfg.train.num_steps - 1},
+            ckpt_path,
+        )
+        print(f"Saved checkpoint {ckpt_path}")
 
 
 if __name__ == "__main__":

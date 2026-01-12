@@ -29,6 +29,10 @@ class TrainConfig:
     probe_cache_dir: str
     patch_loss_blur_radius: int
     count_loss_weight: float
+    checkpoint_dir: str
+    checkpoint_every: int
+    resume_path: str
+    load_model_only: bool
 
 
 @dataclass
