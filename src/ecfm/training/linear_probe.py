@@ -68,6 +68,7 @@ def grid_regions(
     grid_y: int,
     grid_t: int,
     plane_types: List[str],
+    grid_plane_mode: str,
 ) -> List[Region]:
     if grid_x <= 0 or grid_y <= 0 or grid_t <= 0:
         raise ValueError("grid_x, grid_y, grid_t must be > 0 for grid sampling")
@@ -75,7 +76,6 @@ def grid_regions(
     ys = np.linspace(0, image_height, grid_y + 1, dtype=int)
     ts = np.linspace(0.0, 1.0, grid_t + 1, dtype=np.float32)
     regions: List[Region] = []
-    plane_cycle = iter(plane_types)
     for ti in range(grid_t):
         t = float(ts[ti])
         dt = float(ts[ti + 1] - ts[ti])
@@ -89,12 +89,12 @@ def grid_regions(
                 dx = int(max(1, xs[xi + 1] - xs[xi]))
                 if x + dx > image_width:
                     dx = image_width - x
-                try:
-                    plane = next(plane_cycle)
-                except StopIteration:
-                    plane_cycle = iter(plane_types)
-                    plane = next(plane_cycle)
-                regions.append(Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane))
+                if grid_plane_mode == "all":
+                    for plane in plane_types:
+                        regions.append(Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane))
+                else:
+                    plane = plane_types[len(regions) % len(plane_types)]
+                    regions.append(Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane))
     return regions
 
 
@@ -148,6 +148,7 @@ def build_token_cache(
             cfg.data.grid_y,
             cfg.data.grid_t,
             cfg.data.plane_types,
+            cfg.data.grid_plane_mode,
         )
 
     total = len(entries)

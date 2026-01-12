@@ -71,6 +71,7 @@ class DataConfig:
     grid_x: int
     grid_y: int
     grid_t: int
+    grid_plane_mode: str
     fixed_region_sizes: bool
     plane_types: list[str]
     num_regions: int

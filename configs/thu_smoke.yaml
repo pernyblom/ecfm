@@ -36,7 +36,7 @@ model:
   plane_embed_dim: 64
   metadata_dim: 9
   mask_ratio: 0.4
-  use_pos_embedding: true
+  use_pos_embedding: false
 
 data:
   dataset_name: "thu-eact"
@@ -57,6 +57,7 @@ data:
   grid_x: 4
   grid_y: 4
   grid_t: 4
+  grid_plane_mode: cycle
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
   num_regions: 16
