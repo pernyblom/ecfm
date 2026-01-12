@@ -38,18 +38,64 @@ def sample_region(
     image_width: int,
     image_height: int,
     region_scales: List[int],
+    region_scales_x: List[int],
+    region_scales_y: List[int],
     region_time_scales: List[float],
     plane_types: List[str],
 ) -> Region:
-    scale = int(rng.choice(region_scales))
-    dx = min(scale, image_width)
-    dy = min(scale, image_height)
+    if region_scales_x:
+        dx = int(rng.choice(region_scales_x))
+    else:
+        dx = int(rng.choice(region_scales))
+    if region_scales_y:
+        dy = int(rng.choice(region_scales_y))
+    else:
+        dy = int(rng.choice(region_scales))
+    dx = min(dx, image_width)
+    dy = min(dy, image_height)
     dt = float(rng.choice(region_time_scales))
     x = int(rng.integers(0, max(1, image_width - dx)))
     y = int(rng.integers(0, max(1, image_height - dy)))
     t = float(rng.random() * max(1e-6, 1.0 - dt))
     plane = str(rng.choice(plane_types))
     return Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane)
+
+
+def grid_regions(
+    image_width: int,
+    image_height: int,
+    grid_x: int,
+    grid_y: int,
+    grid_t: int,
+    plane_types: List[str],
+) -> List[Region]:
+    if grid_x <= 0 or grid_y <= 0 or grid_t <= 0:
+        raise ValueError("grid_x, grid_y, grid_t must be > 0 for grid sampling")
+    xs = np.linspace(0, image_width, grid_x + 1, dtype=int)
+    ys = np.linspace(0, image_height, grid_y + 1, dtype=int)
+    ts = np.linspace(0.0, 1.0, grid_t + 1, dtype=np.float32)
+    regions: List[Region] = []
+    plane_cycle = iter(plane_types)
+    for ti in range(grid_t):
+        t = float(ts[ti])
+        dt = float(ts[ti + 1] - ts[ti])
+        for yi in range(grid_y):
+            y = int(ys[yi])
+            dy = int(max(1, ys[yi + 1] - ys[yi]))
+            if y + dy > image_height:
+                dy = image_height - y
+            for xi in range(grid_x):
+                x = int(xs[xi])
+                dx = int(max(1, xs[xi + 1] - xs[xi]))
+                if x + dx > image_width:
+                    dx = image_width - x
+                try:
+                    plane = next(plane_cycle)
+                except StopIteration:
+                    plane_cycle = iter(plane_types)
+                    plane = next(plane_cycle)
+                regions.append(Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane))
+    return regions
 
 
 def load_events(path: Path, time_unit: float) -> Tuple[np.ndarray, float]:
@@ -72,6 +118,7 @@ def build_token_cache(
     region_seed: int,
     regions_per_sample: int,
     cache_path: Path,
+    show_progress: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     if cache_path.exists():
         cached = np.load(cache_path, allow_pickle=True)
@@ -92,7 +139,21 @@ def build_token_cache(
     plane_ids_list = []
     labels = []
 
+    grid_list = None
+    if cfg.data.region_sampling == "grid":
+        grid_list = grid_regions(
+            cfg.data.image_width,
+            cfg.data.image_height,
+            cfg.data.grid_x,
+            cfg.data.grid_y,
+            cfg.data.grid_t,
+            cfg.data.plane_types,
+        )
+
+    total = len(entries)
     for idx, (path, label) in enumerate(entries):
+        if show_progress and (idx == 0 or (idx + 1) % 50 == 0 or idx + 1 == total):
+            print(f"caching {idx + 1}/{total} -> {cache_path.name}")
         events, seq_len_sec = load_events(path, cfg.data.time_unit)
         sample_rng = np.random.default_rng(region_seed + idx)
 
@@ -100,15 +161,27 @@ def build_token_cache(
         metadata = []
         plane_ids = []
 
-        for _ in range(regions_per_sample):
-            region = sample_region(
-                sample_rng,
-                cfg.data.image_width,
-                cfg.data.image_height,
-                cfg.data.region_scales,
-                cfg.data.region_time_scales,
-                cfg.data.plane_types,
-            )
+        if grid_list is not None:
+            regions = grid_list
+            if regions_per_sample > 0 and regions_per_sample < len(grid_list):
+                idxs = sample_rng.choice(len(grid_list), size=regions_per_sample, replace=False)
+                regions = [grid_list[i] for i in idxs]
+        else:
+            regions = [
+                sample_region(
+                    sample_rng,
+                    cfg.data.image_width,
+                    cfg.data.image_height,
+                    cfg.data.region_scales,
+                    cfg.data.region_scales_x,
+                    cfg.data.region_scales_y,
+                    cfg.data.region_time_scales,
+                    cfg.data.plane_types,
+                )
+                for _ in range(regions_per_sample)
+            ]
+
+        for region in regions:
             patch, _ = build_patch(
                 events,
                 region,

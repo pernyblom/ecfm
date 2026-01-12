@@ -1,11 +1,11 @@
 train:
-  batch_size: 32
-  num_steps: 100000
+  batch_size: 16
+  num_steps: 1
   lr: 0.0002
   device: cuda
   seed: 0
-  recon_every: 200
-  recon_num_patches: 8
+  recon_every: 0
+  recon_num_patches: 0
   recon_out_dir: outputs/recon
   recon_upscale: 8
   probe_every: 0
@@ -17,10 +17,10 @@ train:
   probe_batch_size: 16
   probe_lr: 0.001
   probe_cache_dir: outputs/linear_probe_cache
-  patch_loss_blur_radius: 1
+  patch_loss_blur_radius: 0
   count_loss_weight: 0.0
   checkpoint_dir: outputs/checkpoints
-  checkpoint_every: 200
+  checkpoint_every: 0
   resume_path: ""
   load_model_only: false
 
@@ -43,7 +43,7 @@ data:
   dataset_path: "datasets/THU-EACT-50-CHL"
   split: "train"
   num_samples: 0
-  max_samples: 1024
+  max_samples: 32
   max_events: 0
   image_width: 346
   image_height: 260
@@ -53,10 +53,10 @@ data:
   region_scales_x: [64, 128, 192]
   region_scales_y: [64, 128, 192]
   region_time_scales: [0.25, 0.5, 0.75]
-  region_sampling: random
+  region_sampling: grid
   grid_x: 4
-  grid_y: 4
-  grid_t: 4
+  grid_y: 2
+  grid_t: 2
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
   num_regions: 16
@@ -67,7 +67,7 @@ data:
   patch_divider: 100.0
   cache_max_samples: 0
   cache_token_max_samples: 0
-  cache_token_variants_per_sample: 16
+  cache_token_variants_per_sample: 5
   cache_token_dir: outputs/token_cache
   cache_token_variant_mode: random
-  cache_token_clear_on_start: true
+  cache_token_clear_on_start: false

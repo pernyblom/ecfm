@@ -50,7 +50,13 @@ data:
   time_unit: 1.0
   time_bins: 32
   region_scales: [16, 32, 64]
+  region_scales_x: [16, 32, 64]
+  region_scales_y: [16, 32, 64]
   region_time_scales: [0.1, 0.25, 0.5]
+  region_sampling: random
+  grid_x: 4
+  grid_y: 4
+  grid_t: 4
   fixed_region_sizes: false
   plane_types: ["xy", "xt", "yt"]
   num_regions: 32

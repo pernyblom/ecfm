@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--show-cache-progress", action="store_true")
     return parser.parse_args()
 
 
@@ -57,8 +58,15 @@ def main() -> None:
     ).to(device)
 
     if args.checkpoint:
-        state = torch.load(args.checkpoint, map_location=device)
-        model.load_state_dict(state)
+        state = torch.load(args.checkpoint, map_location=device, weights_only=True)
+        state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if missing or unexpected:
+            print("Warning: checkpoint model keys mismatched.")
+            if missing:
+                print(f"  Missing keys: {len(missing)}")
+            if unexpected:
+                print(f"  Unexpected keys: {len(unexpected)}")
     else:
         print("Warning: no checkpoint provided, using random weights.")
 
@@ -79,6 +87,7 @@ def main() -> None:
         args.region_seed,
         args.regions_per_sample,
         train_cache,
+        show_progress=args.show_cache_progress,
     )
     test_patches, test_metadata, test_plane_ids, test_labels = build_token_cache(
         cfg,
@@ -88,6 +97,7 @@ def main() -> None:
         args.region_seed,
         args.regions_per_sample,
         test_cache,
+        show_progress=args.show_cache_progress,
     )
 
     train_emb = compute_embeddings(

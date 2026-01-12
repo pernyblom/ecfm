@@ -64,7 +64,13 @@ class DataConfig:
     time_unit: float
     time_bins: int
     region_scales: list[int]
+    region_scales_x: list[int]
+    region_scales_y: list[int]
     region_time_scales: list[float]
+    region_sampling: str
+    grid_x: int
+    grid_y: int
+    grid_t: int
     fixed_region_sizes: bool
     plane_types: list[str]
     num_regions: int
