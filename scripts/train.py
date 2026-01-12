@@ -120,6 +120,12 @@ def main() -> None:
                 ckpt_path,
             )
             print(f"Saved checkpoint {ckpt_path}")
+            last_path = ckpt_dir / "last.pt"
+            torch.save(
+                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step},
+                last_path,
+            )
+            print(f"Saved checkpoint {last_path}")
 
         if probe_enabled and step % cfg.train.probe_every == 0:
             if probe_cache is None:
