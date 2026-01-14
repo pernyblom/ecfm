@@ -22,6 +22,19 @@ pip install -e .
 python scripts\train.py --config configs\small.yaml
 ```
 
+## CUDA Setup (Windows)
+If your default Python is 3.14, install a CUDA-enabled PyTorch build in a
+Python 3.12 venv (CUDA wheels are not available for 3.14).
+
+```powershell
+py -3.12 -m venv .venv312
+. .\.venv312\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -e .
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
 ## THU-EACT-50-CHL Smoke Run
 If the dataset is placed at `datasets/THU-EACT-50-CHL`, run:
 ```powershell
