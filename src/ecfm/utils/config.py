@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from typing import Any, Dict
 
@@ -77,6 +78,7 @@ class DataConfig:
     fixed_region_sizes: bool
     plane_types: list[str]
     num_regions: int
+    num_regions_choices: list[int]
     subset_seed: int
     fixed_region_seed: int
     fixed_region_positions_global: bool
@@ -88,6 +90,8 @@ class DataConfig:
     cache_token_dir: str
     cache_token_variant_mode: str
     cache_token_clear_on_start: bool
+    cache_token_config_id: str = ""
+    cache_token_drop_prob: float = 0.0
 
 
 @dataclass
@@ -99,8 +103,18 @@ class Config:
 
 def load_config(path: str | Path) -> Config:
     raw: Dict[str, Any] = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    data = dict(raw["data"])
+    data.setdefault("cache_token_config_id", "")
+    data.setdefault("cache_token_drop_prob", 0.0)
+    data.setdefault("num_regions_choices", [])
     return Config(
         train=TrainConfig(**raw["train"]),
         model=ModelConfig(**raw["model"]),
-        data=DataConfig(**raw["data"]),
+        data=DataConfig(**data),
     )
+
+
+def config_hash(path: str | Path) -> str:
+    cfg_path = Path(path)
+    payload = f"{cfg_path.resolve()}::{cfg_path.read_text(encoding='utf-8')}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]

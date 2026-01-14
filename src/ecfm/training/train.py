@@ -46,6 +46,7 @@ def build_dataloader(cfg: Config) -> DataLoader:
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
             num_regions=cfg.data.num_regions,
+            num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
             rng_seed=cfg.train.seed,
             fixed_region_seed=cfg.data.fixed_region_seed,
@@ -58,6 +59,8 @@ def build_dataloader(cfg: Config) -> DataLoader:
             cache_token_dir=cfg.data.cache_token_dir,
             cache_token_variant_mode=cfg.data.cache_token_variant_mode,
             cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
+            cache_token_config_id=cfg.data.cache_token_config_id,
+            cache_token_drop_prob=cfg.data.cache_token_drop_prob,
         )
     elif cfg.data.dataset_name == "thu-eact":
         if cfg.data.cache_token_variants_per_sample > 0 and cfg.data.fixed_region_seed < 0:
@@ -88,6 +91,7 @@ def build_dataloader(cfg: Config) -> DataLoader:
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
             num_regions=cfg.data.num_regions,
+            num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
             max_samples=cfg.data.max_samples,
             max_events=cfg.data.max_events,
@@ -103,13 +107,33 @@ def build_dataloader(cfg: Config) -> DataLoader:
             cache_token_dir=cfg.data.cache_token_dir,
             cache_token_variant_mode=cfg.data.cache_token_variant_mode,
             cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
+            cache_token_config_id=cfg.data.cache_token_config_id,
+            cache_token_drop_prob=cfg.data.cache_token_drop_prob,
         )
     else:
         raise ValueError(f"Unknown dataset_name: {cfg.data.dataset_name}")
     return DataLoader(dataset, batch_size=cfg.train.batch_size, shuffle=True)
 
 
+def resolve_num_tokens(cfg: Config) -> int:
+    choices_max = max(cfg.data.num_regions_choices, default=0)
+    grid_count = 0
+    if cfg.data.grid_x > 0 and cfg.data.grid_y > 0 and cfg.data.grid_t > 0:
+        grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
+        if cfg.data.grid_plane_mode == "all":
+            grid_count *= len(cfg.data.plane_types)
+    num_tokens = max(
+        cfg.data.num_regions,
+        choices_max,
+        grid_count if cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0 else 0,
+    )
+    if num_tokens <= 0:
+        raise ValueError("num_regions must be > 0 unless region_sampling=grid")
+    return num_tokens
+
+
 def build_model(cfg: Config) -> EventMAE:
+    num_tokens = resolve_num_tokens(cfg)
     return EventMAE(
         patch_size=cfg.model.patch_size,
         embed_dim=cfg.model.embed_dim,
@@ -121,7 +145,7 @@ def build_model(cfg: Config) -> EventMAE:
         mlp_ratio=cfg.model.mlp_ratio,
         plane_embed_dim=cfg.model.plane_embed_dim,
         metadata_dim=cfg.model.metadata_dim,
-        num_tokens=cfg.data.num_regions,
+        num_tokens=num_tokens,
         num_planes=len(cfg.data.plane_types),
         use_pos_embedding=cfg.model.use_pos_embedding,
         use_relative_bias=cfg.model.use_relative_bias,
@@ -160,10 +184,24 @@ def train_one_epoch(
         metadata = batch["metadata"].to(device)
         plane_ids = batch["plane_ids"].to(device)
         counts = batch["event_counts"].to(device)
+        valid_mask = batch.get("valid_mask")
+        if valid_mask is not None:
+            valid_mask = valid_mask.to(device)
 
         mask_list = []
-        for _ in range(patches.shape[0]):
-            mask_list.append(random_mask(patches.shape[1], mask_ratio).to(device))
+        if valid_mask is None:
+            for _ in range(patches.shape[0]):
+                mask_list.append(random_mask(patches.shape[1], mask_ratio).to(device))
+        else:
+            for i in range(patches.shape[0]):
+                valid = valid_mask[i].bool()
+                if valid.sum() == 0:
+                    mask_list.append(torch.zeros_like(valid, dtype=torch.bool))
+                else:
+                    sampled = random_mask(int(valid.sum()), mask_ratio).to(device)
+                    full_mask = torch.zeros_like(valid, dtype=torch.bool)
+                    full_mask[valid] = sampled
+                    mask_list.append(full_mask)
         mask = torch.stack(mask_list, dim=0)
 
         pred_patches, pred_counts, _ = model(patches, metadata, plane_ids, mask=mask)

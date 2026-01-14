@@ -9,7 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from ecfm.models.mae import EventMAE
-from ecfm.utils.config import load_config
+from ecfm.utils.config import config_hash, load_config
 from ecfm.training.linear_probe import build_token_cache, compute_embeddings, load_split
 
 
@@ -37,15 +37,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(Path(args.config))
+    cfg_path = Path(args.config)
+    cfg = load_config(cfg_path)
+    cfg_hash = config_hash(cfg_path)
 
     if cfg.data.dataset_name != "thu-eact":
         raise ValueError("linear_probe currently supports thu-eact only")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     regions_per_sample = args.regions_per_sample
+    choices_max = max(cfg.data.num_regions_choices, default=0)
     if regions_per_sample is None:
-        if cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0:
+        if choices_max > 0:
+            regions_per_sample = choices_max
+        elif cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0:
             grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
             if cfg.data.grid_plane_mode == "all":
                 grid_count *= len(cfg.data.plane_types)
@@ -127,11 +132,11 @@ def main() -> None:
     ckpt_tag = Path(args.checkpoint).stem if args.checkpoint else "random"
     train_cache = (
         cache_dir
-        / f"{args.train_split}_{ckpt_tag}_n{args.subset_size}_s{args.subset_seed}_r{args.region_seed}_k{regions_per_sample}.npz"
+        / f"{args.train_split}_h{cfg_hash}_{ckpt_tag}_n{args.subset_size}_s{args.subset_seed}_r{args.region_seed}_k{regions_per_sample}.npz"
     )
     test_cache = (
         cache_dir
-        / f"{args.test_split}_{ckpt_tag}_n{args.subset_size}_s{args.subset_seed}_r{args.region_seed}_k{regions_per_sample}.npz"
+        / f"{args.test_split}_h{cfg_hash}_{ckpt_tag}_n{args.subset_size}_s{args.subset_seed}_r{args.region_seed}_k{regions_per_sample}.npz"
     )
 
     train_patches, train_metadata, train_plane_ids, train_labels = build_token_cache(
@@ -164,7 +169,7 @@ def main() -> None:
     if val_entries:
         val_cache = (
             cache_dir
-            / f"val_{ckpt_tag}_n{args.subset_size}_s{args.subset_seed}_r{args.region_seed}_k{regions_per_sample}.npz"
+            / f"val_h{cfg_hash}_{ckpt_tag}_n{args.subset_size}_s{args.subset_seed}_r{args.region_seed}_k{regions_per_sample}.npz"
         )
         val_patches, val_metadata, val_plane_ids, val_labels = build_token_cache(
             cfg,

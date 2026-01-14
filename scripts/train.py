@@ -9,6 +9,7 @@ from ecfm.training.train import (
     build_dataloader,
     build_model,
     dump_reconstructions,
+    resolve_num_tokens,
     train_one_epoch,
 )
 from ecfm.training.linear_probe import (
@@ -17,7 +18,7 @@ from ecfm.training.linear_probe import (
     load_split,
     train_linear_probe,
 )
-from ecfm.utils.config import load_config
+from ecfm.utils.config import config_hash, load_config
 from ecfm.utils.masking import random_mask
 
 
@@ -29,7 +30,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(Path(args.config))
+    cfg_path = Path(args.config)
+    cfg = load_config(cfg_path)
+    cfg.data.cache_token_config_id = config_hash(cfg_path)
 
     torch.manual_seed(cfg.train.seed)
     if cfg.train.device.startswith("cuda") and not torch.cuda.is_available():
@@ -45,7 +48,17 @@ def main() -> None:
 
     if cfg.train.resume_path:
         ckpt = torch.load(cfg.train.resume_path, map_location=device)
-        model.load_state_dict(ckpt["model"])
+        state_dict = ckpt["model"]
+        model_state = model.state_dict()
+        for key in ("pos_embedding", "decoder_pos_embedding"):
+            if key in state_dict and key in model_state:
+                if state_dict[key].shape != model_state[key].shape:
+                    print(
+                        f"Warning: dropping {key} from checkpoint due to shape mismatch "
+                        f"{tuple(state_dict[key].shape)} vs {tuple(model_state[key].shape)}"
+                    )
+                    state_dict.pop(key)
+        model.load_state_dict(state_dict, strict=False)
         if not cfg.train.load_model_only and "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
             start_step = int(ckpt.get("step", 0)) + 1
@@ -59,8 +72,8 @@ def main() -> None:
     if probe_enabled and cfg.data.dataset_name != "thu-eact":
         print("Linear probe only supports thu-eact right now; disabling.")
         probe_enabled = False
-    if probe_enabled and cfg.train.probe_regions_per_sample != cfg.data.num_regions:
-        raise ValueError("probe_regions_per_sample must match data.num_regions")
+    if probe_enabled and cfg.train.probe_regions_per_sample != resolve_num_tokens(cfg):
+        raise ValueError("probe_regions_per_sample must match the model num_tokens")
 
     for step in range(start_step, cfg.train.num_steps):
         metrics = train_one_epoch(
@@ -90,11 +103,25 @@ def main() -> None:
             patches = batch["patches"].to(device)
             metadata = batch["metadata"].to(device)
             plane_ids = batch["plane_ids"].to(device)
+            valid_mask = batch.get("valid_mask")
+            if valid_mask is not None:
+                valid_mask = valid_mask.to(device)
             mask_list = []
-            for _ in range(patches.shape[0]):
-                mask_list.append(
-                    random_mask(patches.shape[1], cfg.model.mask_ratio).to(device)
-                )
+            if valid_mask is None:
+                for _ in range(patches.shape[0]):
+                    mask_list.append(
+                        random_mask(patches.shape[1], cfg.model.mask_ratio).to(device)
+                    )
+            else:
+                for i in range(patches.shape[0]):
+                    valid = valid_mask[i].bool()
+                    if valid.sum() == 0:
+                        mask_list.append(torch.zeros_like(valid, dtype=torch.bool))
+                    else:
+                        sampled = random_mask(int(valid.sum()), cfg.model.mask_ratio).to(device)
+                        full_mask = torch.zeros_like(valid, dtype=torch.bool)
+                        full_mask[valid] = sampled
+                        mask_list.append(full_mask)
             mask = torch.stack(mask_list, dim=0)
             with torch.no_grad():
                 pred_patches, _, _ = model(patches, metadata, plane_ids, mask=mask)
@@ -133,12 +160,13 @@ def main() -> None:
                 train_entries = load_split(root, "train")
                 test_entries = load_split(root, "test")
                 cache_dir = Path(cfg.train.probe_cache_dir)
+                probe_tag = cfg.data.cache_token_config_id
                 train_cache = cache_dir / (
-                    f"train_n{cfg.train.probe_subset_size}_s{cfg.train.probe_subset_seed}"
+                    f"train_h{probe_tag}_n{cfg.train.probe_subset_size}_s{cfg.train.probe_subset_seed}"
                     f"_r{cfg.train.probe_region_seed}.npz"
                 )
                 test_cache = cache_dir / (
-                    f"test_n{cfg.train.probe_subset_size}_s{cfg.train.probe_subset_seed}"
+                    f"test_h{probe_tag}_n{cfg.train.probe_subset_size}_s{cfg.train.probe_subset_seed}"
                     f"_r{cfg.train.probe_region_seed}.npz"
                 )
                 train_patches, train_metadata, train_plane_ids, train_labels = build_token_cache(

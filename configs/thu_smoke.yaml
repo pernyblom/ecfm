@@ -63,6 +63,7 @@ data:
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
   num_regions: 0
+  num_regions_choices: [8, 16, 32]
   subset_seed: 17336
   fixed_region_seed: -1
   fixed_region_positions_global: false
@@ -74,3 +75,4 @@ data:
   cache_token_dir: outputs/token_cache
   cache_token_variant_mode: random
   cache_token_clear_on_start: true
+  cache_token_drop_prob: 0.005

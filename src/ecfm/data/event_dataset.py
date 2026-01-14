@@ -19,6 +19,7 @@ class EventSample:
     metadata: torch.Tensor
     event_counts: torch.Tensor
     plane_ids: torch.Tensor
+    valid_mask: torch.Tensor
 
 
 class SyntheticEventDataset(Dataset):
@@ -42,6 +43,7 @@ class SyntheticEventDataset(Dataset):
         grid_plane_mode: str,
         plane_types: List[str],
         num_regions: int,
+        num_regions_choices: List[int],
         patch_size: int,
         rng_seed: int = 0,
         fixed_region_seed: int = -1,
@@ -54,6 +56,8 @@ class SyntheticEventDataset(Dataset):
         cache_token_dir: str = "outputs/token_cache",
         cache_token_variant_mode: str = "random",
         cache_token_clear_on_start: bool = False,
+        cache_token_config_id: str = "",
+        cache_token_drop_prob: float = 0.0,
         return_label: bool = False,
     ) -> None:
         self.num_samples = num_samples
@@ -72,6 +76,7 @@ class SyntheticEventDataset(Dataset):
         self.grid_plane_mode = grid_plane_mode
         self.plane_types = plane_types
         self.num_regions = num_regions
+        self.num_regions_choices = [int(v) for v in num_regions_choices if int(v) > 0]
         self.patch_size = patch_size
         self.rng = np.random.default_rng(rng_seed)
         self.fixed_region_seed = fixed_region_seed
@@ -79,12 +84,25 @@ class SyntheticEventDataset(Dataset):
         self.fixed_region_sizes = fixed_region_sizes
         self.fixed_region_positions_global = fixed_region_positions_global
         self.fixed_single_region = fixed_single_region
+        grid_count = self._grid_region_count()
+        self.max_regions = max(
+            0,
+            self.num_regions,
+            max(self.num_regions_choices, default=0),
+            grid_count if self.region_sampling == "grid" and self.num_regions <= 0 else 0,
+        )
+        if self.max_regions <= 0:
+            raise ValueError("num_regions must be > 0 unless region_sampling=grid")
+        if self.fixed_single_region and self.max_regions <= 0:
+            raise ValueError("fixed_single_region requires num_regions > 0")
         self.cache_token_max_samples = cache_token_max_samples
         self._token_cache: OrderedDict[int, Dict[str, torch.Tensor]] = OrderedDict()
         self.cache_token_variants_per_sample = cache_token_variants_per_sample
         self.cache_token_dir = Path(cache_token_dir)
         self.cache_token_variant_mode = cache_token_variant_mode
         self.cache_token_clear_on_start = cache_token_clear_on_start
+        self.cache_token_config_id = cache_token_config_id
+        self.cache_token_drop_prob = float(cache_token_drop_prob)
         if self.cache_token_clear_on_start and self.cache_token_dir.exists():
             for path in self.cache_token_dir.glob("synthetic_*.npz"):
                 path.unlink()
@@ -155,15 +173,15 @@ class SyntheticEventDataset(Dataset):
         return regions
 
     def _select_regions(
-        self, rng: np.random.Generator, regions: List[Region]
+        self, rng: np.random.Generator, regions: List[Region], desired_num: int
     ) -> List[Region]:
-        if self.num_regions <= 0 or self.num_regions == len(regions):
+        if desired_num <= 0 or desired_num == len(regions):
             return regions
-        if self.num_regions < len(regions):
-            idx = rng.choice(len(regions), size=self.num_regions, replace=False)
+        if desired_num < len(regions):
+            idx = rng.choice(len(regions), size=desired_num, replace=False)
             return [regions[i] for i in idx]
-        repeats = (self.num_regions + len(regions) - 1) // len(regions)
-        tiled = (regions * repeats)[: self.num_regions]
+        repeats = (desired_num + len(regions) - 1) // len(regions)
+        tiled = (regions * repeats)[:desired_num]
         return tiled
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -171,9 +189,12 @@ class SyntheticEventDataset(Dataset):
             return self._get_token_variant(idx)
 
         if self.cache_token_max_samples > 0 and idx in self._token_cache:
-            cached = self._token_cache.pop(idx)
-            self._token_cache[idx] = cached
-            return cached
+            if self.cache_token_drop_prob > 0 and self.rng.random() < self.cache_token_drop_prob:
+                self._token_cache.pop(idx, None)
+            else:
+                cached = self._token_cache.pop(idx)
+                self._token_cache[idx] = cached
+                return cached
 
         events = self._sample_events()
         seq_len_sec = 1.0
@@ -184,12 +205,15 @@ class SyntheticEventDataset(Dataset):
             rng = np.random.default_rng(seed)
         else:
             rng = self.rng
-        patches, metadata, counts, plane_ids = self._build_sample(events, seq_len_sec, rng)
+        patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
+            events, seq_len_sec, rng
+        )
         sample = {
             "patches": patches,
             "metadata": metadata,
             "event_counts": counts,
             "plane_ids": plane_ids,
+            "valid_mask": valid_mask,
         }
         if self.return_label:
             sample["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
@@ -209,15 +233,35 @@ class SyntheticEventDataset(Dataset):
 
     def _get_token_variant(self, idx: int) -> Dict[str, torch.Tensor]:
         variant = self._select_variant(idx)
-        cache_path = self.cache_token_dir / f"synthetic_{idx:06d}_v{variant}.npz"
+        cfg_tag = f"_{self.cache_token_config_id}" if self.cache_token_config_id else ""
+        cache_path = self.cache_token_dir / f"synthetic_{idx:06d}{cfg_tag}_v{variant}.npz"
         if cache_path.exists():
-            cached = np.load(cache_path)
-            return {
-                "patches": torch.from_numpy(cached["patches"]),
-                "metadata": torch.from_numpy(cached["metadata"]),
-                "event_counts": torch.from_numpy(cached["event_counts"]),
-                "plane_ids": torch.from_numpy(cached["plane_ids"]),
-            }
+            if self.cache_token_drop_prob > 0 and self.rng.random() < self.cache_token_drop_prob:
+                try:
+                    cache_path.unlink()
+                except OSError:
+                    pass
+            else:
+                cached = np.load(cache_path)
+                sample = {
+                    "patches": torch.from_numpy(cached["patches"]),
+                    "metadata": torch.from_numpy(cached["metadata"]),
+                    "event_counts": torch.from_numpy(cached["event_counts"]),
+                    "plane_ids": torch.from_numpy(cached["plane_ids"]),
+                }
+                if "valid_mask" in cached:
+                    sample["valid_mask"] = torch.from_numpy(cached["valid_mask"])
+                else:
+                    sample["valid_mask"] = torch.ones(
+                        sample["patches"].shape[0], dtype=torch.float32
+                    )
+                if "valid_mask" in cached:
+                    sample["valid_mask"] = torch.from_numpy(cached["valid_mask"])
+                else:
+                    sample["valid_mask"] = torch.ones(
+                        sample["patches"].shape[0], dtype=torch.float32
+                    )
+                return sample
 
         events = self._sample_events()
         seq_len_sec = 1.0
@@ -227,7 +271,9 @@ class SyntheticEventDataset(Dataset):
         else:
             rng = self.rng
 
-        patches, metadata, counts, plane_ids = self._build_sample(events, seq_len_sec, rng)
+        patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
+            events, seq_len_sec, rng
+        )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             cache_path,
@@ -235,29 +281,34 @@ class SyntheticEventDataset(Dataset):
             metadata=metadata.numpy(),
             event_counts=counts.numpy(),
             plane_ids=plane_ids.numpy(),
+            valid_mask=valid_mask.numpy(),
         )
         return {
             "patches": patches,
             "metadata": metadata,
             "event_counts": counts,
             "plane_ids": plane_ids,
+            "valid_mask": valid_mask,
         }
 
     def _build_sample(
         self, events: np.ndarray, seq_len_sec: float, rng: np.random.Generator
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         patches: List[torch.Tensor] = []
         metadata: List[torch.Tensor] = []
         counts: List[torch.Tensor] = []
         plane_ids: List[int] = []
 
+        desired_num = self.num_regions
+        if self.num_regions_choices:
+            desired_num = int(rng.choice(self.num_regions_choices))
         if self.fixed_single_region:
             region = self._sample_region(rng)
-            regions = [region] * self.num_regions
+            regions = [region] * desired_num
         elif self.region_sampling == "grid":
-            regions = self._select_regions(rng, self._grid_regions())
+            regions = self._select_regions(rng, self._grid_regions(), desired_num)
         else:
-            regions = [self._sample_region(rng) for _ in range(self.num_regions)]
+            regions = [self._sample_region(rng) for _ in range(desired_num)]
 
         for region in regions:
             patch, total_events = build_patch(
@@ -283,12 +334,36 @@ class SyntheticEventDataset(Dataset):
             )
             metadata.append(meta)
 
+        valid_count = len(patches)
+        if valid_count < self.max_regions:
+            pad = self.max_regions - valid_count
+            patches.extend(
+                [torch.zeros_like(patches[0]) for _ in range(pad)]
+                if patches
+                else [torch.zeros((2, self.patch_size, self.patch_size), dtype=torch.float32)]
+                * pad
+            )
+            metadata.extend([torch.zeros((9,), dtype=torch.float32) for _ in range(pad)])
+            counts.extend([torch.tensor([0.0], dtype=torch.float32) for _ in range(pad)])
+            plane_ids.extend([0 for _ in range(pad)])
+        valid_mask = torch.zeros((self.max_regions,), dtype=torch.float32)
+        valid_mask[:valid_count] = 1.0
+
         return (
             torch.stack(patches, dim=0),
             torch.stack(metadata, dim=0),
             torch.stack(counts, dim=0),
             torch.tensor(plane_ids, dtype=torch.long),
+            valid_mask,
         )
+
+    def _grid_region_count(self) -> int:
+        if self.grid_x <= 0 or self.grid_y <= 0 or self.grid_t <= 0:
+            return 0
+        count = self.grid_x * self.grid_y * self.grid_t
+        if self.grid_plane_mode == "all":
+            count *= len(self.plane_types)
+        return count
 
 
 class THUEACTDataset(Dataset):
@@ -311,6 +386,7 @@ class THUEACTDataset(Dataset):
         grid_plane_mode: str,
         plane_types: List[str],
         num_regions: int,
+        num_regions_choices: List[int],
         patch_size: int,
         max_samples: int = 0,
         max_events: int = 0,
@@ -326,6 +402,8 @@ class THUEACTDataset(Dataset):
         cache_token_dir: str = "outputs/token_cache",
         cache_token_variant_mode: str = "random",
         cache_token_clear_on_start: bool = False,
+        cache_token_config_id: str = "",
+        cache_token_drop_prob: float = 0.0,
         return_label: bool = False,
     ) -> None:
         self.root = Path(root)
@@ -345,6 +423,7 @@ class THUEACTDataset(Dataset):
         self.grid_plane_mode = grid_plane_mode
         self.plane_types = plane_types
         self.num_regions = num_regions
+        self.num_regions_choices = [int(v) for v in num_regions_choices if int(v) > 0]
         self.patch_size = patch_size
         self.max_events = max_events
         self.fixed_region_seed = fixed_region_seed
@@ -352,6 +431,17 @@ class THUEACTDataset(Dataset):
         self.fixed_region_sizes = fixed_region_sizes
         self.fixed_region_positions_global = fixed_region_positions_global
         self.fixed_single_region = fixed_single_region
+        grid_count = self._grid_region_count()
+        self.max_regions = max(
+            0,
+            self.num_regions,
+            max(self.num_regions_choices, default=0),
+            grid_count if self.region_sampling == "grid" and self.num_regions <= 0 else 0,
+        )
+        if self.max_regions <= 0:
+            raise ValueError("num_regions must be > 0 unless region_sampling=grid")
+        if self.fixed_single_region and self.max_regions <= 0:
+            raise ValueError("fixed_single_region requires num_regions > 0")
         self.cache_max_samples = cache_max_samples
         self._event_cache: OrderedDict[int, Tuple[np.ndarray, float]] = OrderedDict()
         self.cache_token_max_samples = cache_token_max_samples
@@ -360,6 +450,8 @@ class THUEACTDataset(Dataset):
         self.cache_token_dir = Path(cache_token_dir)
         self.cache_token_variant_mode = cache_token_variant_mode
         self.cache_token_clear_on_start = cache_token_clear_on_start
+        self.cache_token_config_id = cache_token_config_id
+        self.cache_token_drop_prob = float(cache_token_drop_prob)
         self.return_label = return_label
         if self.cache_token_clear_on_start and self.cache_token_dir.exists():
             for path in self.cache_token_dir.glob("thu_*.npz"):
@@ -480,15 +572,15 @@ class THUEACTDataset(Dataset):
         return regions
 
     def _select_regions(
-        self, rng: np.random.Generator, regions: List[Region]
+        self, rng: np.random.Generator, regions: List[Region], desired_num: int
     ) -> List[Region]:
-        if self.num_regions <= 0 or self.num_regions == len(regions):
+        if desired_num <= 0 or desired_num == len(regions):
             return regions
-        if self.num_regions < len(regions):
-            idx = rng.choice(len(regions), size=self.num_regions, replace=False)
+        if desired_num < len(regions):
+            idx = rng.choice(len(regions), size=desired_num, replace=False)
             return [regions[i] for i in idx]
-        repeats = (self.num_regions + len(regions) - 1) // len(regions)
-        tiled = (regions * repeats)[: self.num_regions]
+        repeats = (desired_num + len(regions) - 1) // len(regions)
+        tiled = (regions * repeats)[:desired_num]
         return tiled
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
@@ -496,9 +588,12 @@ class THUEACTDataset(Dataset):
             return self._get_token_variant(idx)
 
         if self.cache_token_max_samples > 0 and idx in self._token_cache:
-            cached = self._token_cache.pop(idx)
-            self._token_cache[idx] = cached
-            return cached
+            if self.cache_token_drop_prob > 0 and self.rng.random() < self.cache_token_drop_prob:
+                self._token_cache.pop(idx, None)
+            else:
+                cached = self._token_cache.pop(idx)
+                self._token_cache[idx] = cached
+                return cached
 
         events, seq_len_sec = self._load_events_cached(idx)
         if self.fixed_region_seed >= 0:
@@ -508,13 +603,16 @@ class THUEACTDataset(Dataset):
             rng = np.random.default_rng(seed)
         else:
             rng = self.rng
-        patches, metadata, counts, plane_ids = self._build_sample(events, seq_len_sec, rng)
+        patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
+            events, seq_len_sec, rng
+        )
 
         sample = {
             "patches": patches,
             "metadata": metadata,
             "event_counts": counts,
             "plane_ids": plane_ids,
+            "valid_mask": valid_mask,
         }
         if self.cache_token_max_samples > 0:
             self._token_cache[idx] = sample
@@ -533,23 +631,37 @@ class THUEACTDataset(Dataset):
     def _get_token_variant(self, idx: int) -> Dict[str, torch.Tensor]:
         variant = self._select_variant(idx)
         file_id = hashlib.sha1(str(self.files[idx]).encode("utf-8")).hexdigest()[:10]
+        cfg_tag = f"_{self.cache_token_config_id}" if self.cache_token_config_id else ""
         cache_path = (
-            self.cache_token_dir / f"thu_{self.split}_{idx:06d}_{file_id}_v{variant}.npz"
+            self.cache_token_dir
+            / f"thu_{self.split}_{idx:06d}_{file_id}{cfg_tag}_v{variant}.npz"
         )
         if cache_path.exists():
-            cached = np.load(cache_path)
-            sample = {
-                "patches": torch.from_numpy(cached["patches"]),
-                "metadata": torch.from_numpy(cached["metadata"]),
-                "event_counts": torch.from_numpy(cached["event_counts"]),
-                "plane_ids": torch.from_numpy(cached["plane_ids"]),
-            }
-            if self.return_label:
-                if "label" in cached:
-                    sample["label"] = torch.from_numpy(cached["label"])
+            if self.cache_token_drop_prob > 0 and self.rng.random() < self.cache_token_drop_prob:
+                try:
+                    cache_path.unlink()
+                except OSError:
+                    pass
+            else:
+                cached = np.load(cache_path)
+                sample = {
+                    "patches": torch.from_numpy(cached["patches"]),
+                    "metadata": torch.from_numpy(cached["metadata"]),
+                    "event_counts": torch.from_numpy(cached["event_counts"]),
+                    "plane_ids": torch.from_numpy(cached["plane_ids"]),
+                }
+                if "valid_mask" in cached:
+                    sample["valid_mask"] = torch.from_numpy(cached["valid_mask"])
                 else:
-                    sample["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
-            return sample
+                    sample["valid_mask"] = torch.ones(
+                        sample["patches"].shape[0], dtype=torch.float32
+                    )
+                if self.return_label:
+                    if "label" in cached:
+                        sample["label"] = torch.from_numpy(cached["label"])
+                    else:
+                        sample["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
+                return sample
 
         events, seq_len_sec = self._load_events_cached(idx)
         if self.fixed_region_seed >= 0:
@@ -558,7 +670,9 @@ class THUEACTDataset(Dataset):
         else:
             rng = self.rng
 
-        patches, metadata, counts, plane_ids = self._build_sample(events, seq_len_sec, rng)
+        patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
+            events, seq_len_sec, rng
+        )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             cache_path,
@@ -566,6 +680,7 @@ class THUEACTDataset(Dataset):
             metadata=metadata.numpy(),
             event_counts=counts.numpy(),
             plane_ids=plane_ids.numpy(),
+            valid_mask=valid_mask.numpy(),
             label=np.array(self.labels[idx], dtype=np.int64),
         )
         sample = {
@@ -573,6 +688,7 @@ class THUEACTDataset(Dataset):
             "metadata": metadata,
             "event_counts": counts,
             "plane_ids": plane_ids,
+            "valid_mask": valid_mask,
         }
         if self.return_label:
             sample["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
@@ -580,19 +696,22 @@ class THUEACTDataset(Dataset):
 
     def _build_sample(
         self, events: np.ndarray, seq_len_sec: float, rng: np.random.Generator
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         patches: List[torch.Tensor] = []
         metadata: List[torch.Tensor] = []
         counts: List[torch.Tensor] = []
         plane_ids: List[int] = []
 
+        desired_num = self.num_regions
+        if self.num_regions_choices:
+            desired_num = int(rng.choice(self.num_regions_choices))
         if self.fixed_single_region:
             region = self._sample_region(rng)
-            regions = [region] * self.num_regions
+            regions = [region] * desired_num
         elif self.region_sampling == "grid":
-            regions = self._select_regions(rng, self._grid_regions())
+            regions = self._select_regions(rng, self._grid_regions(), desired_num)
         else:
-            regions = [self._sample_region(rng) for _ in range(self.num_regions)]
+            regions = [self._sample_region(rng) for _ in range(desired_num)]
 
         for region in regions:
             patch, total_events = build_patch(
@@ -618,9 +737,33 @@ class THUEACTDataset(Dataset):
             )
             metadata.append(meta)
 
+        valid_count = len(patches)
+        if valid_count < self.max_regions:
+            pad = self.max_regions - valid_count
+            patches.extend(
+                [torch.zeros_like(patches[0]) for _ in range(pad)]
+                if patches
+                else [torch.zeros((2, self.patch_size, self.patch_size), dtype=torch.float32)]
+                * pad
+            )
+            metadata.extend([torch.zeros((9,), dtype=torch.float32) for _ in range(pad)])
+            counts.extend([torch.tensor([0.0], dtype=torch.float32) for _ in range(pad)])
+            plane_ids.extend([0 for _ in range(pad)])
+        valid_mask = torch.zeros((self.max_regions,), dtype=torch.float32)
+        valid_mask[:valid_count] = 1.0
+
         return (
             torch.stack(patches, dim=0),
             torch.stack(metadata, dim=0),
             torch.stack(counts, dim=0),
             torch.tensor(plane_ids, dtype=torch.long),
+            valid_mask,
         )
+
+    def _grid_region_count(self) -> int:
+        if self.grid_x <= 0 or self.grid_y <= 0 or self.grid_t <= 0:
+            return 0
+        count = self.grid_x * self.grid_y * self.grid_t
+        if self.grid_plane_mode == "all":
+            count *= len(self.plane_types)
+        return count

@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Subset
 from ecfm.models.mae import EventMAE
 from ecfm.data.event_dataset import THUEACTDataset
 from ecfm.training.linear_probe import load_split
-from ecfm.utils.config import load_config
+from ecfm.utils.config import config_hash, load_config
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,14 +30,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_num_tokens(cfg) -> int:
-    if cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0:
+    choices_max = max(cfg.data.num_regions_choices, default=0)
+    grid_count = 0
+    if cfg.data.grid_x > 0 and cfg.data.grid_y > 0 and cfg.data.grid_t > 0:
         grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
         if cfg.data.grid_plane_mode == "all":
             grid_count *= len(cfg.data.plane_types)
-        return grid_count
-    if cfg.data.num_regions <= 0:
+    num_tokens = max(
+        cfg.data.num_regions,
+        choices_max,
+        grid_count if cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0 else 0,
+    )
+    if num_tokens <= 0:
         raise ValueError("num_regions must be > 0 unless region_sampling=grid")
-    return cfg.data.num_regions
+    return num_tokens
 
 
 def build_model(cfg, device: torch.device) -> EventMAE:
@@ -105,6 +111,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
         grid_plane_mode=cfg.data.grid_plane_mode,
         plane_types=cfg.data.plane_types,
         num_regions=cfg.data.num_regions,
+        num_regions_choices=cfg.data.num_regions_choices,
         patch_size=cfg.model.patch_size,
         max_samples=0,
         max_events=cfg.data.max_events,
@@ -120,6 +127,8 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
         cache_token_dir=cfg.data.cache_token_dir,
         cache_token_variant_mode=cfg.data.cache_token_variant_mode,
         cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
+        cache_token_config_id=cfg.data.cache_token_config_id,
+        cache_token_drop_prob=cfg.data.cache_token_drop_prob,
         return_label=True,
     )
 
@@ -141,6 +150,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
         grid_plane_mode=cfg.data.grid_plane_mode,
         plane_types=cfg.data.plane_types,
         num_regions=cfg.data.num_regions,
+        num_regions_choices=cfg.data.num_regions_choices,
         patch_size=cfg.model.patch_size,
         max_samples=0,
         max_events=cfg.data.max_events,
@@ -156,6 +166,8 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
         cache_token_dir=cfg.data.cache_token_dir,
         cache_token_variant_mode=cfg.data.cache_token_variant_mode,
         cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
+        cache_token_config_id=cfg.data.cache_token_config_id,
+        cache_token_drop_prob=cfg.data.cache_token_drop_prob,
         return_label=True,
     )
 
@@ -195,9 +207,17 @@ def run_epoch(
         metadata = batch["metadata"].to(device)
         plane_ids = batch["plane_ids"].to(device)
         labels = batch["label"].to(device)
+        valid_mask = batch.get("valid_mask")
+        if valid_mask is not None:
+            valid_mask = valid_mask.to(device)
         with torch.set_grad_enabled(train_mode):
             encoded = model.encode(patches, metadata, plane_ids, mask=None)
-            pooled = encoded.mean(dim=1)
+            if valid_mask is None:
+                pooled = encoded.mean(dim=1)
+            else:
+                weights = valid_mask.unsqueeze(-1)
+                denom = weights.sum(dim=1).clamp(min=1.0)
+                pooled = (encoded * weights).sum(dim=1) / denom
             logits = head(pooled)
             loss = loss_fn(logits, labels)
             if train_mode:
@@ -213,7 +233,9 @@ def run_epoch(
 
 def main() -> None:
     args = parse_args()
-    cfg = load_config(Path(args.config))
+    cfg_path = Path(args.config)
+    cfg = load_config(cfg_path)
+    cfg.data.cache_token_config_id = config_hash(cfg_path)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_model(cfg, device)

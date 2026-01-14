@@ -56,15 +56,16 @@ data:
   region_scales_y: [64, 128, 192]
   region_time_scales: [0.25, 0.5, 0.75]
   region_sampling: grid
-  grid_x: 2
-  grid_y: 2
-  grid_t: 2
+  grid_x: 4
+  grid_y: 4
+  grid_t: 1
   grid_plane_mode: all
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
   num_regions: 0
-  subset_seed: 1733
-  fixed_region_seed: 1234
+  num_regions_choices: []
+  subset_seed: 0
+  fixed_region_seed: 0
   fixed_region_positions_global: false
   fixed_single_region: false
   patch_divider: 100.0
@@ -72,5 +73,6 @@ data:
   cache_token_max_samples: 0
   cache_token_dir: outputs/token_cache2
   cache_token_variant_mode: random
-  cache_token_clear_on_start: false
+  cache_token_clear_on_start: true
   cache_token_variants_per_sample: 1
+  cache_token_drop_prob: 0.0
