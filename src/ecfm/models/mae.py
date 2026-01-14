@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from .patch_encoder import PatchEncoder
+from .rel_attention import RelativeBias, RelTransformerEncoder
 
 
 class EventMAE(nn.Module):
@@ -24,11 +25,14 @@ class EventMAE(nn.Module):
         num_tokens: int,
         num_planes: int,
         use_pos_embedding: bool = True,
+        use_relative_bias: bool = False,
+        rel_bias_hidden_dim: int = 64,
     ) -> None:
         super().__init__()
         self.patch_size = patch_size
         self.num_tokens = num_tokens
         self.use_pos_embedding = use_pos_embedding
+        self.use_relative_bias = use_relative_bias
 
         self.patch_encoder = PatchEncoder(patch_size, embed_dim)
         self.metadata_mlp = nn.Sequential(
@@ -41,13 +45,22 @@ class EventMAE(nn.Module):
         self.pos_embedding = nn.Parameter(torch.zeros(1, num_tokens, embed_dim))
         self.mask_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=int(embed_dim * mlp_ratio),
-            batch_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        if self.use_relative_bias:
+            self.rel_bias = RelativeBias(num_heads=num_heads, hidden_dim=rel_bias_hidden_dim)
+            self.encoder = RelTransformerEncoder(
+                d_model=embed_dim,
+                nhead=num_heads,
+                mlp_ratio=mlp_ratio,
+                num_layers=num_layers,
+            )
+        else:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=num_heads,
+                dim_feedforward=int(embed_dim * mlp_ratio),
+                batch_first=True,
+            )
+            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         self.decoder_proj = nn.Linear(embed_dim, decoder_embed_dim)
         self.decoder_pos_embedding = nn.Parameter(
@@ -111,4 +124,7 @@ class EventMAE(nn.Module):
         if self.use_pos_embedding:
             token = token + self.pos_embedding
 
+        if self.use_relative_bias:
+            bias = self.rel_bias(metadata)
+            return self.encoder(token, attn_bias=bias)
         return self.encoder(token)

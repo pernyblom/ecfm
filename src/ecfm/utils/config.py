@@ -49,6 +49,8 @@ class ModelConfig:
     metadata_dim: int
     mask_ratio: float
     use_pos_embedding: bool
+    use_relative_bias: bool
+    rel_bias_hidden_dim: int
 
 
 @dataclass

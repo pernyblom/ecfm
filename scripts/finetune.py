@@ -29,7 +29,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def resolve_num_tokens(cfg) -> int:
+    if cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0:
+        grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
+        if cfg.data.grid_plane_mode == "all":
+            grid_count *= len(cfg.data.plane_types)
+        return grid_count
+    if cfg.data.num_regions <= 0:
+        raise ValueError("num_regions must be > 0 unless region_sampling=grid")
+    return cfg.data.num_regions
+
+
 def build_model(cfg, device: torch.device) -> EventMAE:
+    num_tokens = resolve_num_tokens(cfg)
     model = EventMAE(
         patch_size=cfg.model.patch_size,
         embed_dim=cfg.model.embed_dim,
@@ -41,9 +53,11 @@ def build_model(cfg, device: torch.device) -> EventMAE:
         mlp_ratio=cfg.model.mlp_ratio,
         plane_embed_dim=cfg.model.plane_embed_dim,
         metadata_dim=cfg.model.metadata_dim,
-        num_tokens=cfg.data.num_regions,
+        num_tokens=num_tokens,
         num_planes=len(cfg.data.plane_types),
         use_pos_embedding=cfg.model.use_pos_embedding,
+        use_relative_bias=cfg.model.use_relative_bias,
+        rel_bias_hidden_dim=cfg.model.rel_bias_hidden_dim,
     ).to(device)
     return model
 
@@ -51,6 +65,15 @@ def build_model(cfg, device: torch.device) -> EventMAE:
 def load_checkpoint(model: EventMAE, path: str, device: torch.device) -> None:
     state = torch.load(path, map_location=device, weights_only=True)
     state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
+    model_state = model.state_dict()
+    for key in ("pos_embedding", "decoder_pos_embedding"):
+        if key in state_dict and key in model_state:
+            if state_dict[key].shape != model_state[key].shape:
+                print(
+                    f"Warning: dropping {key} from checkpoint due to shape mismatch "
+                    f"{tuple(state_dict[key].shape)} vs {tuple(model_state[key].shape)}"
+                )
+                state_dict.pop(key)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
         print("Warning: checkpoint model keys mismatched.")
@@ -213,7 +236,7 @@ def main() -> None:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    best_acc = -1.0
+    best_val_acc = -1.0
     best_path = out_dir / "best.pt"
 
     for epoch in range(args.epochs):
@@ -223,15 +246,15 @@ def main() -> None:
             f"epoch={epoch} train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
         )
-        if val_acc > best_acc:
-            best_acc = val_acc
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
             torch.save(
                 {
                     "model": model.state_dict(),
                     "head": head.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "epoch": epoch,
-                    "best_val_acc": best_acc,
+                    "best_val_acc": best_val_acc,
                 },
                 best_path,
             )
@@ -244,7 +267,7 @@ def main() -> None:
             "head": head.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": args.epochs - 1,
-            "best_val_acc": best_acc,
+            "best_val_acc": best_val_acc,
         },
         last_path,
     )

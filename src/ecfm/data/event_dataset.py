@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -531,7 +532,10 @@ class THUEACTDataset(Dataset):
 
     def _get_token_variant(self, idx: int) -> Dict[str, torch.Tensor]:
         variant = self._select_variant(idx)
-        cache_path = self.cache_token_dir / f"thu_{idx:06d}_v{variant}.npz"
+        file_id = hashlib.sha1(str(self.files[idx]).encode("utf-8")).hexdigest()[:10]
+        cache_path = (
+            self.cache_token_dir / f"thu_{self.split}_{idx:06d}_{file_id}_v{variant}.npz"
+        )
         if cache_path.exists():
             cached = np.load(cache_path)
             sample = {

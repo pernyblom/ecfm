@@ -37,6 +37,8 @@ model:
   metadata_dim: 9
   mask_ratio: 0.6
   use_pos_embedding: false
+  use_relative_bias: false
+  rel_bias_hidden_dim: 64
 
 data:
   dataset_name: "synthetic"

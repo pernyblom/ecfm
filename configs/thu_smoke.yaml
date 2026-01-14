@@ -37,6 +37,8 @@ model:
   metadata_dim: 9
   mask_ratio: 0.4
   use_pos_embedding: false
+  use_relative_bias: true
+  rel_bias_hidden_dim: 64
 
 data:
   dataset_name: "thu-eact"
@@ -60,8 +62,8 @@ data:
   grid_plane_mode: cycle
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
-  num_regions: 16
-  subset_seed: 1733
+  num_regions: 0
+  subset_seed: 17336
   fixed_region_seed: -1
   fixed_region_positions_global: false
   fixed_single_region: false

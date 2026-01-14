@@ -124,6 +124,8 @@ def build_model(cfg: Config) -> EventMAE:
         num_tokens=cfg.data.num_regions,
         num_planes=len(cfg.data.plane_types),
         use_pos_embedding=cfg.model.use_pos_embedding,
+        use_relative_bias=cfg.model.use_relative_bias,
+        rel_bias_hidden_dim=cfg.model.rel_bias_hidden_dim,
     )
 
 
