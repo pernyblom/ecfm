@@ -4,7 +4,7 @@ train:
   lr: 0.0002
   device: cuda
   seed: 0
-  recon_every: 200
+  recon_every: 500
   recon_num_patches: 8
   recon_out_dir: outputs/recon
   recon_upscale: 8
@@ -20,7 +20,7 @@ train:
   patch_loss_blur_radius: 1
   count_loss_weight: 0.0
   checkpoint_dir: outputs/checkpoints
-  checkpoint_every: 200
+  checkpoint_every: 1000
   resume_path: ""
   load_model_only: false
 

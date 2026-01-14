@@ -8,7 +8,7 @@ __pycache__/
 .ruff_cache/
 .idea/
 .vscode/
-data/
+./data/
 datasets/
 outputs/
 *.pt
