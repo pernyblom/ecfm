@@ -93,6 +93,8 @@ def build_patch(
     patch_size: int,
     time_bins: int,
     patch_divider: float = 0.0,
+    norm_mode: str = "region_max",
+    norm_eps: float = 1e-6,
 ) -> Tuple[torch.Tensor, float]:
     if region.plane == "xy":
         hist0 = _histogram_xy(events, region, time_bins, polarity=0)
@@ -110,13 +112,31 @@ def build_patch(
     if patch_divider > 0:
         hist0 = hist0 / patch_divider
         hist1 = hist1 / patch_divider
-    else:
+    elif norm_mode == "region_max":
         max0 = float(hist0.max()) if hist0.size > 0 else 0.0
         max1 = float(hist1.max()) if hist1.size > 0 else 0.0
         if max0 > 0:
             hist0 = hist0 / max0
         if max1 > 0:
             hist1 = hist1 / max1
+    elif norm_mode == "region_sum":
+        sum0 = float(hist0.sum()) if hist0.size > 0 else 0.0
+        sum1 = float(hist1.sum()) if hist1.size > 0 else 0.0
+        if sum0 > 0:
+            hist0 = hist0 / sum0
+        if sum1 > 0:
+            hist1 = hist1 / sum1
+    elif norm_mode == "region_mean":
+        mean0 = float(hist0.mean()) if hist0.size > 0 else 0.0
+        mean1 = float(hist1.mean()) if hist1.size > 0 else 0.0
+        if mean0 > norm_eps:
+            hist0 = hist0 / mean0
+        if mean1 > norm_eps:
+            hist1 = hist1 / mean1
+    elif norm_mode == "none":
+        pass
+    else:
+        raise ValueError(f"Unknown patch normalization mode: {norm_mode}")
     hist = np.stack([hist0, hist1], axis=0)
     hist_t = torch.from_numpy(hist).unsqueeze(0)
     patch = F.interpolate(hist_t, size=(patch_size, patch_size), mode="bilinear", align_corners=False)

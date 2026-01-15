@@ -33,6 +33,7 @@ def main() -> None:
     cfg_path = Path(args.config)
     cfg = load_config(cfg_path)
     cfg.data.cache_token_config_id = config_hash(cfg_path)
+    ckpt_tag = f"{cfg_path.stem}_{cfg.data.cache_token_config_id}"
 
     torch.manual_seed(cfg.train.seed)
     if cfg.train.device.startswith("cuda") and not torch.cuda.is_available():
@@ -141,13 +142,13 @@ def main() -> None:
         if cfg.train.checkpoint_every > 0 and step % cfg.train.checkpoint_every == 0:
             ckpt_dir = Path(cfg.train.checkpoint_dir)
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-            ckpt_path = ckpt_dir / f"step_{step:06d}.pt"
+            ckpt_path = ckpt_dir / f"{ckpt_tag}_step_{step:06d}.pt"
             torch.save(
                 {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step},
                 ckpt_path,
             )
             print(f"Saved checkpoint {ckpt_path}")
-            last_path = ckpt_dir / "last.pt"
+            last_path = ckpt_dir / f"{ckpt_tag}_last.pt"
             torch.save(
                 {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": step},
                 last_path,
@@ -226,7 +227,7 @@ def main() -> None:
     if cfg.train.checkpoint_every >= 0:
         ckpt_dir = Path(cfg.train.checkpoint_dir)
         ckpt_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_path = ckpt_dir / "last.pt"
+        ckpt_path = ckpt_dir / f"{ckpt_tag}_last.pt"
         torch.save(
             {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "step": cfg.train.num_steps - 1},
             ckpt_path,

@@ -33,6 +33,29 @@ def load_split(root: Path, split: str) -> List[Tuple[Path, int]]:
     return entries
 
 
+def load_dvslip_split(
+    root: Path, split: str, class_to_idx: dict[str, int] | None = None
+) -> Tuple[List[Tuple[Path, int]], dict[str, int]]:
+    split_dir = root / split
+    if not split_dir.exists():
+        raise FileNotFoundError(f"Missing split directory: {split_dir}")
+    class_dirs = sorted([p for p in split_dir.iterdir() if p.is_dir()])
+    if not class_dirs:
+        raise FileNotFoundError(f"No class folders found in {split_dir}")
+    if class_to_idx is None:
+        class_to_idx = {p.name: idx for idx, p in enumerate(class_dirs)}
+    entries: List[Tuple[Path, int]] = []
+    for class_dir in class_dirs:
+        if class_dir.name not in class_to_idx:
+            continue
+        label = class_to_idx[class_dir.name]
+        for path in sorted(class_dir.glob("*.npy")):
+            entries.append((path, label))
+    if not entries:
+        raise FileNotFoundError(f"No .npy files found in {split_dir}")
+    return entries, class_to_idx
+
+
 def sample_region(
     rng: np.random.Generator,
     image_width: int,
@@ -99,9 +122,21 @@ def grid_regions(
 
 
 def load_events(path: Path, time_unit: float) -> Tuple[np.ndarray, float]:
-    events = np.load(path).astype(np.float32)
-    if events.ndim != 2 or events.shape[1] != 4:
-        raise ValueError(f"Unexpected event shape in {path}: {events.shape}")
+    events = np.load(path)
+    if events.dtype.fields is not None:
+        x = events["x"].astype(np.float32)
+        y = events["y"].astype(np.float32)
+        t = events["t"].astype(np.float32)
+        p = events["p"].astype(np.float32)
+        if p.min() < 0:
+            p = (p > 0).astype(np.float32)
+        events = np.stack([x, y, t, p], axis=1)
+    else:
+        events = events.astype(np.float32)
+        if events.ndim != 2 or events.shape[1] != 4:
+            raise ValueError(f"Unexpected event shape in {path}: {events.shape}")
+        if events[:, 3].min() < 0:
+            events[:, 3] = (events[:, 3] > 0).astype(np.float32)
     t = events[:, 2]
     t_min = float(t.min())
     t_max = float(t.max())
@@ -189,6 +224,8 @@ def build_token_cache(
                 cfg.model.patch_size,
                 cfg.data.time_bins,
                 patch_divider=cfg.data.patch_divider,
+                norm_mode=cfg.data.patch_norm,
+                norm_eps=cfg.data.patch_norm_eps,
             )
             patches.append(patch.numpy())
             plane_ids.append(cfg.data.plane_types.index(region.plane))

@@ -7,7 +7,9 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from ecfm.data.event_dataset import SyntheticEventDataset, THUEACTDataset
+from ecfm.data.synthetic_dataset import SyntheticEventDataset
+from ecfm.data.thu_eact_dataset import THUEACTDataset
+from ecfm.data.dvs_lip_dataset import DVSLipDataset
 from ecfm.models.mae import EventMAE
 from ecfm.utils.config import Config
 from ecfm.utils.masking import random_mask
@@ -51,6 +53,8 @@ def build_dataloader(cfg: Config) -> DataLoader:
             rng_seed=cfg.train.seed,
             fixed_region_seed=cfg.data.fixed_region_seed,
             patch_divider=cfg.data.patch_divider,
+            patch_norm=cfg.data.patch_norm,
+            patch_norm_eps=cfg.data.patch_norm_eps,
             fixed_region_sizes=cfg.data.fixed_region_sizes,
             fixed_region_positions_global=cfg.data.fixed_region_positions_global,
             fixed_single_region=cfg.data.fixed_single_region,
@@ -98,6 +102,58 @@ def build_dataloader(cfg: Config) -> DataLoader:
             subset_seed=cfg.data.subset_seed,
             fixed_region_seed=cfg.data.fixed_region_seed,
             patch_divider=cfg.data.patch_divider,
+            patch_norm=cfg.data.patch_norm,
+            patch_norm_eps=cfg.data.patch_norm_eps,
+            fixed_region_sizes=cfg.data.fixed_region_sizes,
+            fixed_region_positions_global=cfg.data.fixed_region_positions_global,
+            fixed_single_region=cfg.data.fixed_single_region,
+            cache_max_samples=cfg.data.cache_max_samples,
+            cache_token_max_samples=cfg.data.cache_token_max_samples,
+            cache_token_variants_per_sample=cfg.data.cache_token_variants_per_sample,
+            cache_token_dir=cfg.data.cache_token_dir,
+            cache_token_variant_mode=cfg.data.cache_token_variant_mode,
+            cache_token_clear_on_start=cfg.data.cache_token_clear_on_start,
+            cache_token_config_id=cfg.data.cache_token_config_id,
+            cache_token_drop_prob=cfg.data.cache_token_drop_prob,
+        )
+    elif cfg.data.dataset_name == "dvs-lip":
+        if cfg.data.cache_token_variants_per_sample > 0 and cfg.data.fixed_region_seed < 0:
+            print(
+                "Warning: cache_token_variants_per_sample is enabled but fixed_region_seed < 0; "
+                "token variants will not be reproducible across runs."
+            )
+        if cfg.data.cache_token_max_samples > 0 and cfg.data.fixed_region_seed < 0:
+            print(
+                "Warning: cache_token_max_samples is enabled but fixed_region_seed < 0; "
+                "token caching will freeze randomly sampled regions."
+            )
+        dataset = DVSLipDataset(
+            root=cfg.data.dataset_path,
+            split=cfg.data.split,
+            image_width=cfg.data.image_width,
+            image_height=cfg.data.image_height,
+            time_unit=cfg.data.time_unit,
+            time_bins=cfg.data.time_bins,
+            region_scales=cfg.data.region_scales,
+            region_scales_x=cfg.data.region_scales_x,
+            region_scales_y=cfg.data.region_scales_y,
+            region_time_scales=cfg.data.region_time_scales,
+            region_sampling=cfg.data.region_sampling,
+            grid_x=cfg.data.grid_x,
+            grid_y=cfg.data.grid_y,
+            grid_t=cfg.data.grid_t,
+            grid_plane_mode=cfg.data.grid_plane_mode,
+            plane_types=cfg.data.plane_types,
+            num_regions=cfg.data.num_regions,
+            num_regions_choices=cfg.data.num_regions_choices,
+            patch_size=cfg.model.patch_size,
+            max_samples=cfg.data.max_samples,
+            max_events=cfg.data.max_events,
+            subset_seed=cfg.data.subset_seed,
+            fixed_region_seed=cfg.data.fixed_region_seed,
+            patch_divider=cfg.data.patch_divider,
+            patch_norm=cfg.data.patch_norm,
+            patch_norm_eps=cfg.data.patch_norm_eps,
             fixed_region_sizes=cfg.data.fixed_region_sizes,
             fixed_region_positions_global=cfg.data.fixed_region_positions_global,
             fixed_single_region=cfg.data.fixed_single_region,
@@ -228,7 +284,7 @@ def train_one_epoch(
         masked_count_loss = torch.tensor(0.0, device=device)
         if count_loss_weight > 0:
             pred_counts_pos = F.softplus(pred_counts)
-            count_target = torch.log1p(counts)
+            count_target = counts
             count_pred = torch.log1p(pred_counts_pos)
             masked_count_loss = l1(
                 count_pred * mask.unsqueeze(-1), count_target * mask.unsqueeze(-1)

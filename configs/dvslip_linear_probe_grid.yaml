@@ -1,4 +1,4 @@
-train:
+﻿train:
   batch_size: 16
   num_steps: 1
   lr: 0.0002
@@ -41,24 +41,24 @@ model:
   rel_bias_hidden_dim: 64
 
 data:
-  dataset_name: "thu-eact"
-  dataset_path: "datasets/THU-EACT-50-CHL"
+  dataset_name: "dvs-lip"
+  dataset_path: "datasets/DVS-Lip"
   split: "train"
   num_samples: 0
-  max_samples: 32
+  max_samples: 0
   max_events: 0
-  image_width: 346
-  image_height: 260
+  image_width: 128
+  image_height: 128
   time_unit: 0.000001
   time_bins: 64
-  region_scales: [64, 128, 192]
-  region_scales_x: [64, 128, 192]
-  region_scales_y: [64, 128, 192]
-  region_time_scales: [0.25, 0.5, 0.75]
+  region_scales: [32, 64]
+  region_scales_x: [32, 64]
+  region_scales_y: [32, 64]
+  region_time_scales: [0.25, 0.5]
   region_sampling: grid
-  grid_x: 4
-  grid_y: 4
-  grid_t: 1
+  grid_x: 1
+  grid_y: 1
+  grid_t: 4
   grid_plane_mode: all
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
@@ -68,12 +68,12 @@ data:
   fixed_region_seed: 0
   fixed_region_positions_global: false
   fixed_single_region: false
-  patch_divider: 0
+  patch_divider: 0.0
   patch_norm: region_max
   patch_norm_eps: 1e-6
   cache_max_samples: 0
   cache_token_max_samples: 0
-  cache_token_dir: outputs/token_cache2
+  cache_token_dir: outputs/token_cache_dvslip
   cache_token_variant_mode: random
   cache_token_clear_on_start: true
   cache_token_variants_per_sample: 1

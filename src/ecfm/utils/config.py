@@ -84,6 +84,8 @@ class DataConfig:
     fixed_region_positions_global: bool
     fixed_single_region: bool
     patch_divider: float
+    patch_norm: str
+    patch_norm_eps: float
     cache_max_samples: int
     cache_token_max_samples: int
     cache_token_variants_per_sample: int
@@ -107,6 +109,8 @@ def load_config(path: str | Path) -> Config:
     data.setdefault("cache_token_config_id", "")
     data.setdefault("cache_token_drop_prob", 0.0)
     data.setdefault("num_regions_choices", [])
+    data.setdefault("patch_norm", "region_max")
+    data.setdefault("patch_norm_eps", 1e-6)
     return Config(
         train=TrainConfig(**raw["train"]),
         model=ModelConfig(**raw["model"]),

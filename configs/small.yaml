@@ -67,7 +67,9 @@ data:
   fixed_region_seed: -1
   fixed_region_positions_global: false
   fixed_single_region: false
-  patch_divider: 100.0
+  patch_divider: 0.0
+  patch_norm: region_max
+  patch_norm_eps: 1e-6
   cache_max_samples: 0
   cache_token_max_samples: 0
   cache_token_variants_per_sample: 0

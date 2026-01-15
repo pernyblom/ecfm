@@ -1,0 +1,122 @@
+﻿\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{graphicx}
+
+\title{Event Camera Foundation Model Pipeline}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+This document describes the current pipeline for the event camera foundation model. It covers
+(1) tokenization from event streams to spatiotemporal patches, (2) metadata encoding,
+(3) the MAE-style model, and (4) downstream evaluation via linear probing and finetuning.
+
+\section{Event Representation and Tokenization}
+We represent an event stream as tuples $e_k = (x_k, y_k, t_k, p_k)$, where $p_k \in \{0,1\}$
+indicates polarity. Each training sample corresponds to a sequence that is normalized in time
+to $t \in [0,1]$; the real sequence duration $T$ (seconds) is retained.
+
+\subsection{Regions}
+A region token is defined by
+\begin{equation}
+  r = (x, y, t, d_x, d_y, d_t, \text{plane}),
+\end{equation}
+where $(x,y)$ is the top-left spatial coordinate, $(d_x, d_y)$ is spatial extent, $t$ is
+start time, $d_t$ is temporal extent, and \texttt{plane} $\in \{xy, xt, yt\}$ selects the
+projection plane. Regions are sampled either randomly or on a grid. The number of regions per
+sample can be fixed or drawn from a list of allowed values.
+
+\subsection{Histogram Projections}
+For each region and polarity, we build a histogram $H$ on a chosen plane:
+\begin{itemize}
+  \item $xy$: 2D histogram over $(x,y)$ within the region.
+  \item $xt$: 2D histogram over $(x,t)$ with $t$ discretized into $B$ bins.
+  \item $yt$: 2D histogram over $(y,t)$ with $t$ discretized into $B$ bins.
+\end{itemize}
+Each region yields two channels, one per polarity. The histogram is resized to a
+$P \times P$ patch using bilinear interpolation.
+
+\subsection{Patch Normalization}
+Let $H_0$ and $H_1$ be the two polarity histograms. The normalization mode is configurable:
+\begin{itemize}
+  \item \texttt{region\_max}: divide each polarity by its own maximum.
+  \item \texttt{region\_sum}: divide each polarity by its own sum.
+  \item \texttt{region\_mean}: divide each polarity by its own mean.
+  \item \texttt{none}: no normalization.
+\end{itemize}
+A legacy global divider \texttt{patch\_divider} can be used to override these modes.
+
+\subsection{Token Content and Log-Rate}
+Each patch also carries a scalar log-rate target:
+\begin{equation}
+  \text{rate} = \frac{N}{d_x d_y (d_t T)} ,\quad \text{log\_rate} = \log(1 + \text{rate}),
+\end{equation}
+where $N$ is the total number of events in the region across both polarities.
+The model predicts \texttt{log\_rate} per token.
+
+\section{Metadata Encoding}
+For each region we construct a metadata vector
+\begin{equation}
+  m = \left[\frac{x}{W}, \frac{y}{H}, \frac{d_x}{W}, \frac{d_y}{H},
+  t, d_t, tT, d_t T, T\right],
+\end{equation}
+where $W,H$ are sensor dimensions and $T$ is the sequence duration in seconds. The metadata
+is passed through a small MLP and added to the token embedding. A learned plane embedding is
+added based on \texttt{plane}.
+
+\section{Masked Autoencoder (MAE)}
+Let $z_i$ be the patch embedding for token $i$ (after the patch encoder), and let $m_i$ be
+the metadata embedding. The encoder input is
+\begin{equation}
+  u_i = z_i + m_i + e_{\text{plane}(i)} + e_{\text{pos}(i)},
+\end{equation}
+where $e_{\text{pos}}$ is an optional learned positional embedding. A binary mask $M$ selects
+which tokens are masked. Masked tokens use a learned mask embedding for the patch component;
+metadata, plane, and position embeddings are still added so the model knows which region is
+missing.
+
+The transformer encoder produces token embeddings that are projected to a decoder dimension
+and fed to a transformer decoder. The decoder outputs:
+\begin{itemize}
+  \item reconstructed patches for masked tokens,
+  \item a scalar prediction for \texttt{log\_rate} for each token.
+\end{itemize}
+The reconstruction loss is computed on masked tokens only.
+
+\subsection{Relative Attention Bias (Optional)}
+We optionally add a relative attention bias computed from pairwise region deltas. Given two
+regions $i$ and $j$, we compute normalized deltas and log-scale ratios from their metadata and
+pass them through an MLP to produce a per-head bias that is added to attention logits. This
+enables variable region layouts without fixed positional indices.
+
+\section{Training Objective}
+The total loss is
+\begin{equation}
+  \mathcal{L} = \mathcal{L}_{\text{patch}} + \lambda \mathcal{L}_{\text{rate}},
+\end{equation}
+where $\mathcal{L}_{\text{patch}}$ is MSE on masked patches (optionally with Gaussian blur),
+$\mathcal{L}_{\text{rate}}$ is an L1 loss on \texttt{log\_rate}, and $\lambda$ is
+\texttt{count\_loss\_weight}.
+
+\section{Downstream Evaluation}
+\subsection{Linear Probing}
+A linear probe is trained on top of frozen encoder embeddings. For each sample, token
+embeddings are averaged (or weighted by a valid-token mask when variable region counts are
+used) and fed to a linear classifier. Caching is used to avoid recomputing tokenization.
+
+\subsection{Finetuning}
+Finetuning trains both the encoder and a classification head, using a train/validation split
+for model selection. The best checkpoint (by validation accuracy) is evaluated on a test split.
+
+\section{Caching}
+Token caches can be kept in memory or on disk. Cache keys include a hash of the YAML
+configuration plus per-sample identifiers. An optional cache-drop probability allows refreshing
+a fraction of cached tokens over time.
+
+\end{document}

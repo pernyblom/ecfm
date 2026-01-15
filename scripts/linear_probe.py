@@ -10,7 +10,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from ecfm.models.mae import EventMAE
 from ecfm.utils.config import config_hash, load_config
-from ecfm.training.linear_probe import build_token_cache, compute_embeddings, load_split
+from ecfm.training.linear_probe import (
+    build_token_cache,
+    compute_embeddings,
+    load_dvslip_split,
+    load_split,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -41,8 +46,8 @@ def main() -> None:
     cfg = load_config(cfg_path)
     cfg_hash = config_hash(cfg_path)
 
-    if cfg.data.dataset_name != "thu-eact":
-        raise ValueError("linear_probe currently supports thu-eact only")
+    if cfg.data.dataset_name not in ("thu-eact", "dvs-lip"):
+        raise ValueError("linear_probe currently supports thu-eact or dvs-lip only")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     regions_per_sample = args.regions_per_sample
@@ -108,8 +113,12 @@ def main() -> None:
         print("Warning: no checkpoint provided, using random weights.")
 
     root = Path(cfg.data.dataset_path)
-    train_entries = load_split(root, args.train_split)
-    test_entries = load_split(root, args.test_split)
+    if cfg.data.dataset_name == "thu-eact":
+        train_entries = load_split(root, args.train_split)
+        test_entries = load_split(root, args.test_split)
+    else:
+        train_entries, class_to_idx = load_dvslip_split(root, args.train_split)
+        test_entries, _ = load_dvslip_split(root, args.test_split, class_to_idx=class_to_idx)
 
     if args.val_split > 0.0:
         full_train_entries = train_entries
