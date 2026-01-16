@@ -72,6 +72,9 @@ data:
   patch_divider: 0.0
   patch_norm: region_max
   patch_norm_eps: 1e-6
+  augmentations: []
+  rotation_max_deg: 0.0
+  augmentation_invalidate_prob: 0.0
   cache_max_samples: 0
   cache_token_max_samples: 0
   cache_token_variants_per_sample: 4

@@ -87,6 +87,9 @@ class DataConfig:
     patch_divider: float
     patch_norm: str
     patch_norm_eps: float
+    augmentations: list[str]
+    rotation_max_deg: float
+    augmentation_invalidate_prob: float
     cache_max_samples: int
     cache_token_max_samples: int
     cache_token_variants_per_sample: int
@@ -113,6 +116,9 @@ def load_config(path: str | Path) -> Config:
     data.setdefault("patch_norm", "region_max")
     data.setdefault("patch_norm_eps", 1e-6)
     data.setdefault("plane_types_active", [])
+    data.setdefault("augmentations", [])
+    data.setdefault("rotation_max_deg", 0.0)
+    data.setdefault("augmentation_invalidate_prob", 0.0)
     return Config(
         train=TrainConfig(**raw["train"]),
         model=ModelConfig(**raw["model"]),

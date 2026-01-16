@@ -62,7 +62,7 @@ data:
   grid_plane_mode: all
   fixed_region_sizes: false
   plane_types: ["xy_m45", "xy_p45", "yt"]
-  plane_types_active: ["xy_m45", "xy_p45"]
+  plane_types_active: ["xy_p45", "yt"]
   num_regions: 0
   num_regions_choices: []
   subset_seed: 0
@@ -72,6 +72,9 @@ data:
   patch_divider: 0
   patch_norm: region_max
   patch_norm_eps: 1e-6
+  augmentations: []
+  rotation_max_deg: 0.0
+  augmentation_invalidate_prob: 0.0
   cache_max_samples: 0
   cache_token_max_samples: 0
   cache_token_dir: outputs/token_cache2

@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import Dataset
 
 from .tokenizer import Region, build_patch
+from .augmentation import rotate_events
 
 
 @dataclass
@@ -50,6 +51,9 @@ class SyntheticEventDataset(Dataset):
         patch_divider: float = 0.0,
         patch_norm: str = "region_max",
         patch_norm_eps: float = 1e-6,
+        augmentations: List[str] | None = None,
+        rotation_max_deg: float = 0.0,
+        augmentation_invalidate_prob: float = 0.0,
         fixed_region_sizes: bool = False,
         fixed_region_positions_global: bool = False,
         fixed_single_region: bool = False,
@@ -88,6 +92,9 @@ class SyntheticEventDataset(Dataset):
         self.patch_divider = patch_divider
         self.patch_norm = patch_norm
         self.patch_norm_eps = patch_norm_eps
+        self.augmentations = [a.lower() for a in (augmentations or [])]
+        self.rotation_max_deg = float(rotation_max_deg)
+        self.augmentation_invalidate_prob = float(augmentation_invalidate_prob)
         self.fixed_region_sizes = fixed_region_sizes
         self.fixed_region_positions_global = fixed_region_positions_global
         self.fixed_single_region = fixed_single_region
@@ -193,6 +200,8 @@ class SyntheticEventDataset(Dataset):
         return tiled
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        if self.augmentation_invalidate_prob > 0 and self.rng.random() < self.augmentation_invalidate_prob:
+            self._invalidate_token_cache(idx)
         if self.cache_token_variants_per_sample > 0:
             return self._get_token_variant(idx)
 
@@ -213,6 +222,7 @@ class SyntheticEventDataset(Dataset):
             rng = np.random.default_rng(seed)
         else:
             rng = self.rng
+        events = self._apply_augmentations(events, rng)
         patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
             events, seq_len_sec, rng
         )
@@ -271,6 +281,7 @@ class SyntheticEventDataset(Dataset):
         else:
             rng = self.rng
 
+        events = self._apply_augmentations(events, rng)
         patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
             events, seq_len_sec, rng
         )
@@ -375,3 +386,23 @@ class SyntheticEventDataset(Dataset):
         if self.grid_plane_mode == "all":
             count *= len(self.plane_types_active)
         return count
+
+    def _apply_augmentations(self, events: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        if not self.augmentations:
+            return events
+        if "rotate" in self.augmentations and self.rotation_max_deg > 0:
+            angle = float(rng.uniform(-self.rotation_max_deg, self.rotation_max_deg))
+            events = rotate_events(events, (self.image_height, self.image_width), angle)
+        return events
+
+    def _invalidate_token_cache(self, idx: int) -> None:
+        if self.cache_token_max_samples > 0:
+            self._token_cache.pop(idx, None)
+        if self.cache_token_variants_per_sample > 0:
+            cfg_tag = f"_{self.cache_token_config_id}" if self.cache_token_config_id else ""
+            pattern = f"synthetic_{idx:06d}{cfg_tag}_v*.npz"
+            for path in self.cache_token_dir.glob(pattern):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
