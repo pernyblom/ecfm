@@ -60,6 +60,7 @@ class SyntheticEventDataset(Dataset):
         augmentations: List[str] | None = None,
         rotation_max_deg: float = 0.0,
         augmentation_invalidate_prob: float = 0.0,
+        apply_augmentations: bool = True,
         fixed_region_sizes: bool = False,
         fixed_region_positions_global: bool = False,
         fixed_single_region: bool = False,
@@ -101,6 +102,7 @@ class SyntheticEventDataset(Dataset):
         self.augmentations = [a.lower() for a in (augmentations or [])]
         self.rotation_max_deg = float(rotation_max_deg)
         self.augmentation_invalidate_prob = float(augmentation_invalidate_prob)
+        self.apply_augmentations = bool(apply_augmentations)
         self.fixed_region_sizes = fixed_region_sizes
         self.fixed_region_positions_global = fixed_region_positions_global
         self.fixed_single_region = fixed_single_region
@@ -176,7 +178,11 @@ class SyntheticEventDataset(Dataset):
         return select_regions(rng, regions, desired_num)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        if self.augmentation_invalidate_prob > 0 and self.rng.random() < self.augmentation_invalidate_prob:
+        if (
+            self.apply_augmentations
+            and self.augmentation_invalidate_prob > 0
+            and self.rng.random() < self.augmentation_invalidate_prob
+        ):
             self._invalidate_token_cache(idx)
         if self.cache_token_variants_per_sample > 0:
             return self._get_token_variant(idx)
@@ -198,7 +204,8 @@ class SyntheticEventDataset(Dataset):
             rng = np.random.default_rng(seed)
         else:
             rng = self.rng
-        events = self._apply_augmentations(events, rng)
+        if self.apply_augmentations:
+            events = self._apply_augmentations(events, rng)
         patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
             events, seq_len_sec, rng
         )
@@ -257,7 +264,8 @@ class SyntheticEventDataset(Dataset):
         else:
             rng = self.rng
 
-        events = self._apply_augmentations(events, rng)
+        if self.apply_augmentations:
+            events = self._apply_augmentations(events, rng)
         patches, metadata, counts, plane_ids, valid_mask = self._build_sample(
             events, seq_len_sec, rng
         )
