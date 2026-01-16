@@ -77,6 +77,7 @@ class DataConfig:
     grid_plane_mode: str
     fixed_region_sizes: bool
     plane_types: list[str]
+    plane_types_active: list[str]
     num_regions: int
     num_regions_choices: list[int]
     subset_seed: int
@@ -111,6 +112,7 @@ def load_config(path: str | Path) -> Config:
     data.setdefault("num_regions_choices", [])
     data.setdefault("patch_norm", "region_max")
     data.setdefault("patch_norm_eps", 1e-6)
+    data.setdefault("plane_types_active", [])
     return Config(
         train=TrainConfig(**raw["train"]),
         model=ModelConfig(**raw["model"]),

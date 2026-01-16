@@ -175,6 +175,7 @@ def build_token_cache(
     labels = []
 
     grid_list = None
+    plane_types_active = cfg.data.plane_types_active or cfg.data.plane_types
     if cfg.data.region_sampling == "grid":
         grid_list = grid_regions(
             cfg.data.image_width,
@@ -182,7 +183,7 @@ def build_token_cache(
             cfg.data.grid_x,
             cfg.data.grid_y,
             cfg.data.grid_t,
-            cfg.data.plane_types,
+            plane_types_active,
             cfg.data.grid_plane_mode,
         )
 

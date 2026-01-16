@@ -47,6 +47,7 @@ def build_dataloader(cfg: Config) -> DataLoader:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
@@ -94,6 +95,7 @@ def build_dataloader(cfg: Config) -> DataLoader:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
@@ -144,6 +146,7 @@ def build_dataloader(cfg: Config) -> DataLoader:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
@@ -177,7 +180,8 @@ def resolve_num_tokens(cfg: Config) -> int:
     if cfg.data.grid_x > 0 and cfg.data.grid_y > 0 and cfg.data.grid_t > 0:
         grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
         if cfg.data.grid_plane_mode == "all":
-            grid_count *= len(cfg.data.plane_types)
+            active_planes = cfg.data.plane_types_active or cfg.data.plane_types
+            grid_count *= len(active_planes)
     num_tokens = max(
         cfg.data.num_regions,
         choices_max,

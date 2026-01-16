@@ -62,6 +62,7 @@ data:
   grid_plane_mode: all
   fixed_region_sizes: false
   plane_types: ["xt", "yt"]
+  plane_types_active: []
   num_regions: 0
   num_regions_choices: []
   subset_seed: 0

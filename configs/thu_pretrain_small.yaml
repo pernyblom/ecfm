@@ -26,11 +26,11 @@ train:
 
 model:
   patch_size: 32
-  embed_dim: 256
-  num_heads: 4
-  num_layers: 6
-  decoder_embed_dim: 256
-  decoder_num_heads: 4
+  embed_dim: 384
+  num_heads: 6
+  num_layers: 12
+  decoder_embed_dim: 96
+  decoder_num_heads: 6
   decoder_num_layers: 4
   mlp_ratio: 4.0
   plane_embed_dim: 64
@@ -58,10 +58,11 @@ data:
   region_sampling: random
   grid_x: 4
   grid_y: 4
-  grid_t: 4
+  grid_t: 1
   grid_plane_mode: cycle
   fixed_region_sizes: false
-  plane_types: ["xt", "yt"]
+  plane_types: ["xy_m45", "xy_p45", "yt"]
+  plane_types_active: []
   num_regions: 0
   num_regions_choices: [8, 16, 32]
   subset_seed: 17336

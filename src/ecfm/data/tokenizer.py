@@ -87,6 +87,47 @@ def _histogram_yt(
     return hist
 
 
+def _histogram_xy_rot(
+    events: np.ndarray, region: Region, time_bins: int, polarity: int, angle_deg: float
+) -> np.ndarray:
+    mask = (
+        (events[:, 0] >= region.x)
+        & (events[:, 0] < region.x + region.dx)
+        & (events[:, 1] >= region.y)
+        & (events[:, 1] < region.y + region.dy)
+        & (events[:, 2] >= region.t)
+        & (events[:, 2] < region.t + region.dt)
+        & (events[:, 3] == polarity)
+    )
+    sub = events[mask]
+    if sub.shape[0] == 0:
+        return np.zeros((time_bins, region.dx), dtype=np.float32)
+    x = (sub[:, 0] - region.x).astype(np.int64)
+    y_norm = (sub[:, 1] - region.y) / max(region.dy, 1e-6)
+    t_norm = (sub[:, 2] - region.t) / max(region.dt, 1e-6)
+    theta = np.deg2rad(angle_deg)
+    c = np.cos(theta)
+    s = np.sin(theta)
+    corners = np.array(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    y_rot_corners = corners[:, 0] * c + corners[:, 1] * s
+    y_min = float(y_rot_corners.min())
+    y_max = float(y_rot_corners.max())
+    denom = max(1e-6, y_max - y_min)
+    y_rot = (y_norm * c + t_norm * s - y_min) / denom
+    y_idx = np.clip((y_rot * time_bins).astype(np.int64), 0, time_bins - 1)
+    hist = np.zeros((time_bins, region.dx), dtype=np.float32)
+    np.add.at(hist, (y_idx, x), 1.0)
+    return hist
+
+
 def build_patch(
     events: np.ndarray,
     region: Region,
@@ -105,39 +146,41 @@ def build_patch(
     elif region.plane == "yt":
         hist0 = _histogram_yt(events, region, time_bins, polarity=0)
         hist1 = _histogram_yt(events, region, time_bins, polarity=1)
+    elif region.plane == "xy_p45":
+        hist0 = _histogram_xy_rot(events, region, time_bins, polarity=0, angle_deg=45.0)
+        hist1 = _histogram_xy_rot(events, region, time_bins, polarity=1, angle_deg=45.0)
+    elif region.plane == "xy_m45":
+        hist0 = _histogram_xy_rot(events, region, time_bins, polarity=0, angle_deg=-45.0)
+        hist1 = _histogram_xy_rot(events, region, time_bins, polarity=1, angle_deg=-45.0)
     else:
         raise ValueError(f"Unknown plane {region.plane}")
 
     total_events = float(hist0.sum() + hist1.sum())
+    hist = np.stack([hist0, hist1], axis=0)
+    hist_t = torch.from_numpy(hist).unsqueeze(0)
+    patch = F.interpolate(hist_t, size=(patch_size, patch_size), mode="bilinear", align_corners=False)
+    patch = patch.squeeze(0)
+
     if patch_divider > 0:
-        hist0 = hist0 / patch_divider
-        hist1 = hist1 / patch_divider
+        patch = patch / float(patch_divider)
     elif norm_mode == "region_max":
-        max0 = float(hist0.max()) if hist0.size > 0 else 0.0
-        max1 = float(hist1.max()) if hist1.size > 0 else 0.0
-        if max0 > 0:
-            hist0 = hist0 / max0
-        if max1 > 0:
-            hist1 = hist1 / max1
+        for ch in range(patch.shape[0]):
+            maxv = float(patch[ch].max().item())
+            if maxv > 0:
+                patch[ch] = patch[ch] / maxv
     elif norm_mode == "region_sum":
-        sum0 = float(hist0.sum()) if hist0.size > 0 else 0.0
-        sum1 = float(hist1.sum()) if hist1.size > 0 else 0.0
-        if sum0 > 0:
-            hist0 = hist0 / sum0
-        if sum1 > 0:
-            hist1 = hist1 / sum1
+        for ch in range(patch.shape[0]):
+            sumv = float(patch[ch].sum().item())
+            if sumv > 0:
+                patch[ch] = patch[ch] / sumv
     elif norm_mode == "region_mean":
-        mean0 = float(hist0.mean()) if hist0.size > 0 else 0.0
-        mean1 = float(hist1.mean()) if hist1.size > 0 else 0.0
-        if mean0 > norm_eps:
-            hist0 = hist0 / mean0
-        if mean1 > norm_eps:
-            hist1 = hist1 / mean1
+        for ch in range(patch.shape[0]):
+            meanv = float(patch[ch].mean().item())
+            if meanv > norm_eps:
+                patch[ch] = patch[ch] / meanv
     elif norm_mode == "none":
         pass
     else:
         raise ValueError(f"Unknown patch normalization mode: {norm_mode}")
-    hist = np.stack([hist0, hist1], axis=0)
-    hist_t = torch.from_numpy(hist).unsqueeze(0)
-    patch = F.interpolate(hist_t, size=(patch_size, patch_size), mode="bilinear", align_corners=False)
-    return patch.squeeze(0), total_events
+
+    return patch, total_events

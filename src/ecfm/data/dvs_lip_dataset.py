@@ -31,6 +31,7 @@ class DVSLipDataset(Dataset):
         grid_t: int,
         grid_plane_mode: str,
         plane_types: List[str],
+        plane_types_active: List[str],
         num_regions: int,
         num_regions_choices: List[int],
         patch_size: int,
@@ -71,6 +72,9 @@ class DVSLipDataset(Dataset):
         self.grid_t = grid_t
         self.grid_plane_mode = grid_plane_mode
         self.plane_types = plane_types
+        self.plane_types_active = (
+            list(plane_types_active) if plane_types_active else list(plane_types)
+        )
         self.num_regions = num_regions
         self.num_regions_choices = [int(v) for v in num_regions_choices if int(v) > 0]
         self.patch_size = patch_size
@@ -201,7 +205,7 @@ class DVSLipDataset(Dataset):
         x = int(rng.integers(0, max(1, self.image_width - dx)))
         y = int(rng.integers(0, max(1, self.image_height - dy)))
         t = float(rng.random() * max(1e-6, 1.0 - dt))
-        plane = str(rng.choice(self.plane_types))
+        plane = str(rng.choice(self.plane_types_active))
         return Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane)
 
     def _grid_regions(self) -> List[Region]:
@@ -225,12 +229,12 @@ class DVSLipDataset(Dataset):
                     if x + dx > self.image_width:
                         dx = self.image_width - x
                     if self.grid_plane_mode == "all":
-                        for plane in self.plane_types:
+                        for plane in self.plane_types_active:
                             regions.append(
                                 Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane)
                             )
                     else:
-                        plane = self.plane_types[len(regions) % len(self.plane_types)]
+                        plane = self.plane_types_active[len(regions) % len(self.plane_types_active)]
                         regions.append(Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane))
         return regions
 
@@ -441,5 +445,5 @@ class DVSLipDataset(Dataset):
             return 0
         count = self.grid_x * self.grid_y * self.grid_t
         if self.grid_plane_mode == "all":
-            count *= len(self.plane_types)
+            count *= len(self.plane_types_active)
         return count

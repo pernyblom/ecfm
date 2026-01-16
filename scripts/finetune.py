@@ -36,7 +36,8 @@ def resolve_num_tokens(cfg) -> int:
     if cfg.data.grid_x > 0 and cfg.data.grid_y > 0 and cfg.data.grid_t > 0:
         grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
         if cfg.data.grid_plane_mode == "all":
-            grid_count *= len(cfg.data.plane_types)
+            active_planes = cfg.data.plane_types_active or cfg.data.plane_types
+            grid_count *= len(active_planes)
     num_tokens = max(
         cfg.data.num_regions,
         choices_max,
@@ -73,7 +74,7 @@ def load_checkpoint(model: EventMAE, path: str, device: torch.device) -> None:
     state = torch.load(path, map_location=device, weights_only=True)
     state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
     model_state = model.state_dict()
-    for key in ("pos_embedding", "decoder_pos_embedding"):
+    for key in ("pos_embedding", "decoder_pos_embedding", "plane_embedding.weight"):
         if key in state_dict and key in model_state:
             if state_dict[key].shape != model_state[key].shape:
                 print(
@@ -112,6 +113,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
@@ -153,6 +155,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
@@ -194,6 +197,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,
@@ -234,6 +238,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
             grid_t=cfg.data.grid_t,
             grid_plane_mode=cfg.data.grid_plane_mode,
             plane_types=cfg.data.plane_types,
+            plane_types_active=cfg.data.plane_types_active,
             num_regions=cfg.data.num_regions,
             num_regions_choices=cfg.data.num_regions_choices,
             patch_size=cfg.model.patch_size,

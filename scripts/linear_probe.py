@@ -52,13 +52,14 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     regions_per_sample = args.regions_per_sample
     choices_max = max(cfg.data.num_regions_choices, default=0)
+    active_planes = cfg.data.plane_types_active or cfg.data.plane_types
     if regions_per_sample is None:
         if choices_max > 0:
             regions_per_sample = choices_max
         elif cfg.data.region_sampling == "grid" and cfg.data.num_regions <= 0:
             grid_count = cfg.data.grid_x * cfg.data.grid_y * cfg.data.grid_t
             if cfg.data.grid_plane_mode == "all":
-                grid_count *= len(cfg.data.plane_types)
+                grid_count *= len(active_planes)
             regions_per_sample = grid_count
         elif cfg.data.num_regions > 0:
             regions_per_sample = cfg.data.num_regions
@@ -94,7 +95,7 @@ def main() -> None:
         state = torch.load(args.checkpoint, map_location=device, weights_only=True)
         state_dict = state["model"] if isinstance(state, dict) and "model" in state else state
         model_state = model.state_dict()
-        for key in ("pos_embedding", "decoder_pos_embedding"):
+        for key in ("pos_embedding", "decoder_pos_embedding", "plane_embedding.weight"):
             if key in state_dict and key in model_state:
                 if state_dict[key].shape != model_state[key].shape:
                     print(

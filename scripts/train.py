@@ -51,7 +51,7 @@ def main() -> None:
         ckpt = torch.load(cfg.train.resume_path, map_location=device)
         state_dict = ckpt["model"]
         model_state = model.state_dict()
-        for key in ("pos_embedding", "decoder_pos_embedding"):
+        for key in ("pos_embedding", "decoder_pos_embedding", "plane_embedding.weight"):
             if key in state_dict and key in model_state:
                 if state_dict[key].shape != model_state[key].shape:
                     print(
