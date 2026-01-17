@@ -240,6 +240,8 @@ class THUEACTDataset(Dataset):
             else:
                 cached = self._token_cache.pop(idx)
                 self._token_cache[idx] = cached
+                if self.return_label and "label" not in cached:
+                    cached["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
                 return cached
 
         events, seq_len_sec = self._load_events_cached(idx)
@@ -263,6 +265,8 @@ class THUEACTDataset(Dataset):
             "plane_ids": plane_ids,
             "valid_mask": valid_mask,
         }
+        if self.return_label:
+            sample["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
         if self.cache_token_max_samples > 0:
             self._token_cache[idx] = sample
             if len(self._token_cache) > self.cache_token_max_samples:

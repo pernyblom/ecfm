@@ -1,7 +1,7 @@
 train:
-  batch_size: 16
+  batch_size: 32
   num_steps: 1
-  lr: 0.0002
+  lr: 0.001
   device: cuda
   seed: 0
   recon_every: 0
@@ -9,15 +9,15 @@ train:
   recon_out_dir: outputs/recon
   recon_upscale: 8
   probe_every: 0
-  probe_subset_size: 16
+  probe_subset_size: 0
   probe_subset_seed: 0
   probe_region_seed: 0
-  probe_regions_per_sample: 16
-  probe_epochs: 10
-  probe_batch_size: 16
-  probe_lr: 0.001
+  probe_regions_per_sample: 0
+  probe_epochs: 0
+  probe_batch_size: 0
+  probe_lr: 0.0
   probe_cache_dir: outputs/linear_probe_cache
-  patch_loss_blur_radius: 1
+  patch_loss_blur_radius: 0
   count_loss_weight: 0.0
   checkpoint_dir: outputs/checkpoints
   checkpoint_every: 0
@@ -25,7 +25,7 @@ train:
   load_model_only: false
 
 model:
-  patch_size: 32
+  patch_size: 224
   embed_dim: 384
   num_heads: 6
   num_layers: 12
@@ -35,9 +35,9 @@ model:
   mlp_ratio: 4.0
   plane_embed_dim: 64
   metadata_dim: 9
-  mask_ratio: 0.4
+  mask_ratio: 0.0
   use_pos_embedding: false
-  use_relative_bias: true
+  use_relative_bias: false
   rel_bias_hidden_dim: 64
 
 data:
@@ -45,30 +45,30 @@ data:
   dataset_path: "datasets/THU-EACT-50-CHL"
   split: "train"
   num_samples: 0
-  max_samples: 32
+  max_samples: 0
   max_events: 0
   image_width: 346
   image_height: 260
   time_unit: 0.000001
   time_bins: 64
-  region_scales: [64, 128, 192]
-  region_scales_x: [64, 128, 192]
-  region_scales_y: [64, 128, 192]
-  region_time_scales: [0.25, 0.5, 0.75]
+  region_scales: [256]
+  region_scales_x: [346]
+  region_scales_y: [260]
+  region_time_scales: [1.0]
   region_sampling: grid
   grid_x: 1
   grid_y: 1
   grid_t: 1
-  grid_plane_mode: all
-  fixed_region_sizes: false
-  plane_types: ["xy_m45", "xy_p45", "yt"]
-  plane_types_active: ["xy_m45", "xy_p45", "yt"]
-  num_regions: 0
+  grid_plane_mode: single
+  fixed_region_sizes: true
+  plane_types: ["yt"]
+  plane_types_active: ["yt"]
+  num_regions: 1
   num_regions_choices: []
   subset_seed: 0
   fixed_region_seed: 0
   fixed_region_positions_global: false
-  fixed_single_region: false
+  fixed_single_region: true
   patch_divider: 0
   patch_norm: region_max
   patch_norm_eps: 1e-6
@@ -77,8 +77,12 @@ data:
   augmentation_invalidate_prob: 0.0
   cache_max_samples: 0
   cache_token_max_samples: 0
-  cache_token_dir: outputs/token_cache2
+  cache_token_dir: outputs/token_cache_resnet
   cache_token_variant_mode: random
-  cache_token_clear_on_start: true
+  cache_token_clear_on_start: false
   cache_token_variants_per_sample: 1
   cache_token_drop_prob: 0.0
+
+baseline:
+  pretrained: false
+  imagenet_norm: false

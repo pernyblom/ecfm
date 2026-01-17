@@ -251,6 +251,8 @@ class DVSLipDataset(Dataset):
             else:
                 cached = self._token_cache.pop(idx)
                 self._token_cache[idx] = cached
+                if self.return_label and "label" not in cached:
+                    cached["label"] = torch.tensor(self.labels[idx], dtype=torch.long)
                 return cached
 
         events, seq_len_sec = self._load_events_cached(idx)
