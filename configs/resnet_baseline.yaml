@@ -61,8 +61,8 @@ data:
   grid_t: 1
   grid_plane_mode: single
   fixed_region_sizes: true
-  plane_types: ["yt"]
-  plane_types_active: ["yt"]
+  plane_types: ["yt_m45"]
+  plane_types_active: ["yt_m45"]
   num_regions: 1
   num_regions_choices: []
   subset_seed: 0

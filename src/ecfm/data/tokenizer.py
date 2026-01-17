@@ -128,6 +128,48 @@ def _histogram_xy_rot(
     return hist
 
 
+def _histogram_yt_rot(
+    events: np.ndarray, region: Region, time_bins: int, polarity: int, angle_deg: float
+) -> np.ndarray:
+    mask = (
+        (events[:, 0] >= region.x)
+        & (events[:, 0] < region.x + region.dx)
+        & (events[:, 1] >= region.y)
+        & (events[:, 1] < region.y + region.dy)
+        & (events[:, 2] >= region.t)
+        & (events[:, 2] < region.t + region.dt)
+        & (events[:, 3] == polarity)
+    )
+    sub = events[mask]
+    if sub.shape[0] == 0:
+        return np.zeros((time_bins, region.dy), dtype=np.float32)
+    y_norm = (sub[:, 1] - region.y) / max(region.dy, 1e-6)
+    x_norm = (sub[:, 0] - region.x) / max(region.dx, 1e-6)
+    t_norm = (sub[:, 2] - region.t) / max(region.dt, 1e-6)
+    theta = np.deg2rad(angle_deg)
+    c = np.cos(theta)
+    s = np.sin(theta)
+    corners = np.array(
+        [
+            [0.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    y_rot_corners = corners[:, 0] * s + corners[:, 1] * c
+    y_min = float(y_rot_corners.min())
+    y_max = float(y_rot_corners.max())
+    denom = max(1e-6, y_max - y_min)
+    y_rot = (x_norm * s + y_norm * c - y_min) / denom
+    y_idx = np.clip((y_rot * region.dy).astype(np.int64), 0, region.dy - 1)
+    t_idx = np.clip((t_norm * time_bins).astype(np.int64), 0, time_bins - 1)
+    hist = np.zeros((time_bins, region.dy), dtype=np.float32)
+    np.add.at(hist, (t_idx, y_idx), 1.0)
+    return hist
+
+
 def build_patch(
     events: np.ndarray,
     region: Region,
@@ -152,6 +194,12 @@ def build_patch(
     elif region.plane == "xy_m45":
         hist0 = _histogram_xy_rot(events, region, time_bins, polarity=0, angle_deg=-45.0)
         hist1 = _histogram_xy_rot(events, region, time_bins, polarity=1, angle_deg=-45.0)
+    elif region.plane == "yt_p45":
+        hist0 = _histogram_yt_rot(events, region, time_bins, polarity=0, angle_deg=45.0)
+        hist1 = _histogram_yt_rot(events, region, time_bins, polarity=1, angle_deg=45.0)
+    elif region.plane == "yt_m45":
+        hist0 = _histogram_yt_rot(events, region, time_bins, polarity=0, angle_deg=-45.0)
+        hist1 = _histogram_yt_rot(events, region, time_bins, polarity=1, angle_deg=-45.0)
     else:
         raise ValueError(f"Unknown plane {region.plane}")
 
