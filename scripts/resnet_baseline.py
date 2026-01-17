@@ -34,6 +34,7 @@ def build_datasets(cfg, train_split: str, test_split: str, seed: int, val_split:
         "region_scales": cfg.data.region_scales,
         "region_scales_x": cfg.data.region_scales_x,
         "region_scales_y": cfg.data.region_scales_y,
+        "region_scale_mode": cfg.data.region_scale_mode,
         "region_time_scales": cfg.data.region_time_scales,
         "region_sampling": cfg.data.region_sampling,
         "grid_x": cfg.data.grid_x,

@@ -51,6 +51,7 @@ data:
   image_height: 260
   time_unit: 0.000001
   time_bins: 64
+  region_scale_mode: absolute
   region_scales: [64, 128, 192]
   region_scales_x: [64, 128, 192]
   region_scales_y: [64, 128, 192]

@@ -14,6 +14,7 @@ from .region_utils import (
     build_sample,
     grid_region_count,
     grid_regions,
+    resolve_region_scales,
     sample_region,
     select_regions,
 )
@@ -38,9 +39,10 @@ class SyntheticEventDataset(Dataset):
         image_width: int,
         image_height: int,
         time_bins: int,
-        region_scales: List[int],
-        region_scales_x: List[int],
-        region_scales_y: List[int],
+        region_scales: List[float],
+        region_scales_x: List[float],
+        region_scales_y: List[float],
+        region_scale_mode: str = "absolute",
         region_time_scales: List[float],
         region_sampling: str,
         grid_x: int,
@@ -78,9 +80,18 @@ class SyntheticEventDataset(Dataset):
         self.image_width = image_width
         self.image_height = image_height
         self.time_bins = time_bins
-        self.region_scales = region_scales
-        self.region_scales_x = region_scales_x
-        self.region_scales_y = region_scales_y
+        (
+            self.region_scales,
+            self.region_scales_x,
+            self.region_scales_y,
+        ) = resolve_region_scales(
+            region_scales,
+            region_scales_x,
+            region_scales_y,
+            image_width,
+            image_height,
+            region_scale_mode,
+        )
         self.region_time_scales = region_time_scales
         self.region_sampling = region_sampling
         self.grid_x = grid_x

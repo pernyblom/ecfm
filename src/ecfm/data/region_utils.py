@@ -43,6 +43,38 @@ def sample_region(
     return Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane)
 
 
+def resolve_region_scales(
+    region_scales: List[float],
+    region_scales_x: List[float],
+    region_scales_y: List[float],
+    image_width: int,
+    image_height: int,
+    mode: str,
+) -> tuple[List[int], List[int], List[int]]:
+    if mode == "fraction" and region_scales and not region_scales_x and not region_scales_y:
+        region_scales_x = list(region_scales)
+        region_scales_y = list(region_scales)
+
+    def _scale(values: List[float], dim: int) -> List[int]:
+        if not values:
+            return []
+        if mode == "absolute":
+            return [int(v) for v in values]
+        if mode == "fraction":
+            resolved = []
+            for v in values:
+                px = int(round(float(v) * dim))
+                resolved.append(max(1, min(dim, px)))
+            return resolved
+        raise ValueError(f"Unknown region_scale_mode: {mode}")
+
+    return (
+        _scale(region_scales, image_width),
+        _scale(region_scales_x, image_width),
+        _scale(region_scales_y, image_height),
+    )
+
+
 def grid_regions(
     image_width: int,
     image_height: int,

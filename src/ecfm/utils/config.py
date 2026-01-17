@@ -66,9 +66,10 @@ class DataConfig:
     image_height: int
     time_unit: float
     time_bins: int
-    region_scales: list[int]
-    region_scales_x: list[int]
-    region_scales_y: list[int]
+    region_scales: list[float]
+    region_scales_x: list[float]
+    region_scales_y: list[float]
+    region_scale_mode: str
     region_time_scales: list[float]
     region_sampling: str
     grid_x: int
@@ -119,6 +120,7 @@ def load_config(path: str | Path) -> Config:
     data.setdefault("augmentations", [])
     data.setdefault("rotation_max_deg", 0.0)
     data.setdefault("augmentation_invalidate_prob", 0.0)
+    data.setdefault("region_scale_mode", "absolute")
     return Config(
         train=TrainConfig(**raw["train"]),
         model=ModelConfig(**raw["model"]),

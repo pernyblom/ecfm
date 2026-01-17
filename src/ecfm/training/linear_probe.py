@@ -9,6 +9,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from ecfm.data.tokenizer import Region, build_patch
+from ecfm.data.region_utils import resolve_region_scales
 
 
 def load_split(root: Path, split: str) -> List[Tuple[Path, int]]:
@@ -175,6 +176,14 @@ def build_token_cache(
     labels = []
 
     grid_list = None
+    region_scales, region_scales_x, region_scales_y = resolve_region_scales(
+        cfg.data.region_scales,
+        cfg.data.region_scales_x,
+        cfg.data.region_scales_y,
+        cfg.data.image_width,
+        cfg.data.image_height,
+        cfg.data.region_scale_mode,
+    )
     plane_types_active = cfg.data.plane_types_active or cfg.data.plane_types
     if cfg.data.region_sampling == "grid":
         grid_list = grid_regions(
@@ -209,9 +218,9 @@ def build_token_cache(
                     sample_rng,
                     cfg.data.image_width,
                     cfg.data.image_height,
-                    cfg.data.region_scales,
-                    cfg.data.region_scales_x,
-                    cfg.data.region_scales_y,
+                    region_scales,
+                    region_scales_x,
+                    region_scales_y,
                     cfg.data.region_time_scales,
                     cfg.data.plane_types,
                 )
