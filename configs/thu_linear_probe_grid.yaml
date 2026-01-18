@@ -56,13 +56,13 @@ data:
   region_scales_y: [64, 128, 192]
   region_time_scales: [0.25, 0.5, 0.75]
   region_sampling: grid
-  grid_x: 1
-  grid_y: 1
+  grid_x: 5
+  grid_y: 5
   grid_t: 1
   grid_plane_mode: all
   fixed_region_sizes: false
-  plane_types: ["xy_m45", "xy_p45", "yt"]
-  plane_types_active: ["xy_m45", "xy_p45", "yt"]
+  plane_types: ["xt", "xy", "xy_m45", "xy_p45", "yt", "yt_m45", "yt_p45"]
+  plane_types_active: ["xy", "xt", "yt"]
   num_regions: 0
   num_regions_choices: []
   subset_seed: 0
