@@ -4,8 +4,8 @@ train:
   lr: 0.0002
   device: cuda
   seed: 0
-  recon_every: 500
-  recon_num_patches: 8
+  recon_every: 250
+  recon_num_patches: 16
   recon_out_dir: outputs/recon
   recon_upscale: 8
   probe_every: 0
@@ -19,8 +19,8 @@ train:
   probe_cache_dir: outputs/linear_probe_cache
   patch_loss_blur_radius: 1
   count_loss_weight: 0.0
-  checkpoint_dir: outputs/checkpoints
-  checkpoint_every: 1000
+  checkpoint_dir: outputs/checkpoints_pretrain
+  checkpoint_every: 250
   resume_path: ""
   load_model_only: false
 
@@ -51,20 +51,21 @@ data:
   image_height: 260
   time_unit: 0.000001
   time_bins: 64
-  region_scales: [64, 128, 192]
-  region_scales_x: [64, 128, 192]
-  region_scales_y: [64, 128, 192]
-  region_time_scales: [0.25, 0.5, 0.75]
+  region_scales: [0.2, 0.4, 0.6, 0.8]
+  region_scale_mode: fraction
+  region_scales_x: [0.2, 0.4, 0.6, 0.8]
+  region_scales_y: [0.2, 0.4, 0.6, 0.8]
+  region_time_scales: [0.2, 0.4, 0.6, 0.8]
   region_sampling: random
   grid_x: 4
   grid_y: 4
   grid_t: 1
   grid_plane_mode: cycle
   fixed_region_sizes: false
-  plane_types: ["xy_m45", "xy_p45", "yt"]
+  plane_types: ["xt", "xy", "xy_m45", "xy_p45", "yt", "yt_m45", "yt_p45"]
   plane_types_active: []
   num_regions: 0
-  num_regions_choices: [8, 16, 32]
+  num_regions_choices: [8, 12, 16, 20, 24, 28, 32]
   subset_seed: 17336
   fixed_region_seed: -1
   fixed_region_positions_global: false
@@ -78,7 +79,7 @@ data:
   cache_max_samples: 0
   cache_token_max_samples: 0
   cache_token_variants_per_sample: 16
-  cache_token_dir: outputs/token_cache
+  cache_token_dir: outputs/token_cache_pretrain
   cache_token_variant_mode: random
   cache_token_clear_on_start: true
   cache_token_drop_prob: 0.005
