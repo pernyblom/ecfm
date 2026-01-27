@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from ecfm.utils.evt3 import decode_evt3_raw, read_raw_header
+from ecfm.data.tokenizer import Region, build_patch
 from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 
 
@@ -80,6 +81,68 @@ def _read_yolo_boxes(
     return boxes
 
 
+def _patch_to_rgb(patch: np.ndarray) -> np.ndarray:
+    if patch.ndim != 3 or patch.shape[0] != 2:
+        raise ValueError("patch must be shaped [2, H, W]")
+    p0 = np.clip(patch[0], 0.0, 1.0)
+    p1 = np.clip(patch[1], 0.0, 1.0)
+    h, w = p0.shape
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, :, 0] = (p1 * 255.0).astype(np.uint8)
+    img[:, :, 2] = (p0 * 255.0).astype(np.uint8)
+    return img
+
+
+def _render_histogram_grid(
+    events: np.ndarray,
+    *,
+    width: int,
+    height: int,
+    t0: float,
+    dt: float,
+    plane: str,
+    time_bins: int,
+    patch_size: int,
+    grid_x: int,
+    grid_y: int,
+) -> np.ndarray:
+    out_h = patch_size * grid_x
+    out_w = patch_size * grid_y
+    canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    x_edges = np.linspace(0, width, grid_x + 1, dtype=np.int64)
+    y_edges = np.linspace(0, height, grid_y + 1, dtype=np.int64)
+
+    for gy in range(grid_y):
+        for gx in range(grid_x):
+            x0 = int(x_edges[gx])
+            x1 = int(x_edges[gx + 1])
+            y0 = int(y_edges[gy])
+            y1 = int(y_edges[gy + 1])
+            dx = max(1, x1 - x0)
+            dy = max(1, y1 - y0)
+            region = Region(
+                x=x0,
+                y=y0,
+                t=t0,
+                dx=dx,
+                dy=dy,
+                dt=dt,
+                plane=plane,
+            )
+            patch_t, _ = build_patch(
+                events,
+                region,
+                patch_size=patch_size,
+                time_bins=time_bins,
+            )
+            patch = patch_t.detach().cpu().numpy()
+            patch_img = _patch_to_rgb(patch)
+            y1 = (gx + 1) * patch_size
+            x1 = (gy + 1) * patch_size
+            canvas[gx * patch_size : y1, gy * patch_size : x1] = patch_img
+    return canvas
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -147,6 +210,46 @@ def main() -> None:
         help="Event pixel size in output image (default: 1)",
     )
     parser.add_argument(
+        "--representation",
+        type=str,
+        default="events",
+        choices=[
+            "events",
+            "xy",
+            "xt",
+            "yt",
+            "xy_p45",
+            "xy_m45",
+            "yt_p45",
+            "yt_m45",
+        ],
+        help="Representation to render (default: events)",
+    )
+    parser.add_argument(
+        "--temporal-bins",
+        type=int,
+        default=64,
+        help="Temporal bins for histogram representations (default: 64)",
+    )
+    parser.add_argument(
+        "--spatial-bins",
+        type=int,
+        default=32,
+        help="Output patch size for histogram representations (default: 32)",
+    )
+    parser.add_argument(
+        "--grid-x",
+        type=int,
+        default=1,
+        help="Number of grid cells in x (default: 1)",
+    )
+    parser.add_argument(
+        "--grid-y",
+        type=int,
+        default=1,
+        help="Number of grid cells in y (default: 1)",
+    )
+    parser.add_argument(
         "--rect-color",
         type=int,
         nargs=3,
@@ -154,10 +257,34 @@ def main() -> None:
         help="Rectangle color as R G B (default: 0 255 0)",
     )
     parser.add_argument(
+        "--draw-rectangles",
+        action="store_true",
+        default=True,
+        help="Draw rectangles from YOLO labels (default: True)",
+    )
+    parser.add_argument(
+        "--no-rectangles",
+        action="store_false",
+        dest="draw_rectangles",
+        help="Disable drawing rectangles from YOLO labels",
+    )
+    parser.add_argument(
         "--rect-thickness",
         type=int,
         default=1,
         help="Rectangle thickness in pixels (default: 1)",
+    )
+    parser.add_argument(
+        "--only-with-rects",
+        action="store_true",
+        default=True,
+        help="Only write images that have at least one rectangle (default: True)",
+    )
+    parser.add_argument(
+        "--include-empty",
+        action="store_false",
+        dest="only_with_rects",
+        help="Also write images with zero rectangles",
     )
     args = parser.parse_args()
 
@@ -210,21 +337,55 @@ def main() -> None:
         idx0 = int(np.searchsorted(t, t0, side="left"))
         idx1 = int(np.searchsorted(t, t1, side="left"))
         ev = events[idx0:idx1]
+        ev_time = ev
+        if ev.size:
+            ev_time = ev.copy()
+            ev_time[:, 2] = t[idx0:idx1]
 
-        img = events_to_image(
-            ev,
-            width,
-            height,
-            pixel_size=args.pixel_size,
-        )
+        if args.representation == "events":
+            if args.grid_x == 1 and args.grid_y == 1:
+                img = events_to_image(
+                    ev,
+                    width,
+                    height,
+                    pixel_size=args.pixel_size,
+                )
+            else:
+                img = _render_histogram_grid(
+                    ev_time,
+                    width=width,
+                    height=height,
+                    t0=t0,
+                    dt=t1 - t0,
+                    plane="xy",
+                    time_bins=1,
+                    patch_size=args.spatial_bins,
+                    grid_x=args.grid_x,
+                    grid_y=args.grid_y,
+                )
+        else:
+            img = _render_histogram_grid(
+                ev_time,
+                width=width,
+                height=height,
+                t0=t0,
+                dt=t1 - t0,
+                plane=args.representation,
+                time_bins=args.temporal_bins,
+                patch_size=args.spatial_bins,
+                grid_x=args.grid_x,
+                grid_y=args.grid_y,
+            )
         boxes = _read_yolo_boxes(label_path, width, height)
-        if boxes:
+        if args.draw_rectangles and boxes:
             draw_rectangles(
                 img,
                 boxes,
                 color=tuple(args.rect_color),
                 thickness=args.rect_thickness,
             )
+        if args.only_with_rects and not boxes:
+            continue
         out_path = args.output_dir / f"{label_path.stem}.png"
         final_path = write_image(out_path, img)
         print(f"Wrote {final_path}")
