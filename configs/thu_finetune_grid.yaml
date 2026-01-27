@@ -77,7 +77,7 @@ data:
   augmentation_invalidate_prob: 0.05
   cache_max_samples: 0
   cache_token_max_samples: 0
-  cache_token_dir: outputs/token_cache2
+  cache_token_dir: outputs/token_cache_finetune
   cache_token_variant_mode: random
   cache_token_clear_on_start: true
   cache_token_variants_per_sample: 1

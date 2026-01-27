@@ -16,10 +16,10 @@ train:
   probe_epochs: 10
   probe_batch_size: 16
   probe_lr: 0.001
-  probe_cache_dir: outputs/linear_probe_cache
+  probe_cache_dir: outputs/linprob_cache
   patch_loss_blur_radius: 1
   count_loss_weight: 0.0
-  checkpoint_dir: outputs/checkpoints
+  checkpoint_dir: outputs/checkpoints_linprob
   checkpoint_every: 0
   resume_path: ""
   load_model_only: false
@@ -56,13 +56,13 @@ data:
   region_scales_y: [64, 128, 192]
   region_time_scales: [0.25, 0.5, 0.75]
   region_sampling: grid
-  grid_x: 5
-  grid_y: 5
+  grid_x: 3
+  grid_y: 3
   grid_t: 1
   grid_plane_mode: all
   fixed_region_sizes: false
   plane_types: ["xt", "xy", "xy_m45", "xy_p45", "yt", "yt_m45", "yt_p45"]
-  plane_types_active: ["xy", "xt", "yt"]
+  plane_types_active: ["xt", "yt"]
   num_regions: 0
   num_regions_choices: []
   subset_seed: 0
@@ -77,7 +77,7 @@ data:
   augmentation_invalidate_prob: 0.0
   cache_max_samples: 0
   cache_token_max_samples: 0
-  cache_token_dir: outputs/token_cache2
+  cache_token_dir: outputs/token_cache_linprob
   cache_token_variant_mode: random
   cache_token_clear_on_start: true
   cache_token_variants_per_sample: 1
