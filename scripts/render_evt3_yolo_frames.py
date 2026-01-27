@@ -53,9 +53,9 @@ def _read_ts_shift_us(raw_path: Path) -> Optional[int]:
 
 
 def _read_yolo_boxes(
-    path: Path, width: int, height: int
-) -> List[Tuple[int, int, int, int]]:
-    boxes: List[Tuple[int, int, int, int]] = []
+    path: Path,
+) -> List[Tuple[float, float, float, float]]:
+    boxes: List[Tuple[float, float, float, float]] = []
     if path.stat().st_size == 0:
         return boxes
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -73,17 +73,34 @@ def _read_yolo_boxes(
             bh = float(bh)
         except ValueError:
             continue
-        x0 = (cx - bw / 2.0) * width
-        y0 = (cy - bh / 2.0) * height
-        x1 = (cx + bw / 2.0) * width
-        y1 = (cy + bh / 2.0) * height
-        boxes.append((int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1))))
+        boxes.append((cx, cy, bw, bh))
     return boxes
 
 
-def _patch_to_rgb(patch: np.ndarray) -> np.ndarray:
+def _project_boxes(
+    boxes: List[Tuple[float, float, float, float]],
+    *,
+    dst_w: int,
+    dst_h: int,
+) -> List[Tuple[int, int, int, int]]:
+    if not boxes:
+        return []
+    projected: List[Tuple[int, int, int, int]] = []
+    for cx, cy, bw, bh in boxes:
+        x0 = (cx - bw / 2.0) * dst_w
+        y0 = (cy - bh / 2.0) * dst_h
+        x1 = (cx + bw / 2.0) * dst_w
+        y1 = (cy + bh / 2.0) * dst_h
+        projected.append((int(round(x0)), int(round(y0)), int(round(x1)), int(round(y1))))
+    return projected
+
+
+def _patch_to_rgb(patch: np.ndarray, *, time_horizontal: bool = False) -> np.ndarray:
     if patch.ndim != 3 or patch.shape[0] != 2:
         raise ValueError("patch must be shaped [2, H, W]")
+    # If time is horizontal, swap (T, Y) -> (Y, T) so time runs left->right.
+    if time_horizontal:
+        patch = patch.transpose(0, 2, 1)
     p0 = np.clip(patch[0], 0.0, 1.0)
     p1 = np.clip(patch[1], 0.0, 1.0)
     h, w = p0.shape
@@ -106,8 +123,8 @@ def _render_histogram_grid(
     grid_x: int,
     grid_y: int,
 ) -> np.ndarray:
-    out_h = patch_size * grid_x
-    out_w = patch_size * grid_y
+    out_h = patch_size * grid_y
+    out_w = patch_size * grid_x
     canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
     x_edges = np.linspace(0, width, grid_x + 1, dtype=np.int64)
     y_edges = np.linspace(0, height, grid_y + 1, dtype=np.int64)
@@ -136,10 +153,11 @@ def _render_histogram_grid(
                 time_bins=time_bins,
             )
             patch = patch_t.detach().cpu().numpy()
-            patch_img = _patch_to_rgb(patch)
-            y1 = (gx + 1) * patch_size
-            x1 = (gy + 1) * patch_size
-            canvas[gx * patch_size : y1, gy * patch_size : x1] = patch_img
+            time_horizontal = plane.startswith("yt")
+            patch_img = _patch_to_rgb(patch, time_horizontal=time_horizontal)
+            y1 = (gy + 1) * patch_size
+            x1 = (gx + 1) * patch_size
+            canvas[gy * patch_size : y1, gx * patch_size : x1] = patch_img
     return canvas
 
 
@@ -213,17 +231,10 @@ def main() -> None:
         "--representation",
         type=str,
         default="events",
-        choices=[
-            "events",
-            "xy",
-            "xt",
-            "yt",
-            "xy_p45",
-            "xy_m45",
-            "yt_p45",
-            "yt_m45",
-        ],
-        help="Representation to render (default: events)",
+        help=(
+            "Representation(s) to render, separated by ';' (default: events). "
+            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45."
+        ),
     )
     parser.add_argument(
         "--temporal-bins",
@@ -342,14 +353,45 @@ def main() -> None:
             ev_time = ev.copy()
             ev_time[:, 2] = t[idx0:idx1]
 
-        if args.representation == "events":
-            if args.grid_x == 1 and args.grid_y == 1:
-                img = events_to_image(
-                    ev,
-                    width,
-                    height,
-                    pixel_size=args.pixel_size,
-                )
+        boxes = _read_yolo_boxes(label_path)
+        if args.only_with_rects and not boxes:
+            continue
+        reps_raw = args.representation.replace(",", ";")
+        representations = [r.strip() for r in reps_raw.split(";") if r.strip()]
+        valid = {
+            "events",
+            "xy",
+            "xt",
+            "yt",
+            "xy_p45",
+            "xy_m45",
+            "yt_p45",
+            "yt_m45",
+        }
+        for rep in representations:
+            if rep not in valid:
+                raise ValueError(f"Unknown representation: {rep}")
+            if rep == "events":
+                if args.grid_x == 1 and args.grid_y == 1:
+                    img = events_to_image(
+                        ev,
+                        width,
+                        height,
+                        pixel_size=args.pixel_size,
+                    )
+                else:
+                    img = _render_histogram_grid(
+                        ev_time,
+                        width=width,
+                        height=height,
+                        t0=t0,
+                        dt=t1 - t0,
+                        plane="xy",
+                        time_bins=1,
+                        patch_size=args.spatial_bins,
+                        grid_x=args.grid_x,
+                        grid_y=args.grid_y,
+                    )
             else:
                 img = _render_histogram_grid(
                     ev_time,
@@ -357,36 +399,25 @@ def main() -> None:
                     height=height,
                     t0=t0,
                     dt=t1 - t0,
-                    plane="xy",
-                    time_bins=1,
+                    plane=rep,
+                    time_bins=args.temporal_bins,
                     patch_size=args.spatial_bins,
                     grid_x=args.grid_x,
                     grid_y=args.grid_y,
                 )
-        else:
-            img = _render_histogram_grid(
-                ev_time,
-                width=width,
-                height=height,
-                t0=t0,
-                dt=t1 - t0,
-                plane=args.representation,
-                time_bins=args.temporal_bins,
-                patch_size=args.spatial_bins,
-                grid_x=args.grid_x,
-                grid_y=args.grid_y,
-            )
-        boxes = _read_yolo_boxes(label_path, width, height)
-        if args.draw_rectangles and boxes:
+        scaled_boxes = _project_boxes(
+            boxes,
+            dst_w=img.shape[1],
+            dst_h=img.shape[0],
+        )
+        if args.draw_rectangles and scaled_boxes:
             draw_rectangles(
                 img,
-                boxes,
+                scaled_boxes,
                 color=tuple(args.rect_color),
                 thickness=args.rect_thickness,
             )
-        if args.only_with_rects and not boxes:
-            continue
-        out_path = args.output_dir / f"{label_path.stem}.png"
+        out_path = args.output_dir / f"{label_path.stem}_{rep}.png"
         final_path = write_image(out_path, img)
         print(f"Wrote {final_path}")
 
