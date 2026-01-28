@@ -110,6 +110,243 @@ def _patch_to_rgb(patch: np.ndarray, *, time_horizontal: bool = False) -> np.nda
     return img
 
 
+def _resize_rgb(img: np.ndarray, patch_size: int) -> np.ndarray:
+    if img.shape[0] == patch_size and img.shape[1] == patch_size:
+        return img
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        t = torch.from_numpy(img.transpose(2, 0, 1)).unsqueeze(0).float()
+        t = F.interpolate(t, size=(patch_size, patch_size), mode="bilinear", align_corners=False)
+        out = t.squeeze(0).permute(1, 2, 0).clamp(0, 255).byte().numpy()
+        return out
+    except Exception:
+        return img
+
+
+def _scale_magnitude(mag: np.ndarray, mode: str, eps: float) -> np.ndarray:
+    if mode == "linear":
+        out = mag
+    elif mode == "log":
+        out = np.log1p(mag)
+    elif mode == "db":
+        out = 20.0 * np.log10(mag + eps)
+        out = out - out.max() if out.size else out
+        out = np.maximum(out, out.min()) if out.size else out
+        out = out - out.min() if out.size else out
+    else:
+        raise ValueError(f"Unknown scale mode: {mode}")
+    maxv = float(out.max()) if out.size else 0.0
+    if maxv > 0:
+        out = out / maxv
+    return out
+
+
+def _spectrum2d(img: np.ndarray, *, scale_mode: str, eps: float) -> np.ndarray:
+    if img.size == 0:
+        return img
+    img_f = img.astype(np.float32) / 255.0
+    out = np.zeros_like(img_f)
+    for ch in range(3):
+        comp = np.fft.fftshift(np.fft.fft2(img_f[:, :, ch]))
+        mag = np.abs(comp)
+        out[:, :, ch] = _scale_magnitude(mag, scale_mode, eps)
+    out = np.clip(out * 255.0, 0.0, 255.0).astype(np.uint8)
+    return out
+
+
+def _spectrum2d_bin(img: np.ndarray, *, scale_mode: str, eps: float) -> np.ndarray:
+    if img.size == 0:
+        return img
+    img_f = img.astype(np.float32) / 255.0
+    signed = img_f[:, :, 0] - img_f[:, :, 2]
+    comp = np.fft.fftshift(np.fft.fft2(signed))
+    mag = np.abs(comp)
+    mag = _scale_magnitude(mag, scale_mode, eps)
+    gray = np.clip(mag * 255.0, 0.0, 255.0).astype(np.uint8)
+    out = np.zeros_like(img)
+    out[:, :, 0] = gray
+    out[:, :, 1] = gray
+    out[:, :, 2] = gray
+    return out
+
+
+def _stft_spectrogram(
+    signal: np.ndarray, n_fft: int = 64, hop: int = 16, *, scale_mode: str, eps: float
+) -> np.ndarray:
+    if signal.size == 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    sig = signal.astype(np.float32)
+    if sig.size < n_fft:
+        pad = n_fft - sig.size
+        sig = np.pad(sig, (0, pad), mode="constant")
+    window = np.hanning(n_fft).astype(np.float32)
+    frames = 1 + max(0, (sig.size - n_fft) // hop)
+    spec = np.zeros((n_fft // 2 + 1, frames), dtype=np.float32)
+    for i in range(frames):
+        start = i * hop
+        frame = sig[start : start + n_fft]
+        if frame.size < n_fft:
+            frame = np.pad(frame, (0, n_fft - frame.size), mode="constant")
+        frame = frame * window
+        fft = np.fft.rfft(frame)
+        mag = np.abs(fft)
+        spec[:, i] = mag
+    spec = _scale_magnitude(spec, scale_mode, eps)
+    return spec
+
+
+def _spectrogram_from_image(
+    img: np.ndarray,
+    *,
+    time_horizontal: bool,
+    n_fft: int = 64,
+    hop: int = 16,
+    scale_mode: str,
+    eps: float,
+) -> np.ndarray:
+    if img.size == 0:
+        return img
+    img_f = img.astype(np.float32) / 255.0
+    # time axis: x if horizontal else y
+    if time_horizontal:
+        sig_r = img_f[:, :, 0].sum(axis=0)
+        sig_b = img_f[:, :, 2].sum(axis=0)
+    else:
+        sig_r = img_f[:, :, 0].sum(axis=1)
+        sig_b = img_f[:, :, 2].sum(axis=1)
+    spec_r = _stft_spectrogram(sig_r, n_fft=n_fft, hop=hop, scale_mode=scale_mode, eps=eps)
+    spec_b = _stft_spectrogram(sig_b, n_fft=n_fft, hop=hop, scale_mode=scale_mode, eps=eps)
+    h = spec_r.shape[0]
+    w = spec_r.shape[1]
+    out = np.zeros((h, w, 3), dtype=np.uint8)
+    out[:, :, 0] = (spec_r * 255.0).astype(np.uint8)
+    out[:, :, 2] = (spec_b * 255.0).astype(np.uint8)
+    return out
+
+
+def _spectrogram_from_image_bin(
+    img: np.ndarray,
+    *,
+    time_horizontal: bool,
+    n_fft: int = 64,
+    hop: int = 16,
+    scale_mode: str,
+    eps: float,
+) -> np.ndarray:
+    if img.size == 0:
+        return img
+    img_f = img.astype(np.float32) / 255.0
+    if time_horizontal:
+        sig = (img_f[:, :, 0] - img_f[:, :, 2]).sum(axis=0)
+    else:
+        sig = (img_f[:, :, 0] - img_f[:, :, 2]).sum(axis=1)
+    spec = _stft_spectrogram(sig, n_fft=n_fft, hop=hop, scale_mode=scale_mode, eps=eps)
+    out = np.zeros((spec.shape[0], spec.shape[1], 3), dtype=np.uint8)
+    gray = (spec * 255.0).astype(np.uint8)
+    out[:, :, 0] = gray
+    out[:, :, 1] = gray
+    out[:, :, 2] = gray
+    return out
+
+
+def _apply_transform(
+    img: np.ndarray,
+    *,
+    rep: str,
+    transform: str,
+    time_horizontal: bool,
+    scale_mode: str,
+    eps: float,
+) -> np.ndarray:
+    transform = transform.lower()
+    if transform == "none":
+        return img
+    if transform == "spectrogram":
+        if rep in {"events", "xy", "cstr2", "cstr3"}:
+            print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
+            return img
+        return _spectrogram_from_image(
+            img, time_horizontal=time_horizontal, scale_mode=scale_mode, eps=eps
+        )
+    if transform == "spectrum2d":
+        return _spectrum2d(img, scale_mode=scale_mode, eps=eps)
+    if transform == "spectrogram_bin":
+        if rep in {"events", "xy", "cstr2", "cstr3"}:
+            print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
+            return img
+        return _spectrogram_from_image_bin(
+            img, time_horizontal=time_horizontal, scale_mode=scale_mode, eps=eps
+        )
+    if transform == "spectrum2d_bin":
+        return _spectrum2d_bin(img, scale_mode=scale_mode, eps=eps)
+    raise ValueError(f"Unknown transform: {transform}")
+
+
+def _cstr_patch(
+    events: np.ndarray,
+    region: Region,
+    *,
+    patch_size: int,
+    include_count: bool,
+) -> np.ndarray:
+    # events are expected to be [x, y, t, p] with t in the same units as region.t/dt
+    mask = (
+        (events[:, 0] >= region.x)
+        & (events[:, 0] < region.x + region.dx)
+        & (events[:, 1] >= region.y)
+        & (events[:, 1] < region.y + region.dy)
+        & (events[:, 2] >= region.t)
+        & (events[:, 2] < region.t + region.dt)
+    )
+    sub = events[mask]
+    h = region.dy
+    w = region.dx
+    if sub.shape[0] == 0:
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        return _resize_rgb(img, patch_size)
+
+    t_norm = (sub[:, 2] - region.t) / max(region.dt, 1e-6)
+    t_norm = np.clip(t_norm, 0.0, 1.0)
+    x = (sub[:, 0] - region.x).astype(np.int64)
+    y = (sub[:, 1] - region.y).astype(np.int64)
+    p = sub[:, 3].astype(np.int64)
+
+    sum_pos = np.zeros((h, w), dtype=np.float32)
+    sum_neg = np.zeros((h, w), dtype=np.float32)
+    cnt_pos = np.zeros((h, w), dtype=np.float32)
+    cnt_neg = np.zeros((h, w), dtype=np.float32)
+
+    pos_mask = p == 1
+    neg_mask = ~pos_mask
+    if np.any(pos_mask):
+        np.add.at(sum_pos, (y[pos_mask], x[pos_mask]), t_norm[pos_mask])
+        np.add.at(cnt_pos, (y[pos_mask], x[pos_mask]), 1.0)
+    if np.any(neg_mask):
+        np.add.at(sum_neg, (y[neg_mask], x[neg_mask]), t_norm[neg_mask])
+        np.add.at(cnt_neg, (y[neg_mask], x[neg_mask]), 1.0)
+
+    mean_pos = np.zeros((h, w), dtype=np.float32)
+    mean_neg = np.zeros((h, w), dtype=np.float32)
+    if np.any(cnt_pos > 0):
+        mean_pos = np.divide(sum_pos, cnt_pos, out=mean_pos, where=cnt_pos > 0)
+    if np.any(cnt_neg > 0):
+        mean_neg = np.divide(sum_neg, cnt_neg, out=mean_neg, where=cnt_neg > 0)
+
+    img = np.zeros((h, w, 3), dtype=np.float32)
+    img[:, :, 0] = mean_pos
+    img[:, :, 2] = mean_neg
+    if include_count:
+        cnt = cnt_pos + cnt_neg
+        maxv = float(cnt.max()) if cnt.size else 0.0
+        if maxv > 0:
+            img[:, :, 1] = cnt / maxv
+
+    img = np.clip(img * 255.0, 0.0, 255.0).astype(np.uint8)
+    return _resize_rgb(img, patch_size)
+
+
 def _render_histogram_grid(
     events: np.ndarray,
     *,
@@ -146,15 +383,23 @@ def _render_histogram_grid(
                 dt=dt,
                 plane=plane,
             )
-            patch_t, _ = build_patch(
-                events,
-                region,
-                patch_size=patch_size,
-                time_bins=time_bins,
-            )
-            patch = patch_t.detach().cpu().numpy()
-            time_horizontal = plane.startswith("yt")
-            patch_img = _patch_to_rgb(patch, time_horizontal=time_horizontal)
+            if plane in {"cstr2", "cstr3"}:
+                patch_img = _cstr_patch(
+                    events,
+                    region,
+                    patch_size=patch_size,
+                    include_count=plane == "cstr3",
+                )
+            else:
+                patch_t, _ = build_patch(
+                    events,
+                    region,
+                    patch_size=patch_size,
+                    time_bins=time_bins,
+                )
+                patch = patch_t.detach().cpu().numpy()
+                time_horizontal = plane.startswith("yt")
+                patch_img = _patch_to_rgb(patch, time_horizontal=time_horizontal)
             y1 = (gy + 1) * patch_size
             x1 = (gx + 1) * patch_size
             canvas[gy * patch_size : y1, gx * patch_size : x1] = patch_img
@@ -233,7 +478,7 @@ def main() -> None:
         default="events",
         help=(
             "Representation(s) to render, separated by ';' (default: events). "
-            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45."
+            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3."
         ),
     )
     parser.add_argument(
@@ -241,6 +486,29 @@ def main() -> None:
         type=int,
         default=64,
         help="Temporal bins for histogram representations (default: 64)",
+    )
+    parser.add_argument(
+        "--transform",
+        type=str,
+        default="none",
+        choices=["none", "spectrogram", "spectrum2d", "spectrogram_bin", "spectrum2d_bin"],
+        help=(
+            "Optional transform on the rendered patch: none, spectrogram, spectrum2d "
+            "(default: none)."
+        ),
+    )
+    parser.add_argument(
+        "--transform-scale",
+        type=str,
+        default="linear",
+        choices=["linear", "log", "db"],
+        help="Magnitude scaling for spectral transforms (default: linear).",
+    )
+    parser.add_argument(
+        "--transform-eps",
+        type=float,
+        default=1e-6,
+        help="Epsilon for log/db scaling (default: 1e-6).",
     )
     parser.add_argument(
         "--spatial-bins",
@@ -367,6 +635,8 @@ def main() -> None:
             "xy_m45",
             "yt_p45",
             "yt_m45",
+            "cstr2",
+            "cstr3",
         }
         for rep in representations:
             if rep not in valid:
@@ -405,6 +675,15 @@ def main() -> None:
                     grid_x=args.grid_x,
                     grid_y=args.grid_y,
                 )
+            time_horizontal = rep.startswith("yt")
+            img = _apply_transform(
+                img,
+                rep=rep,
+                transform=args.transform,
+                time_horizontal=time_horizontal,
+                scale_mode=args.transform_scale,
+                eps=args.transform_eps,
+            )
         scaled_boxes = _project_boxes(
             boxes,
             dst_w=img.shape[1],
