@@ -406,6 +406,147 @@ def _render_histogram_grid(
     return canvas
 
 
+def render_yolo_frames(args: argparse.Namespace) -> None:
+    events, counters, meta, _ = decode_evt3_raw(args.raw, endian=args.endian)
+    width, height = _parse_geometry(meta)
+    if args.width is not None:
+        width = args.width
+    if args.height is not None:
+        height = args.height
+    if width is None or height is None:
+        raise ValueError("Could not determine geometry; pass --width/--height.")
+
+    t = events[:, 2].astype(np.float64) * float(args.event_unit)
+    ts_shift_us = args.ts_shift_us
+    if ts_shift_us is None:
+        ts_shift_us = _read_ts_shift_us(args.raw)
+    if ts_shift_us is not None:
+        shift = float(ts_shift_us) * float(args.event_unit)
+        t = t - shift
+        keep = t >= 0
+        if np.any(keep):
+            events = events[keep]
+            t = t[keep]
+        else:
+            events = events[:0]
+            t = t[:0]
+        print(f"Applied ts_shift_us={ts_shift_us} (dropped events before shift)")
+    if np.any(np.diff(t) < 0):
+        order = np.argsort(t, kind="stable")
+        events = events[order]
+        t = t[order]
+
+    label_files = list(args.yolo_dir.glob("*.txt"))
+    label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    for label_path in label_files:
+        label_time_raw = _parse_label_time(label_path)
+        if label_time_raw is None:
+            continue
+        label_time = float(label_time_raw) * float(args.label_unit)
+        window = float(args.window) * float(args.label_unit)
+        if args.center:
+            t0 = label_time - window / 2.0
+            t1 = label_time + window / 2.0
+        else:
+            t0 = label_time
+            t1 = label_time + window
+
+        idx0 = int(np.searchsorted(t, t0, side="left"))
+        idx1 = int(np.searchsorted(t, t1, side="left"))
+        ev = events[idx0:idx1]
+        ev_time = ev
+        if ev.size:
+            ev_time = ev.copy()
+            ev_time[:, 2] = t[idx0:idx1]
+
+        boxes = _read_yolo_boxes(label_path)
+        if args.only_with_rects and not boxes:
+            continue
+        reps_raw = args.representation.replace(",", ";")
+        representations = [r.strip() for r in reps_raw.split(";") if r.strip()]
+        valid = {
+            "events",
+            "xy",
+            "xt",
+            "yt",
+            "xy_p45",
+            "xy_m45",
+            "yt_p45",
+            "yt_m45",
+            "cstr2",
+            "cstr3",
+        }
+        for rep in representations:
+            if rep not in valid:
+                raise ValueError(f"Unknown representation: {rep}")
+            if rep == "events":
+                if args.grid_x == 1 and args.grid_y == 1:
+                    img = events_to_image(
+                        ev,
+                        width,
+                        height,
+                        pixel_size=args.pixel_size,
+                    )
+                else:
+                    img = _render_histogram_grid(
+                        ev_time,
+                        width=width,
+                        height=height,
+                        t0=t0,
+                        dt=t1 - t0,
+                        plane="xy",
+                        time_bins=1,
+                        patch_size=args.spatial_bins,
+                        grid_x=args.grid_x,
+                        grid_y=args.grid_y,
+                    )
+            else:
+                img = _render_histogram_grid(
+                    ev_time,
+                    width=width,
+                    height=height,
+                    t0=t0,
+                    dt=t1 - t0,
+                    plane=rep,
+                    time_bins=args.temporal_bins,
+                    patch_size=args.spatial_bins,
+                    grid_x=args.grid_x,
+                    grid_y=args.grid_y,
+                )
+            time_horizontal = rep.startswith("yt")
+            img = _apply_transform(
+                img,
+                rep=rep,
+                transform=args.transform,
+                time_horizontal=time_horizontal,
+                scale_mode=args.transform_scale,
+                eps=args.transform_eps,
+            )
+            scaled_boxes = _project_boxes(
+                boxes,
+                dst_w=img.shape[1],
+                dst_h=img.shape[0],
+            )
+            if args.draw_rectangles and scaled_boxes:
+                draw_rectangles(
+                    img,
+                    scaled_boxes,
+                    color=tuple(args.rect_color),
+                    thickness=args.rect_thickness,
+                )
+            out_path = args.output_dir / f"{label_path.stem}_{rep}.png"
+            final_path = write_image(out_path, img)
+            print(f"Wrote {final_path}")
+
+    if any(counters.values()):
+        print("Ignored word types:")
+        for k, v in counters.items():
+            if v:
+                print(f"  {k}: {v}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -566,145 +707,7 @@ def main() -> None:
         help="Also write images with zero rectangles",
     )
     args = parser.parse_args()
-
-    events, counters, meta, _ = decode_evt3_raw(args.raw, endian=args.endian)
-    width, height = _parse_geometry(meta)
-    if args.width is not None:
-        width = args.width
-    if args.height is not None:
-        height = args.height
-    if width is None or height is None:
-        raise ValueError("Could not determine geometry; pass --width/--height.")
-
-    t = events[:, 2].astype(np.float64) * float(args.event_unit)
-    ts_shift_us = args.ts_shift_us
-    if ts_shift_us is None:
-        ts_shift_us = _read_ts_shift_us(args.raw)
-    if ts_shift_us is not None:
-        shift = float(ts_shift_us) * float(args.event_unit)
-        t = t - shift
-        keep = t >= 0
-        if np.any(keep):
-            events = events[keep]
-            t = t[keep]
-        else:
-            events = events[:0]
-            t = t[:0]
-        print(f"Applied ts_shift_us={ts_shift_us} (dropped events before shift)")
-    if np.any(np.diff(t) < 0):
-        order = np.argsort(t, kind="stable")
-        events = events[order]
-        t = t[order]
-
-    label_files = list(args.yolo_dir.glob("*.txt"))
-    label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    for label_path in label_files:
-        label_time_raw = _parse_label_time(label_path)
-        if label_time_raw is None:
-            continue
-        label_time = float(label_time_raw) * float(args.label_unit)
-        window = float(args.window) * float(args.label_unit)
-        if args.center:
-            t0 = label_time - window / 2.0
-            t1 = label_time + window / 2.0
-        else:
-            t0 = label_time
-            t1 = label_time + window
-
-        idx0 = int(np.searchsorted(t, t0, side="left"))
-        idx1 = int(np.searchsorted(t, t1, side="left"))
-        ev = events[idx0:idx1]
-        ev_time = ev
-        if ev.size:
-            ev_time = ev.copy()
-            ev_time[:, 2] = t[idx0:idx1]
-
-        boxes = _read_yolo_boxes(label_path)
-        if args.only_with_rects and not boxes:
-            continue
-        reps_raw = args.representation.replace(",", ";")
-        representations = [r.strip() for r in reps_raw.split(";") if r.strip()]
-        valid = {
-            "events",
-            "xy",
-            "xt",
-            "yt",
-            "xy_p45",
-            "xy_m45",
-            "yt_p45",
-            "yt_m45",
-            "cstr2",
-            "cstr3",
-        }
-        for rep in representations:
-            if rep not in valid:
-                raise ValueError(f"Unknown representation: {rep}")
-            if rep == "events":
-                if args.grid_x == 1 and args.grid_y == 1:
-                    img = events_to_image(
-                        ev,
-                        width,
-                        height,
-                        pixel_size=args.pixel_size,
-                    )
-                else:
-                    img = _render_histogram_grid(
-                        ev_time,
-                        width=width,
-                        height=height,
-                        t0=t0,
-                        dt=t1 - t0,
-                        plane="xy",
-                        time_bins=1,
-                        patch_size=args.spatial_bins,
-                        grid_x=args.grid_x,
-                        grid_y=args.grid_y,
-                    )
-            else:
-                img = _render_histogram_grid(
-                    ev_time,
-                    width=width,
-                    height=height,
-                    t0=t0,
-                    dt=t1 - t0,
-                    plane=rep,
-                    time_bins=args.temporal_bins,
-                    patch_size=args.spatial_bins,
-                    grid_x=args.grid_x,
-                    grid_y=args.grid_y,
-                )
-            time_horizontal = rep.startswith("yt")
-            img = _apply_transform(
-                img,
-                rep=rep,
-                transform=args.transform,
-                time_horizontal=time_horizontal,
-                scale_mode=args.transform_scale,
-                eps=args.transform_eps,
-            )
-        scaled_boxes = _project_boxes(
-            boxes,
-            dst_w=img.shape[1],
-            dst_h=img.shape[0],
-        )
-        if args.draw_rectangles and scaled_boxes:
-            draw_rectangles(
-                img,
-                scaled_boxes,
-                color=tuple(args.rect_color),
-                thickness=args.rect_thickness,
-            )
-        out_path = args.output_dir / f"{label_path.stem}_{rep}.png"
-        final_path = write_image(out_path, img)
-        print(f"Wrote {final_path}")
-
-    if any(counters.values()):
-        print("Ignored word types:")
-        for k, v in counters.items():
-            if v:
-                print(f"  {k}: {v}")
+    render_yolo_frames(args)
 
 
 if __name__ == "__main__":

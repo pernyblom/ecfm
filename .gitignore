@@ -17,3 +17,6 @@ outputs/
 wandb/
 .venv312/
 datasets
+docs/fred_paper
+!docs/fred_paper/main.tex
+
