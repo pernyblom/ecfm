@@ -2,7 +2,12 @@ data:
   images_root: outputs/fred_reps
   labels_root: datasets/FRED
   labels_subdir: Event_YOLO
-  supervision: yolo
+  supervision: tracks
+  tracks_file: tracks.txt
+  label_time_unit: 1.0e-6
+  track_time_unit: 1.0
+  time_align: start
+  frame_size: null
   representations: ["xt", "yt"]
   past_steps: 12
   future_steps: 12
@@ -11,8 +16,6 @@ data:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   image_size: [128, 128]
-  select_box: largest
-  drop_empty: true
   seed: 123
 
 model:

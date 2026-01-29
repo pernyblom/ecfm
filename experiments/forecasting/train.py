@@ -8,6 +8,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from experiments.forecasting.data.dataset import ForecastDataset, split_dataset
+from experiments.forecasting.data.track_dataset import TrackForecastDataset
 from experiments.forecasting.metrics import ade_fde
 from experiments.forecasting.models.fusion import MultiRepForecast
 from experiments.forecasting.utils.config import load_config
@@ -33,47 +34,99 @@ def main() -> None:
         return items
 
     split_files = data_cfg.get("split_files")
+    supervision = data_cfg.get("supervision", "yolo")
     if split_files:
         train_folders = _read_split_file(Path(split_files["train"]))
         val_folders = _read_split_file(Path(split_files["val"]))
-        train_set = ForecastDataset(
-            images_root=Path(data_cfg["images_root"]),
-            labels_root=Path(data_cfg["labels_root"]),
-            representations=data_cfg["representations"],
-            past_steps=data_cfg["past_steps"],
-            future_steps=data_cfg["future_steps"],
-            stride=data_cfg["stride"],
-            image_size=tuple(data_cfg["image_size"]),
-            select_box=data_cfg.get("select_box", "largest"),
-            drop_empty=bool(data_cfg.get("drop_empty", True)),
-            folders=train_folders,
-            labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
-        )
-        val_set = ForecastDataset(
-            images_root=Path(data_cfg["images_root"]),
-            labels_root=Path(data_cfg["labels_root"]),
-            representations=data_cfg["representations"],
-            past_steps=data_cfg["past_steps"],
-            future_steps=data_cfg["future_steps"],
-            stride=data_cfg["stride"],
-            image_size=tuple(data_cfg["image_size"]),
-            select_box=data_cfg.get("select_box", "largest"),
-            drop_empty=bool(data_cfg.get("drop_empty", True)),
-            folders=val_folders,
-            labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
-        )
+        if supervision == "tracks":
+            train_set = TrackForecastDataset(
+                images_root=Path(data_cfg["images_root"]),
+                labels_root=Path(data_cfg["labels_root"]),
+                representations=data_cfg["representations"],
+                past_steps=data_cfg["past_steps"],
+                future_steps=data_cfg["future_steps"],
+                stride=data_cfg["stride"],
+                image_size=tuple(data_cfg["image_size"]),
+                folders=train_folders,
+                labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+                tracks_file=data_cfg.get("tracks_file", "tracks.txt"),
+                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
+                track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
+                time_align=data_cfg.get("time_align", "start"),
+                frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+            )
+            val_set = TrackForecastDataset(
+                images_root=Path(data_cfg["images_root"]),
+                labels_root=Path(data_cfg["labels_root"]),
+                representations=data_cfg["representations"],
+                past_steps=data_cfg["past_steps"],
+                future_steps=data_cfg["future_steps"],
+                stride=data_cfg["stride"],
+                image_size=tuple(data_cfg["image_size"]),
+                folders=val_folders,
+                labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+                tracks_file=data_cfg.get("tracks_file", "tracks.txt"),
+                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
+                track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
+                time_align=data_cfg.get("time_align", "start"),
+                frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+            )
+        else:
+            train_set = ForecastDataset(
+                images_root=Path(data_cfg["images_root"]),
+                labels_root=Path(data_cfg["labels_root"]),
+                representations=data_cfg["representations"],
+                past_steps=data_cfg["past_steps"],
+                future_steps=data_cfg["future_steps"],
+                stride=data_cfg["stride"],
+                image_size=tuple(data_cfg["image_size"]),
+                select_box=data_cfg.get("select_box", "largest"),
+                drop_empty=bool(data_cfg.get("drop_empty", True)),
+                folders=train_folders,
+                labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+            )
+            val_set = ForecastDataset(
+                images_root=Path(data_cfg["images_root"]),
+                labels_root=Path(data_cfg["labels_root"]),
+                representations=data_cfg["representations"],
+                past_steps=data_cfg["past_steps"],
+                future_steps=data_cfg["future_steps"],
+                stride=data_cfg["stride"],
+                image_size=tuple(data_cfg["image_size"]),
+                select_box=data_cfg.get("select_box", "largest"),
+                drop_empty=bool(data_cfg.get("drop_empty", True)),
+                folders=val_folders,
+                labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+            )
     else:
-        dataset = ForecastDataset(
-            images_root=Path(data_cfg["images_root"]),
-            labels_root=Path(data_cfg["labels_root"]),
-            representations=data_cfg["representations"],
-            past_steps=data_cfg["past_steps"],
-            future_steps=data_cfg["future_steps"],
-            stride=data_cfg["stride"],
-            image_size=tuple(data_cfg["image_size"]),
-            select_box=data_cfg.get("select_box", "largest"),
-            drop_empty=bool(data_cfg.get("drop_empty", True)),
-        )
+        if supervision == "tracks":
+            dataset = TrackForecastDataset(
+                images_root=Path(data_cfg["images_root"]),
+                labels_root=Path(data_cfg["labels_root"]),
+                representations=data_cfg["representations"],
+                past_steps=data_cfg["past_steps"],
+                future_steps=data_cfg["future_steps"],
+                stride=data_cfg["stride"],
+                image_size=tuple(data_cfg["image_size"]),
+                labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+                tracks_file=data_cfg.get("tracks_file", "tracks.txt"),
+                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
+                track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
+                time_align=data_cfg.get("time_align", "start"),
+                frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+            )
+        else:
+            dataset = ForecastDataset(
+                images_root=Path(data_cfg["images_root"]),
+                labels_root=Path(data_cfg["labels_root"]),
+                representations=data_cfg["representations"],
+                past_steps=data_cfg["past_steps"],
+                future_steps=data_cfg["future_steps"],
+                stride=data_cfg["stride"],
+                image_size=tuple(data_cfg["image_size"]),
+                select_box=data_cfg.get("select_box", "largest"),
+                drop_empty=bool(data_cfg.get("drop_empty", True)),
+            )
         train_set, val_set = split_dataset(
             dataset, train_split=data_cfg["train_split"], seed=data_cfg["seed"]
         )
