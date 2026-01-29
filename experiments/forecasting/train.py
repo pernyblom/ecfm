@@ -23,20 +23,60 @@ def main() -> None:
     model_cfg = cfg["model"]
     train_cfg = cfg["train"]
 
-    dataset = ForecastDataset(
-        images_root=Path(data_cfg["images_root"]),
-        labels_root=Path(data_cfg["labels_root"]),
-        representations=data_cfg["representations"],
-        past_steps=data_cfg["past_steps"],
-        future_steps=data_cfg["future_steps"],
-        stride=data_cfg["stride"],
-        image_size=tuple(data_cfg["image_size"]),
-        select_box=data_cfg.get("select_box", "largest"),
-        drop_empty=bool(data_cfg.get("drop_empty", True)),
-    )
-    train_set, val_set = split_dataset(
-        dataset, train_split=data_cfg["train_split"], seed=data_cfg["seed"]
-    )
+    def _read_split_file(path: Path) -> list[str]:
+        items: list[str] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            items.append(line.strip("/"))
+        return items
+
+    split_files = data_cfg.get("split_files")
+    if split_files:
+        train_folders = _read_split_file(Path(split_files["train"]))
+        val_folders = _read_split_file(Path(split_files["val"]))
+        train_set = ForecastDataset(
+            images_root=Path(data_cfg["images_root"]),
+            labels_root=Path(data_cfg["labels_root"]),
+            representations=data_cfg["representations"],
+            past_steps=data_cfg["past_steps"],
+            future_steps=data_cfg["future_steps"],
+            stride=data_cfg["stride"],
+            image_size=tuple(data_cfg["image_size"]),
+            select_box=data_cfg.get("select_box", "largest"),
+            drop_empty=bool(data_cfg.get("drop_empty", True)),
+            folders=train_folders,
+            labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+        )
+        val_set = ForecastDataset(
+            images_root=Path(data_cfg["images_root"]),
+            labels_root=Path(data_cfg["labels_root"]),
+            representations=data_cfg["representations"],
+            past_steps=data_cfg["past_steps"],
+            future_steps=data_cfg["future_steps"],
+            stride=data_cfg["stride"],
+            image_size=tuple(data_cfg["image_size"]),
+            select_box=data_cfg.get("select_box", "largest"),
+            drop_empty=bool(data_cfg.get("drop_empty", True)),
+            folders=val_folders,
+            labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),
+        )
+    else:
+        dataset = ForecastDataset(
+            images_root=Path(data_cfg["images_root"]),
+            labels_root=Path(data_cfg["labels_root"]),
+            representations=data_cfg["representations"],
+            past_steps=data_cfg["past_steps"],
+            future_steps=data_cfg["future_steps"],
+            stride=data_cfg["stride"],
+            image_size=tuple(data_cfg["image_size"]),
+            select_box=data_cfg.get("select_box", "largest"),
+            drop_empty=bool(data_cfg.get("drop_empty", True)),
+        )
+        train_set, val_set = split_dataset(
+            dataset, train_split=data_cfg["train_split"], seed=data_cfg["seed"]
+        )
 
     train_loader = DataLoader(
         train_set, batch_size=train_cfg["batch_size"], shuffle=True, num_workers=0

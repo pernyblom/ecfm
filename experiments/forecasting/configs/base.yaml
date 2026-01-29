@@ -1,11 +1,14 @@
 data:
   images_root: outputs/fred_reps
-  labels_root: datasets/FRED/0/Event_YOLO
+  labels_root: datasets/FRED
+  labels_subdir: Event_YOLO
   representations: ["xt", "yt"]
   past_steps: 12
   future_steps: 12
   stride: 1
-  train_split: 0.8
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    val: datasets/FRED/dataset_splits/canonical/test_split.txt
   image_size: [128, 128]
   select_box: largest
   drop_empty: true

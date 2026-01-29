@@ -69,6 +69,9 @@ def _select_box(
     raise ValueError(f"Unknown select_box: {mode}")
 
 
+FrameKey = Tuple[str, str]
+
+
 class ForecastDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -81,6 +84,8 @@ class ForecastDataset(torch.utils.data.Dataset):
         image_size: Tuple[int, int],
         select_box: str = "largest",
         drop_empty: bool = True,
+        folders: Optional[List[str]] = None,
+        labels_subdir: str = "Event_YOLO",
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -91,46 +96,70 @@ class ForecastDataset(torch.utils.data.Dataset):
         self.image_size = image_size
         self.select_box = select_box
         self.drop_empty = drop_empty
+        self.folders = folders
+        self.labels_subdir = labels_subdir
 
-        self.frame_keys = self._discover_frames()
+        self.frames_by_folder = self._discover_frames()
         self.samples = self._build_samples()
 
-    def _discover_frames(self) -> List[str]:
-        # Use label files as the source of frame keys
-        keys = []
-        for txt in self.labels_root.glob("*.txt"):
-            keys.append(txt.stem)
-        # sort by frame time
-        keys.sort(key=lambda k: (_parse_frame_time(k) is None, _parse_frame_time(k) or 0, k))
-        return keys
+    def _labels_dir(self, folder: str) -> Path:
+        if self.folders is None:
+            return self.labels_root
+        return self.labels_root / folder / self.labels_subdir
 
-    def _has_all_reps(self, key: str) -> bool:
+    def _images_dir(self, folder: str) -> Path:
+        if self.folders is None:
+            return self.images_root
+        return self.images_root / folder
+
+    def _discover_frames(self) -> Dict[str, List[str]]:
+        # Use label files as the source of frame keys per folder
+        frames: Dict[str, List[str]] = {}
+        if self.folders is None:
+            keys = [p.stem for p in self.labels_root.glob("*.txt")]
+            keys.sort(key=lambda k: (_parse_frame_time(k) is None, _parse_frame_time(k) or 0, k))
+            frames[""] = keys
+            return frames
+        for folder in self.folders:
+            labels_dir = self._labels_dir(folder)
+            if not labels_dir.exists():
+                continue
+            keys = [p.stem for p in labels_dir.glob("*.txt")]
+            keys.sort(key=lambda k: (_parse_frame_time(k) is None, _parse_frame_time(k) or 0, k))
+            frames[folder] = keys
+        return frames
+
+    def _has_all_reps(self, key: FrameKey) -> bool:
+        folder, stem = key
+        img_dir = self._images_dir(folder)
         for rep in self.representations:
-            img = self.images_root / f"{key}_{rep}.png"
+            img = img_dir / f"{stem}_{rep}.png"
             if not img.exists():
                 return False
         return True
 
-    def _build_samples(self) -> List[List[str]]:
-        samples: List[List[str]] = []
+    def _build_samples(self) -> List[List[FrameKey]]:
+        samples: List[List[FrameKey]] = []
         total = self.past_steps + self.future_steps
-        for idx in range(0, len(self.frame_keys) - total * self.stride + 1):
-            window = [
-                self.frame_keys[idx + i * self.stride] for i in range(total)
-            ]
-            if not all(self._has_all_reps(k) for k in window):
-                continue
-            if self.drop_empty:
-                # Require at least one box in all past and future frames
-                ok = True
-                for k in window:
-                    boxes = _read_yolo_boxes(self.labels_root / f"{k}.txt")
-                    if not boxes:
-                        ok = False
-                        break
-                if not ok:
+        for folder, keys in self.frames_by_folder.items():
+            for idx in range(0, len(keys) - total * self.stride + 1):
+                window = [
+                    (folder, keys[idx + i * self.stride]) for i in range(total)
+                ]
+                if not all(self._has_all_reps(k) for k in window):
                     continue
-            samples.append(window)
+                if self.drop_empty:
+                    # Require at least one box in all past and future frames
+                    ok = True
+                    for f, stem in window:
+                        labels_dir = self._labels_dir(f)
+                        boxes = _read_yolo_boxes(labels_dir / f"{stem}.txt")
+                        if not boxes:
+                            ok = False
+                            break
+                    if not ok:
+                        continue
+                samples.append(window)
         return samples
 
     def __len__(self) -> int:
@@ -146,17 +175,22 @@ class ForecastDataset(torch.utils.data.Dataset):
         future_boxes = []
 
         for key in past_keys:
+            folder, stem = key
+            img_dir = self._images_dir(folder)
+            labels_dir = self._labels_dir(folder)
             for rep in self.representations:
-                img_path = self.images_root / f"{key}_{rep}.png"
+                img_path = img_dir / f"{stem}_{rep}.png"
                 inputs[rep].append(_load_image(img_path, self.image_size))
-            boxes = _read_yolo_boxes(self.labels_root / f"{key}.txt")
+            boxes = _read_yolo_boxes(labels_dir / f"{stem}.txt")
             box = _select_box(boxes, self.select_box)
             if box is None:
                 box = (0.0, 0.0, 0.0, 0.0)
             past_boxes.append(box)
 
         for key in future_keys:
-            boxes = _read_yolo_boxes(self.labels_root / f"{key}.txt")
+            folder, stem = key
+            labels_dir = self._labels_dir(folder)
+            boxes = _read_yolo_boxes(labels_dir / f"{stem}.txt")
             box = _select_box(boxes, self.select_box)
             if box is None:
                 box = (0.0, 0.0, 0.0, 0.0)
@@ -167,7 +201,7 @@ class ForecastDataset(torch.utils.data.Dataset):
             inputs=inputs_t,
             past_boxes=torch.tensor(past_boxes, dtype=torch.float32),
             future_boxes=torch.tensor(future_boxes, dtype=torch.float32),
-            frame_keys=window,
+            frame_keys=[f"{f}/{stem}" if f else stem for f, stem in window],
         )
 
 
