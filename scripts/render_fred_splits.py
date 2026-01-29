@@ -1,5 +1,10 @@
 import argparse
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.render_evt3_yolo_frames import render_yolo_frames
 
@@ -42,6 +47,18 @@ def main() -> None:
         default="events",
         help="Representation(s) to render, separated by ';' (default: events).",
     )
+    parser.add_argument(
+        "--crop-representations",
+        type=str,
+        default="",
+        help="Representations to crop to YOLO boxes, separated by ';' (default: none).",
+    )
+    parser.add_argument(
+        "--rgb-dir",
+        type=Path,
+        default=None,
+        help="Optional RGB image directory (defaults to sibling RGB or PADDED_RGB)",
+    )
     parser.add_argument("--window", type=float, default=33333.0)
     parser.add_argument("--label-unit", type=float, default=1.0)
     parser.add_argument("--event-unit", type=float, default=1.0)
@@ -53,10 +70,11 @@ def main() -> None:
     parser.add_argument("--pixel-size", type=int, default=1)
     parser.add_argument("--temporal-bins", type=int, default=64)
     parser.add_argument("--spatial-bins", type=int, default=32)
+    parser.add_argument("--output-size", type=int, nargs=2, default=None)
     parser.add_argument("--grid-x", type=int, default=1)
     parser.add_argument("--grid-y", type=int, default=1)
     parser.add_argument("--rect-color", type=int, nargs=3, default=(0, 255, 0))
-    parser.add_argument("--draw-rectangles", action="store_true", default=True)
+    parser.add_argument("--draw-rectangles", action="store_true", default=False)
     parser.add_argument("--no-rectangles", action="store_false", dest="draw_rectangles")
     parser.add_argument("--rect-thickness", type=int, default=1)
     parser.add_argument("--only-with-rects", action="store_true", default=True)

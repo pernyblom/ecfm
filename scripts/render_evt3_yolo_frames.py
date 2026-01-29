@@ -11,6 +11,7 @@ from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 
 
 _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
+_RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 
 
 def _parse_geometry(meta: dict) -> Tuple[Optional[int], Optional[int]]:
@@ -36,6 +37,104 @@ def _parse_label_time(path: Path) -> Optional[int]:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _parse_rgb_time(path: Path) -> Optional[float]:
+    match = _RGB_TIME_RE.search(path.stem)
+    if not match:
+        return None
+    hh, mm, ss, frac = match.groups()
+    try:
+        h = int(hh)
+        m = int(mm)
+        s = int(ss)
+        micros = int(frac.ljust(6, "0")[:6])
+    except ValueError:
+        return None
+    return h * 3600.0 + m * 60.0 + s + micros / 1_000_000.0
+
+
+def _build_rgb_index(rgb_dir: Path, *, label_unit: float) -> list[tuple[float, Path]]:
+    if not rgb_dir.exists():
+        return []
+    files = sorted(rgb_dir.glob("*.jpg")) + sorted(rgb_dir.glob("*.png"))
+    if not files:
+        return []
+    times: list[tuple[float, Path]] = []
+    parsed = [_parse_rgb_time(p) for p in files]
+    if any(t is not None for t in parsed):
+        base = next(t for t in parsed if t is not None)
+        for path, t in zip(files, parsed):
+            if t is None:
+                continue
+            rel_us = (t - base) * 1_000_000.0
+            times.append((rel_us * float(label_unit), path))
+    else:
+        for idx, path in enumerate(files):
+            times.append((float(idx), path))
+    times.sort(key=lambda item: item[0])
+    return times
+
+
+def _find_rgb_frame(rgb_index: list[tuple[float, Path]], label_time: float) -> Optional[Path]:
+    if not rgb_index:
+        return None
+    times = [t for t, _ in rgb_index]
+    idx = int(np.searchsorted(times, label_time, side="left"))
+    if idx <= 0:
+        return rgb_index[0][1]
+    if idx >= len(rgb_index):
+        return rgb_index[-1][1]
+    before_t, before_p = rgb_index[idx - 1]
+    after_t, after_p = rgb_index[idx]
+    if abs(label_time - before_t) <= abs(after_t - label_time):
+        return before_p
+    return after_p
+
+
+def _read_rgb_image(path: Path) -> np.ndarray:
+    try:
+        from PIL import Image
+
+        img = Image.open(path).convert("RGB")
+        return np.array(img, dtype=np.uint8)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to read image: {path}") from exc
+
+
+def _to_grayscale(img: np.ndarray) -> np.ndarray:
+    if img.ndim != 3 or img.shape[2] != 3:
+        raise ValueError("Expected RGB image for grayscale conversion.")
+    gray = (
+        0.299 * img[:, :, 0].astype(np.float32)
+        + 0.587 * img[:, :, 1].astype(np.float32)
+        + 0.114 * img[:, :, 2].astype(np.float32)
+    )
+    gray = np.clip(gray, 0.0, 255.0).astype(np.uint8)
+    out = np.zeros_like(img)
+    out[:, :, 0] = gray
+    out[:, :, 1] = gray
+    out[:, :, 2] = gray
+    return out
+
+
+def _crop_to_boxes(
+    img: np.ndarray,
+    boxes: List[Tuple[int, int, int, int]],
+) -> Tuple[np.ndarray, List[Tuple[int, int, int, int]]]:
+    if not boxes:
+        return img, boxes
+    xs = [b[0] for b in boxes] + [b[2] for b in boxes]
+    ys = [b[1] for b in boxes] + [b[3] for b in boxes]
+    x0 = max(0, min(xs))
+    y0 = max(0, min(ys))
+    x1 = min(img.shape[1], max(xs))
+    y1 = min(img.shape[0], max(ys))
+    if x1 <= x0 or y1 <= y0:
+        return img, boxes
+    cropped = img[y0:y1, x0:x1]
+    shifted = [(bx0 - x0, by0 - y0, bx1 - x0, by1 - y0) for bx0, by0, bx1, by1 in boxes]
+    return cropped, shifted
 
 
 def _read_ts_shift_us(raw_path: Path) -> Optional[int]:
@@ -113,12 +212,18 @@ def _patch_to_rgb(patch: np.ndarray, *, time_horizontal: bool = False) -> np.nda
 def _resize_rgb(img: np.ndarray, patch_size: int) -> np.ndarray:
     if img.shape[0] == patch_size and img.shape[1] == patch_size:
         return img
+    return _resize_to(img, (patch_size, patch_size))
+
+
+def _resize_to(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    if img.shape[1] == size[0] and img.shape[0] == size[1]:
+        return img
     try:
         import torch
         import torch.nn.functional as F
 
         t = torch.from_numpy(img.transpose(2, 0, 1)).unsqueeze(0).float()
-        t = F.interpolate(t, size=(patch_size, patch_size), mode="bilinear", align_corners=False)
+        t = F.interpolate(t, size=(size[1], size[0]), mode="bilinear", align_corners=False)
         out = t.squeeze(0).permute(1, 2, 0).clamp(0, 255).byte().numpy()
         return out
     except Exception:
@@ -264,7 +369,7 @@ def _apply_transform(
     if transform == "none":
         return img
     if transform == "spectrogram":
-        if rep in {"events", "xy", "cstr2", "cstr3"}:
+        if rep in {"events", "xy", "cstr2", "cstr3", "rgb", "grayscale", "gray"}:
             print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
             return img
         return _spectrogram_from_image(
@@ -273,7 +378,7 @@ def _apply_transform(
     if transform == "spectrum2d":
         return _spectrum2d(img, scale_mode=scale_mode, eps=eps)
     if transform == "spectrogram_bin":
-        if rep in {"events", "xy", "cstr2", "cstr3"}:
+        if rep in {"events", "xy", "cstr2", "cstr3", "rgb", "grayscale", "gray"}:
             print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
             return img
         return _spectrogram_from_image_bin(
@@ -439,6 +544,16 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
     label_files = list(args.yolo_dir.glob("*.txt"))
     label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    rgb_dir = args.rgb_dir
+    if rgb_dir is None:
+        candidate = args.yolo_dir.parent / "RGB"
+        if candidate.exists():
+            rgb_dir = candidate
+        else:
+            candidate = args.yolo_dir.parent / "PADDED_RGB"
+            if candidate.exists():
+                rgb_dir = candidate
+    rgb_index = _build_rgb_index(rgb_dir, label_unit=args.label_unit) if rgb_dir else []
 
     for label_path in label_files:
         label_time_raw = _parse_label_time(label_path)
@@ -466,6 +581,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             continue
         reps_raw = args.representation.replace(",", ";")
         representations = [r.strip() for r in reps_raw.split(";") if r.strip()]
+        crop_raw = args.crop_representations.replace(",", ";")
+        crop_reps = {r.strip() for r in crop_raw.split(";") if r.strip()}
         valid = {
             "events",
             "xy",
@@ -477,11 +594,22 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             "yt_m45",
             "cstr2",
             "cstr3",
+            "rgb",
+            "grayscale",
+            "gray",
         }
         for rep in representations:
             if rep not in valid:
                 raise ValueError(f"Unknown representation: {rep}")
-            if rep == "events":
+            if rep in {"rgb", "grayscale", "gray"}:
+                rgb_path = _find_rgb_frame(rgb_index, label_time)
+                if rgb_path is None:
+                    print(f"Warning: no RGB frame found for {label_path.name}")
+                    continue
+                img = _read_rgb_image(rgb_path)
+                if rep in {"grayscale", "gray"}:
+                    img = _to_grayscale(img)
+            elif rep == "events":
                 if args.grid_x == 1 and args.grid_y == 1:
                     img = events_to_image(
                         ev,
@@ -524,11 +652,15 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 scale_mode=args.transform_scale,
                 eps=args.transform_eps,
             )
+            if args.output_size is not None:
+                img = _resize_to(img, (args.output_size[0], args.output_size[1]))
             scaled_boxes = _project_boxes(
                 boxes,
                 dst_w=img.shape[1],
                 dst_h=img.shape[0],
             )
+            if rep in crop_reps:
+                img, scaled_boxes = _crop_to_boxes(img, scaled_boxes)
             if args.draw_rectangles and scaled_boxes:
                 draw_rectangles(
                     img,
@@ -557,6 +689,12 @@ def main() -> None:
     parser.add_argument("raw", type=Path, help="Path to .raw file")
     parser.add_argument("yolo_dir", type=Path, help="Directory with YOLO txt files")
     parser.add_argument("output_dir", type=Path, help="Output directory for images")
+    parser.add_argument(
+        "--rgb-dir",
+        type=Path,
+        default=None,
+        help="Optional RGB image directory (defaults to sibling RGB or PADDED_RGB)",
+    )
     parser.add_argument(
         "--window",
         type=float,
@@ -619,8 +757,15 @@ def main() -> None:
         default="events",
         help=(
             "Representation(s) to render, separated by ';' (default: events). "
-            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3."
+            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, "
+            "rgb, grayscale."
         ),
+    )
+    parser.add_argument(
+        "--crop-representations",
+        type=str,
+        default="",
+        help="Representations to crop to YOLO boxes, separated by ';' (default: none).",
     )
     parser.add_argument(
         "--temporal-bins",
@@ -658,6 +803,13 @@ def main() -> None:
         help="Output patch size for histogram representations (default: 32)",
     )
     parser.add_argument(
+        "--output-size",
+        type=int,
+        nargs=2,
+        default=None,
+        help="Final output image size as W H (default: None)",
+    )
+    parser.add_argument(
         "--grid-x",
         type=int,
         default=1,
@@ -679,8 +831,8 @@ def main() -> None:
     parser.add_argument(
         "--draw-rectangles",
         action="store_true",
-        default=True,
-        help="Draw rectangles from YOLO labels (default: True)",
+        default=False,
+        help="Draw rectangles from YOLO labels (default: False)",
     )
     parser.add_argument(
         "--no-rectangles",
