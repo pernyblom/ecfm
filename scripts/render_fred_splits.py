@@ -1,5 +1,6 @@
 import argparse
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,22 @@ def _read_split_file(path: Path) -> list[str]:
             continue
         items.append(line.strip("/"))
     return items
+
+
+def _process_folder(folder: str, args_dict: dict) -> str:
+    base = Path(args_dict["fred_root"]) / folder
+    raw_path = base / "Event" / "events.raw"
+    yolo_dir = base / "Event_YOLO"
+    if not raw_path.exists() or not yolo_dir.exists():
+        return f"Skipping {folder}: missing raw or labels."
+    out_dir = Path(args_dict["output_root"]) / folder
+    per_args = argparse.Namespace(**args_dict)
+    per_args.raw = raw_path
+    per_args.yolo_dir = yolo_dir
+    per_args.output_dir = out_dir
+    print(f"Rendering {folder} -> {out_dir}")
+    render_yolo_frames(per_args)
+    return f"Done {folder}"
 
 
 def main() -> None:
@@ -92,23 +109,35 @@ def main() -> None:
         choices=["linear", "log", "db"],
     )
     parser.add_argument("--transform-eps", type=float, default=1e-6)
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help="Number of worker processes (default: 1)",
+    )
     args = parser.parse_args()
 
     folders = _read_split_file(args.split_file)
-    for folder in folders:
-        base = args.fred_root / folder
-        raw_path = base / "Event" / "events.raw"
-        yolo_dir = base / "Event_YOLO"
-        if not raw_path.exists() or not yolo_dir.exists():
-            print(f"Skipping {folder}: missing raw or labels.")
-            continue
-        out_dir = args.output_root / folder
-        per_args = argparse.Namespace(**vars(args))
-        per_args.raw = raw_path
-        per_args.yolo_dir = yolo_dir
-        per_args.output_dir = out_dir
-        print(f"Rendering {folder} -> {out_dir}")
-        render_yolo_frames(per_args)
+    args_dict = vars(args).copy()
+    if args.num_workers <= 1:
+        for folder in folders:
+            msg = _process_folder(folder, args_dict)
+            if msg:
+                print(msg)
+        return
+
+    with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+        futures = {
+            executor.submit(_process_folder, folder, args_dict): folder for folder in folders
+        }
+        for fut in as_completed(futures):
+            folder = futures[fut]
+            try:
+                msg = fut.result()
+                if msg:
+                    print(msg)
+            except Exception as exc:
+                print(f"Failed {folder}: {exc}")
 
 
 if __name__ == "__main__":
