@@ -215,6 +215,21 @@ def _resize_rgb(img: np.ndarray, patch_size: int) -> np.ndarray:
     return _resize_to(img, (patch_size, patch_size))
 
 
+def _resize_gray(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    if img.shape[0] == size[1] and img.shape[1] == size[0]:
+        return img
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        t = torch.from_numpy(img).unsqueeze(0).unsqueeze(0).float()
+        t = F.interpolate(t, size=(size[1], size[0]), mode="bilinear", align_corners=False)
+        out = t.squeeze(0).squeeze(0).clamp(0, 1).numpy()
+        return out
+    except Exception:
+        return img
+
+
 def _resize_to(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
     if img.shape[1] == size[0] and img.shape[0] == size[1]:
         return img
@@ -452,6 +467,57 @@ def _cstr_patch(
     return _resize_rgb(img, patch_size)
 
 
+def _mean_axis_map(
+    events: np.ndarray,
+    region: Region,
+    *,
+    time_bins: int,
+    axis: str,
+) -> np.ndarray:
+    mask = (
+        (events[:, 0] >= region.x)
+        & (events[:, 0] < region.x + region.dx)
+        & (events[:, 1] >= region.y)
+        & (events[:, 1] < region.y + region.dy)
+        & (events[:, 2] >= region.t)
+        & (events[:, 2] < region.t + region.dt)
+    )
+    sub = events[mask]
+    if sub.shape[0] == 0:
+        if axis == "y":
+            return np.zeros((time_bins, region.dx), dtype=np.float32)
+        if axis == "x":
+            return np.zeros((time_bins, region.dy), dtype=np.float32)
+        raise ValueError(f"Unknown axis: {axis}")
+
+    t_norm = (sub[:, 2] - region.t) / max(region.dt, 1e-6)
+    t_idx = np.clip((t_norm * time_bins).astype(np.int64), 0, time_bins - 1)
+
+    if axis == "y":
+        x = (sub[:, 0] - region.x).astype(np.int64)
+        y_norm = (sub[:, 1] - region.y) / max(region.dy - 1, 1)
+        y_norm = np.clip(y_norm, 0.0, 1.0)
+        sums = np.zeros((time_bins, region.dx), dtype=np.float32)
+        counts = np.zeros((time_bins, region.dx), dtype=np.float32)
+        np.add.at(sums, (t_idx, x), y_norm)
+        np.add.at(counts, (t_idx, x), 1.0)
+    elif axis == "x":
+        y = (sub[:, 1] - region.y).astype(np.int64)
+        x_norm = (sub[:, 0] - region.x) / max(region.dx - 1, 1)
+        x_norm = np.clip(x_norm, 0.0, 1.0)
+        sums = np.zeros((time_bins, region.dy), dtype=np.float32)
+        counts = np.zeros((time_bins, region.dy), dtype=np.float32)
+        np.add.at(sums, (t_idx, y), x_norm)
+        np.add.at(counts, (t_idx, y), 1.0)
+    else:
+        raise ValueError(f"Unknown axis: {axis}")
+
+    mean = np.zeros_like(sums, dtype=np.float32)
+    mask_nonzero = counts > 0
+    mean[mask_nonzero] = sums[mask_nonzero] / counts[mask_nonzero]
+    return mean
+
+
 def _render_histogram_grid(
     events: np.ndarray,
     *,
@@ -495,6 +561,34 @@ def _render_histogram_grid(
                     patch_size=patch_size,
                     include_count=plane == "cstr3",
                 )
+            elif plane in {"xt_my", "yt_mx"}:
+                base_plane = "xt" if plane == "xt_my" else "yt"
+                region_base = Region(
+                    x=region.x,
+                    y=region.y,
+                    t=region.t,
+                    dx=region.dx,
+                    dy=region.dy,
+                    dt=region.dt,
+                    plane=base_plane,
+                )
+                patch_t, _ = build_patch(
+                    events,
+                    region_base,
+                    patch_size=patch_size,
+                    time_bins=time_bins,
+                )
+                patch = patch_t.detach().cpu().numpy()
+                time_horizontal = plane.startswith("yt")
+                patch_img = _patch_to_rgb(patch, time_horizontal=time_horizontal)
+
+                axis = "y" if plane == "xt_my" else "x"
+                mean_map = _mean_axis_map(events, region, time_bins=time_bins, axis=axis)
+                mean_map = _resize_gray(mean_map, (patch_size, patch_size))
+                if time_horizontal:
+                    mean_map = mean_map.T
+                patch_img = patch_img.copy()
+                patch_img[:, :, 1] = np.clip(mean_map * 255.0, 0, 255).astype(np.uint8)
             else:
                 patch_t, _ = build_patch(
                     events,
@@ -597,6 +691,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             "rgb",
             "grayscale",
             "gray",
+            "xt_my",
+            "yt_mx",
         }
         for rep in representations:
             if rep not in valid:
@@ -758,7 +854,7 @@ def main() -> None:
         help=(
             "Representation(s) to render, separated by ';' (default: events). "
             "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, "
-            "rgb, grayscale."
+            "xt_my, yt_mx, rgb, grayscale."
         ),
     )
     parser.add_argument(
