@@ -8,6 +8,8 @@ data:
   track_time_unit: 1.0
   time_align: start
   frame_size: [1280, 720]
+  max_samples_train: 3680
+  max_samples_val: 940
   representations: ["xt", "yt", "cstr3"]
   past_steps: 12
   future_steps: 24
@@ -26,8 +28,8 @@ model:
   rnn_layers: 1
 
 train:
-  batch_size: 8
-  epochs: 5
+  batch_size: 32
+  epochs: 20
   lr: 1.0e-3
   weight_decay: 0.0
   device: cuda

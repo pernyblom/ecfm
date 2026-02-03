@@ -114,6 +114,9 @@ def main() -> None:
                 track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
                 time_align=data_cfg.get("time_align", "start"),
                 frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+                max_tracks=data_cfg.get("max_tracks_train"),
+                max_samples=data_cfg.get("max_samples_train"),
+                seed=int(data_cfg.get("seed", 123)),
             )
             val_set = TrackForecastDataset(
                 images_root=Path(data_cfg["images_root"]),
@@ -130,6 +133,9 @@ def main() -> None:
                 track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
                 time_align=data_cfg.get("time_align", "start"),
                 frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+                max_tracks=data_cfg.get("max_tracks_val"),
+                max_samples=data_cfg.get("max_samples_val"),
+                seed=int(data_cfg.get("seed", 123)) + 1,
             )
         else:
             train_set = ForecastDataset(
@@ -174,6 +180,9 @@ def main() -> None:
                 track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
                 time_align=data_cfg.get("time_align", "start"),
                 frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+                max_tracks=data_cfg.get("max_tracks"),
+                max_samples=data_cfg.get("max_samples"),
+                seed=int(data_cfg.get("seed", 123)),
             )
         else:
             dataset = ForecastDataset(
@@ -233,8 +242,8 @@ def main() -> None:
     if vis_enabled:
         vis_dir.mkdir(parents=True, exist_ok=True)
 
-    print("Train samples", len(train_loader))
-    print("Val samples", len(val_loader))
+    print("Train batches", len(train_loader))
+    print("Val batches", len(val_loader))
 
     for epoch in range(train_cfg["epochs"]):
         model.train()

@@ -74,6 +74,9 @@ def main() -> None:
                 track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
                 time_align=data_cfg.get("time_align", "start"),
                 frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+                max_tracks=data_cfg.get("max_tracks_val"),
+                max_samples=data_cfg.get("max_samples_val"),
+                seed=int(data_cfg.get("seed", 123)) + 1,
             )
         else:
             val_set = ForecastDataset(
@@ -105,6 +108,9 @@ def main() -> None:
                 track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
                 time_align=data_cfg.get("time_align", "start"),
                 frame_size=tuple(data_cfg["frame_size"]) if data_cfg.get("frame_size") else None,
+                max_tracks=data_cfg.get("max_tracks"),
+                max_samples=data_cfg.get("max_samples"),
+                seed=int(data_cfg.get("seed", 123)),
             )
         else:
             dataset = ForecastDataset(

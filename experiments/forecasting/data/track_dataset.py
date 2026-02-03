@@ -101,6 +101,9 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         track_time_unit: float = 1.0,
         time_align: str = "start",
         frame_size: Optional[Tuple[int, int]] = None,
+        max_tracks: Optional[int] = None,
+        max_samples: Optional[int] = None,
+        seed: int = 123,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -116,9 +119,14 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         self.track_time_unit = track_time_unit
         self.time_align = time_align
         self.frame_size_override = frame_size
+        self.max_tracks = max_tracks
+        self.max_samples = max_samples
+        self.seed = seed
 
         self.frames_by_folder = self._discover_frames()
+        self.allowed_tracks = self._select_track_subset()
         self.samples = self._build_samples()
+        self._apply_sample_limit()
 
     def _labels_dir(self, folder: str) -> Path:
         if self.folders is None:
@@ -161,6 +169,21 @@ class TrackForecastDataset(torch.utils.data.Dataset):
             frames[folder] = items
         return frames
 
+    def _select_track_subset(self) -> Optional[set[tuple[str, int]]]:
+        if self.max_tracks is None:
+            return None
+        keys: List[tuple[str, int]] = []
+        for folder in self.frames_by_folder.keys():
+            tracks = _read_tracks(self._tracks_path(folder))
+            for track_id in tracks.keys():
+                keys.append((folder, track_id))
+        if not keys:
+            return set()
+        rng = np.random.default_rng(self.seed)
+        rng.shuffle(keys)
+        subset = keys[: self.max_tracks]
+        return set(subset)
+
     def _has_all_reps(self, folder: str, stem: str) -> bool:
         img_dir = self._images_dir(folder)
         for rep in self.representations:
@@ -189,6 +212,8 @@ class TrackForecastDataset(torch.utils.data.Dataset):
 
             print(folder)
             for track_id, items in tracks.items():
+                if self.allowed_tracks is not None and (folder, track_id) not in self.allowed_tracks:
+                    continue
                 times = np.array([t for t, *_ in items], dtype=np.float64) * self.track_time_unit
                 xs = np.array([x for _, x, _, _, _ in items], dtype=np.float64)
                 ys = np.array([y for _, _, y, _, _ in items], dtype=np.float64)
@@ -230,6 +255,15 @@ class TrackForecastDataset(torch.utils.data.Dataset):
                     samples.append((folder, window_stems, window_boxes))
 
         return samples
+
+    def _apply_sample_limit(self) -> None:
+        if self.max_samples is None or self.max_samples <= 0:
+            return
+        if not self.samples:
+            return
+        rng = np.random.default_rng(self.seed)
+        idx = rng.permutation(len(self.samples))[: self.max_samples]
+        self.samples = [self.samples[i] for i in idx]
 
     def __len__(self) -> int:
         return len(self.samples)
