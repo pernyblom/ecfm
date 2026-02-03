@@ -3,6 +3,7 @@ data:
   labels_root: datasets/FRED
   labels_subdir: Event_YOLO
   supervision: yolo
+  frame_size: [1280, 720]
   representations: ["xt", "yt"]
   past_steps: 12
   future_steps: 12

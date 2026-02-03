@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from experiments.forecasting.data.dataset import ForecastDataset, split_dataset
 from experiments.forecasting.data.track_dataset import TrackForecastDataset
-from experiments.forecasting.metrics import ade_fde
+from experiments.forecasting.metrics import ade_fde_bbox_px, ade_fde_center_px, miou
 from experiments.forecasting.models.fusion import MultiRepForecast
 from experiments.forecasting.utils.config import load_config
 
@@ -23,6 +23,10 @@ def main() -> None:
     data_cfg = cfg["data"]
     model_cfg = cfg["model"]
     train_cfg = cfg["train"]
+    frame_size = data_cfg.get("frame_size")
+    if frame_size is None:
+        raise ValueError("data.frame_size must be set for pixel-based metrics.")
+    frame_size_t = (int(frame_size[0]), int(frame_size[1]))
 
     def _read_split_file(path: Path) -> list[str]:
         items: list[str] = []
@@ -175,31 +179,47 @@ def main() -> None:
             optim.step()
 
             if step % train_cfg["log_every"] == 0:
-                ade, fde = ade_fde(pred.detach(), future)
+                ade_bb, fde_bb = ade_fde_bbox_px(pred.detach(), future, frame_size_t)
+                ade_c, fde_c = ade_fde_center_px(pred.detach(), future, frame_size_t)
+                miou_val = miou(pred.detach(), future, frame_size_t)
                 print(
                     f"epoch {epoch} step {step} loss {loss.item():.4f} "
-                    f"ADE {ade.item():.4f} FDE {fde.item():.4f}"
+                    f"ADE_BB {ade_bb.item():.2f} FDE_BB {fde_bb.item():.2f} "
+                    f"ADE_C {ade_c.item():.2f} FDE_C {fde_c.item():.2f} "
+                    f"mIoU {miou_val.item():.4f}"
                 )
 
         model.eval()
         with torch.no_grad():
             losses = []
-            ades = []
-            fdes = []
+            ade_bb_vals = []
+            fde_bb_vals = []
+            ade_c_vals = []
+            fde_c_vals = []
+            miou_vals = []
             for batch in val_loader:
                 inputs = {k: v.to(device) for k, v in batch.inputs.items()}
                 past_boxes = batch.past_boxes.to(device)
                 future = batch.future_boxes.to(device)
                 pred = model(inputs, past_boxes)
                 loss = loss_fn(pred, future)
-                ade, fde = ade_fde(pred, future)
+                ade_bb, fde_bb = ade_fde_bbox_px(pred, future, frame_size_t)
+                ade_c, fde_c = ade_fde_center_px(pred, future, frame_size_t)
+                miou_val = miou(pred, future, frame_size_t)
                 losses.append(loss.item())
-                ades.append(ade.item())
-                fdes.append(fde.item())
+                ade_bb_vals.append(ade_bb.item())
+                fde_bb_vals.append(fde_bb.item())
+                ade_c_vals.append(ade_c.item())
+                fde_c_vals.append(fde_c.item())
+                miou_vals.append(miou_val.item())
             if losses:
                 print(
                     f"val epoch {epoch} loss {sum(losses)/len(losses):.4f} "
-                    f"ADE {sum(ades)/len(ades):.4f} FDE {sum(fdes)/len(fdes):.4f}"
+                    f"ADE_BB {sum(ade_bb_vals)/len(ade_bb_vals):.2f} "
+                    f"FDE_BB {sum(fde_bb_vals)/len(fde_bb_vals):.2f} "
+                    f"ADE_C {sum(ade_c_vals)/len(ade_c_vals):.2f} "
+                    f"FDE_C {sum(fde_c_vals)/len(fde_c_vals):.2f} "
+                    f"mIoU {sum(miou_vals)/len(miou_vals):.4f}"
                 )
 
 

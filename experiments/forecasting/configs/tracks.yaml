@@ -7,15 +7,15 @@ data:
   label_time_unit: 1.0e-6
   track_time_unit: 1.0
   time_align: start
-  frame_size: null
-  representations: ["xt", "yt"]
+  frame_size: [1280, 720]
+  representations: ["xt", "yt", "cstr3"]
   past_steps: 12
-  future_steps: 12
+  future_steps: 24
   stride: 1
   split_files:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
-  image_size: [128, 128]
+  image_size: [224, 224]
   seed: 123
 
 model:
