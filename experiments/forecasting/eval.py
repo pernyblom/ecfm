@@ -1,16 +1,33 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from experiments.forecasting.data.dataset import ForecastDataset, split_dataset
 from experiments.forecasting.data.track_dataset import TrackForecastDataset
 from experiments.forecasting.metrics import ade_fde_bbox_px, ade_fde_center_px, miou
 from experiments.forecasting.models.fusion import MultiRepForecast
 from experiments.forecasting.utils.config import load_config
+
+
+def _collate_samples(batch):
+    if not batch:
+        return batch
+    inputs = {}
+    for rep in batch[0].inputs:
+        inputs[rep] = torch.stack([b.inputs[rep] for b in batch], dim=0)
+    past_boxes = torch.stack([b.past_boxes for b in batch], dim=0)
+    future_boxes = torch.stack([b.future_boxes for b in batch], dim=0)
+    frame_keys = [b.frame_keys for b in batch]
+    return type("Batch", (), {"inputs": inputs, "past_boxes": past_boxes, "future_boxes": future_boxes, "frame_keys": frame_keys})
 
 
 def main() -> None:
@@ -104,7 +121,13 @@ def main() -> None:
         _, val_set = split_dataset(
             dataset, train_split=data_cfg["train_split"], seed=data_cfg["seed"]
         )
-    loader = DataLoader(val_set, batch_size=eval_cfg["batch_size"], shuffle=False, num_workers=0)
+    loader = DataLoader(
+        val_set,
+        batch_size=eval_cfg["batch_size"],
+        shuffle=False,
+        num_workers=0,
+        collate_fn=_collate_samples,
+    )
 
     device = torch.device(
         eval_cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu"

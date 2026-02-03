@@ -173,6 +173,7 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         samples: List[Tuple[str, List[str], List[Tuple[float, float, float, float]]]] = []
         total = self.past_steps + self.future_steps
 
+        print("Building samples...")
         for folder, frames in self.frames_by_folder.items():
             if not frames:
                 continue
@@ -186,6 +187,7 @@ class TrackForecastDataset(torch.utils.data.Dataset):
             label_times = np.array([item.time_s for item in frames], dtype=np.float64)
             label_stems = [item.stem for item in frames]
 
+            print(folder)
             for track_id, items in tracks.items():
                 times = np.array([t for t, *_ in items], dtype=np.float64) * self.track_time_unit
                 xs = np.array([x for _, x, _, _, _ in items], dtype=np.float64)

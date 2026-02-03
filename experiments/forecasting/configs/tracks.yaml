@@ -32,6 +32,9 @@ train:
   weight_decay: 0.0
   device: cuda
   log_every: 20
+  visualize: true
+  vis_samples: 8
+  vis_output_dir: outputs/forecast_vis_tracks
 
 eval:
   batch_size: 8

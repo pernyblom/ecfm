@@ -37,9 +37,9 @@ Tracks-based training (tracks.txt)
 Use this when you want track-consistent supervision instead of YOLO boxes.
 
 1) Render images for the split (all folders):
-   python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt;yt;cstr3" --num-workers 4
+   python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt;yt;cstr3" --num-workers 4 --include-empty
 
-   python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt;yt;cstr3" --num-workers 4
+   python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt;yt;cstr3" --num-workers 4 --include-empty
 
 2) Train using tracks:
    python experiments/forecasting/train.py --config experiments/forecasting/configs/tracks.yaml
