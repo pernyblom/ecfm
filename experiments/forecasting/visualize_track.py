@@ -40,6 +40,25 @@ def _read_track_ids(path: Path) -> list[int]:
     return sorted(ids)
 
 
+def _track_id_exists(tracks_paths: list[Path], track_id: int) -> bool:
+    for path in tracks_paths:
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                if int(parts[1]) == track_id:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
 def _to_gif(frames, out_path: Path, duration_ms: int) -> None:
     from PIL import Image
 
@@ -178,11 +197,15 @@ def main() -> None:
 
     frames = []
     count = 0
+    gap = 0
     with torch.no_grad():
         for sample in dataset:
             print(count, sample.track_id)
             if sample.track_id != args.track_id:
-                print()
+                if count > 0:
+                    gap += 1
+                    if gap > 10:
+                        break
                 continue
             inputs = {r: sample.inputs[r].unsqueeze(0).to(device) for r in sample.inputs}
             past_boxes = sample.past_boxes.unsqueeze(0).to(device)
@@ -226,22 +249,35 @@ def main() -> None:
 
     if not frames:
         try:
-            available = sorted({s.track_id for s in dataset})
+            available = sorted({s[1] for s in dataset.samples})
         except Exception:
             available = []
+        tracks_paths = []
+        if folders:
+            for folder in folders:
+                tracks_paths.append(
+                    Path(data_cfg["labels_root"]) / folder / data_cfg.get("tracks_file", "tracks.txt")
+                )
+        else:
+            tracks_paths.append(Path(data_cfg["labels_root"]) / data_cfg.get("tracks_file", "tracks.txt"))
         if not available:
-            # fallback: list raw track IDs from tracks file
-            tracks_path = (
-                Path(data_cfg["labels_root"])
-                / (folders[0] if folders else "")
-                / data_cfg.get("tracks_file", "tracks.txt")
-            )
-            available = _read_track_ids(tracks_path)
+            # fallback: list raw track IDs from tracks file(s)
+            ids = []
+            for p in tracks_paths:
+                ids.extend(_read_track_ids(p))
+            available = sorted(set(ids))
         if available:
             preview = ", ".join(str(t) for t in available[:50])
             more = f" (and {len(available) - 50} more)" if len(available) > 50 else ""
+            exists = _track_id_exists(tracks_paths, args.track_id)
+            hint = ""
+            if exists:
+                hint = (
+                    " Track ID exists in tracks file but yielded zero windows; "
+                    "check rendered representations and past/future/stride settings."
+                )
             raise RuntimeError(
-                f"No samples found for track_id={args.track_id}. "
+                f"No samples found for track_id={args.track_id}.{hint} "
                 f"Available track IDs: {preview}{more}"
             )
         raise RuntimeError(
