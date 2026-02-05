@@ -3,7 +3,7 @@ data:
   labels_root: datasets/FRED
   labels_subdir: Event_YOLO
   supervision: tracks
-  tracks_file: tracks.txt
+  tracks_file: cleaned_tracks.txt
   label_time_unit: 1.0e-6
   track_time_unit: 1.0
   time_align: start
