@@ -29,6 +29,8 @@ def _collate_samples(batch):
     past_boxes = torch.stack([b.past_boxes for b in batch], dim=0)
     future_boxes = torch.stack([b.future_boxes for b in batch], dim=0)
     frame_keys = [b.frame_keys for b in batch]
+    frame_times = [getattr(b, "frame_times", None) for b in batch]
+    frame_paths = [getattr(b, "frame_paths", None) for b in batch]
     track_ids = [getattr(b, "track_id", None) for b in batch]
     return type(
         "Batch",
@@ -38,6 +40,8 @@ def _collate_samples(batch):
             "past_boxes": past_boxes,
             "future_boxes": future_boxes,
             "frame_keys": frame_keys,
+            "frame_times": frame_times,
+            "frame_paths": frame_paths,
             "track_ids": track_ids,
         },
     )
@@ -103,11 +107,12 @@ def _load_backdrop(
 
     folder, stem = _parse_frame_key(frame_key)
     base = images_root / folder if folder else images_root
-    img_path = base / f"{stem}_{rep}.png"
-    if not img_path.exists():
-        return None
-    img = Image.open(img_path).convert("RGB")
-    return img.resize(frame_size, resample=Image.BILINEAR)
+    for ext in (".png", ".jpg", ".jpeg"):
+        img_path = base / f"{stem}_{rep}{ext}"
+        if img_path.exists():
+            img = Image.open(img_path).convert("RGB")
+            return img.resize(frame_size, resample=Image.BILINEAR)
+    return None
 
 
 def main() -> None:
@@ -302,6 +307,7 @@ def main() -> None:
     vis_samples = int(train_cfg.get("vis_samples", 4))
     vis_dir = Path(train_cfg.get("vis_output_dir", "outputs/forecast_vis"))
     vis_backdrop_rep = train_cfg.get("vis_backdrop_rep")
+    vis_backdrop_index = train_cfg.get("vis_backdrop_index")
     if vis_enabled:
         vis_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/forecast_ckpt"))
@@ -431,17 +437,32 @@ def main() -> None:
                     pred_future = pred[:, data_cfg["past_steps"] :] if pred.shape[1] == data_cfg["past_steps"] + data_cfg["future_steps"] else pred
                     n = min(vis_samples, pred_future.shape[0])
                     for i in range(n):
-                        frame_key = batch.frame_keys[i][data_cfg["past_steps"] - 1]
-                        backdrop = (
-                            _load_backdrop(
-                                Path(data_cfg["images_root"]),
-                                frame_key,
-                                vis_backdrop_rep,
-                                frame_size_t,
-                            )
-                            if vis_backdrop_rep
-                            else None
-                        )
+                        keys = batch.frame_keys[i]
+                        if vis_backdrop_index is None:
+                            idx = data_cfg["past_steps"] - 1
+                        else:
+                            idx = int(vis_backdrop_index)
+                        if idx < 0:
+                            idx = len(keys) + idx
+                        idx = max(0, min(idx, len(keys) - 1))
+                        frame_key = keys[idx]
+                        backdrop = None
+                        if vis_backdrop_rep:
+                            if batch.frame_paths[i] and vis_backdrop_rep in batch.frame_paths[i]:
+                                from PIL import Image
+
+                                img_path = Path(batch.frame_paths[i][vis_backdrop_rep][idx])
+                                if img_path.exists():
+                                    backdrop = Image.open(img_path).convert("RGB").resize(
+                                        frame_size_t, resample=Image.BILINEAR
+                                    )
+                            else:
+                                backdrop = _load_backdrop(
+                                    Path(data_cfg["images_root"]),
+                                    frame_key,
+                                    vis_backdrop_rep,
+                                    frame_size_t,
+                                )
                         img = _render_forecast_image(
                             past_boxes[i].cpu(),
                             pred_future[i].cpu(),

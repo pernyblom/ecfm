@@ -18,6 +18,8 @@ class TrackSample:
     past_boxes: torch.Tensor
     future_boxes: torch.Tensor
     frame_keys: List[str]
+    frame_times: List[float]
+    frame_paths: Dict[str, List[str]]
     track_id: int
 
 
@@ -205,9 +207,25 @@ class TrackForecastDataset(torch.utils.data.Dataset):
 
     def _build_samples(
         self,
-    ) -> List[Tuple[str, int, List[str], List[Tuple[float, float, float, float]]]]:
+    ) -> List[
+        Tuple[
+            str,
+            int,
+            List[str],
+            List[float],
+            Dict[str, List[str]],
+            List[Tuple[float, float, float, float]],
+        ]
+    ]:
         samples: List[
-            Tuple[str, int, List[str], List[Tuple[float, float, float, float]]]
+            Tuple[
+                str,
+                int,
+                List[str],
+                List[float],
+                Dict[str, List[str]],
+                List[Tuple[float, float, float, float]],
+            ]
         ] = []
         total = self.past_steps + self.future_steps
 
@@ -240,6 +258,19 @@ class TrackForecastDataset(torch.utils.data.Dataset):
                 if self.time_align == "start":
                     shift = label_times[0] - times[0]
                     times = times + shift
+                elif self.time_align == "auto":
+                    shift = label_times[0] - times[0]
+                    no_shift_count = int(
+                        np.sum((label_times >= times[0]) & (label_times <= times[-1]))
+                    )
+                    shift_count = int(
+                        np.sum(
+                            (label_times >= times[0] + shift)
+                            & (label_times <= times[-1] + shift)
+                        )
+                    )
+                    if shift_count > no_shift_count:
+                        times = times + shift
                 elif self.time_align != "none":
                     raise ValueError(f"Unknown time_align: {self.time_align}")
 
@@ -261,13 +292,29 @@ class TrackForecastDataset(torch.utils.data.Dataset):
                 boxes = list(zip(cx, cy, bw, bh))
 
                 stems = [label_stems[i] for i in idxs]
+                stem_times = [float(label_times[i]) for i in idxs]
                 for start in range(0, len(stems) - total * self.stride + 1):
                     window_idx = [start + i * self.stride for i in range(total)]
                     window_stems = [stems[i] for i in window_idx]
+                    window_times = [stem_times[i] for i in window_idx]
+                    base_dir = self._images_dir(folder)
+                    window_paths = {
+                        rep: [str(base_dir / f"{stem}_{rep}.png") for stem in window_stems]
+                        for rep in self.representations
+                    }
                     if not all(self._has_all_reps(folder, stem) for stem in window_stems):
                         continue
                     window_boxes = [boxes[i] for i in window_idx]
-                    samples.append((folder, track_id, window_stems, window_boxes))
+                    samples.append(
+                        (
+                            folder,
+                            track_id,
+                            window_stems,
+                            window_times,
+                            window_paths,
+                            window_boxes,
+                        )
+                    )
 
         return samples
 
@@ -332,7 +379,7 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> TrackSample:
-        folder, track_id, stems, boxes = self.samples[idx]
+        folder, track_id, stems, times, paths, boxes = self.samples[idx]
         past_stems = stems[: self.past_steps]
         future_stems = stems[self.past_steps :]
         past_boxes = boxes[: self.past_steps]
@@ -353,5 +400,7 @@ class TrackForecastDataset(torch.utils.data.Dataset):
             past_boxes=torch.tensor(past_boxes, dtype=torch.float32),
             future_boxes=torch.tensor(future_boxes, dtype=torch.float32),
             frame_keys=frame_keys,
+            frame_times=times,
+            frame_paths=paths,
             track_id=int(track_id),
         )

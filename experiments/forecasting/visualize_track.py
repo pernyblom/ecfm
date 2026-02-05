@@ -84,11 +84,12 @@ def _load_backdrop(
 
     folder, stem = _parse_frame_key(frame_key)
     base = images_root / folder if folder else images_root
-    img_path = base / f"{stem}_{rep}.png"
-    if not img_path.exists():
-        return None
-    img = Image.open(img_path).convert("RGB")
-    return img.resize(frame_size, resample=Image.BILINEAR)
+    for ext in (".png", ".jpg", ".jpeg"):
+        img_path = base / f"{stem}_{rep}{ext}"
+        if img_path.exists():
+            img = Image.open(img_path).convert("RGB")
+            return img.resize(frame_size, resample=Image.BILINEAR)
+    return None
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -105,6 +106,12 @@ def main() -> None:
         type=str,
         default=None,
         help="Optional representation to use as backdrop (e.g., rgb, cstr2). Overrides config.",
+    )
+    parser.add_argument(
+        "--backdrop-index",
+        type=int,
+        default=None,
+        help="Index into the window frame_keys for the backdrop (default: last past).",
     )
     parser.add_argument(
         "--split",
@@ -169,7 +176,14 @@ def main() -> None:
                 if pred.shape[1] == data_cfg["past_steps"] + data_cfg["future_steps"]
                 else pred
             )
-            frame_key = sample.frame_keys[data_cfg["past_steps"] - 1]
+            if args.backdrop_index is None:
+                idx = data_cfg["past_steps"] - 1
+            else:
+                idx = int(args.backdrop_index)
+            if idx < 0:
+                idx = len(sample.frame_keys) + idx
+            idx = max(0, min(idx, len(sample.frame_keys) - 1))
+            frame_key = sample.frame_keys[idx]
             backdrop_rep = args.backdrop_rep or cfg.get("train", {}).get("vis_backdrop_rep")
             backdrop = (
                 _load_backdrop(

@@ -46,6 +46,7 @@ train:
   vis_samples: 4
   vis_output_dir: outputs/forecast_vis
   vis_backdrop_rep: null
+  vis_backdrop_index: null
   checkpoint_dir: outputs/forecast_ckpt
   checkpoint_every: 1
   resume_from: null

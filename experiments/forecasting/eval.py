@@ -28,6 +28,8 @@ def _collate_samples(batch):
     past_boxes = torch.stack([b.past_boxes for b in batch], dim=0)
     future_boxes = torch.stack([b.future_boxes for b in batch], dim=0)
     frame_keys = [b.frame_keys for b in batch]
+    frame_times = [getattr(b, "frame_times", None) for b in batch]
+    frame_paths = [getattr(b, "frame_paths", None) for b in batch]
     track_ids = [getattr(b, "track_id", None) for b in batch]
     return type(
         "Batch",
@@ -37,6 +39,8 @@ def _collate_samples(batch):
             "past_boxes": past_boxes,
             "future_boxes": future_boxes,
             "frame_keys": frame_keys,
+            "frame_times": frame_times,
+            "frame_paths": frame_paths,
             "track_ids": track_ids,
         },
     )

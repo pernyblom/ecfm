@@ -10,7 +10,7 @@ data:
   frame_size: [1280, 720]
   max_samples_train: 3680
   max_samples_val: 940
-  representations: ["xt", "yt", "cstr3"]
+  representations: ["xt", "yt"]
   past_steps: 12
   future_steps: 24
   stride: 1
@@ -29,7 +29,7 @@ model:
   use_past_boxes: true
   rnn_hidden: 256
   rnn_layers: 2
-  predict_past: true
+  # predict_past: true
   predict_past: false
   # pos_encoding: learned
   pos_encoding: sinusoidal
@@ -52,7 +52,8 @@ train:
   visualize: true
   vis_samples: 16
   vis_output_dir: outputs/forecast_vis_tracks_gru
-  vis_backdrop_rep: "cstr3"
+  vis_backdrop_rep: null
+  vis_backdrop_index: null
   checkpoint_dir: outputs/forecast_ckpt_tracks_gru
   checkpoint_every: 1
   resume_from: null
