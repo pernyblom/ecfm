@@ -14,8 +14,7 @@ if str(ROOT) not in sys.path:
 from experiments.forecasting.data.dataset import ForecastDataset, split_dataset
 from experiments.forecasting.data.track_dataset import TrackForecastDataset
 from experiments.forecasting.metrics import ade_fde_bbox_px, ade_fde_center_px, miou
-from experiments.forecasting.models.fusion import MultiRepForecast
-from experiments.forecasting.models.transformer import MultiRepTransformer
+from experiments.forecasting.models.factory import build_model
 from experiments.forecasting.utils.config import load_config
 
 
@@ -156,34 +155,7 @@ def main() -> None:
     device = torch.device(
         eval_cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu"
     )
-    model_type = model_cfg.get("type", "gru")
-    if model_type == "transformer":
-        model = MultiRepTransformer(
-            reps=data_cfg["representations"],
-            cnn_channels=model_cfg["cnn_channels"],
-            feature_dim=model_cfg["feature_dim"],
-            d_model=model_cfg.get("d_model", 256),
-            nhead=model_cfg.get("nhead", 4),
-            num_encoder_layers=model_cfg.get("num_encoder_layers", 4),
-            num_decoder_layers=model_cfg.get("num_decoder_layers", 4),
-            dim_feedforward=model_cfg.get("dim_feedforward", 512),
-            dropout=model_cfg.get("dropout", 0.1),
-            use_past_boxes=model_cfg["use_past_boxes"],
-            past_steps=data_cfg["past_steps"],
-            future_steps=data_cfg["future_steps"],
-            predict_past=bool(model_cfg.get("predict_past", False)),
-            pos_encoding=model_cfg.get("pos_encoding", "learned"),
-        ).to(device)
-    else:
-        model = MultiRepForecast(
-            reps=data_cfg["representations"],
-            cnn_channels=model_cfg["cnn_channels"],
-            feature_dim=model_cfg["feature_dim"],
-            use_past_boxes=model_cfg["use_past_boxes"],
-            rnn_hidden=model_cfg["rnn_hidden"],
-            rnn_layers=model_cfg["rnn_layers"],
-            future_steps=data_cfg["future_steps"],
-        ).to(device)
+    model = build_model(cfg, device)
 
     if args.checkpoint and args.checkpoint.exists():
         state = torch.load(args.checkpoint, map_location=device)
