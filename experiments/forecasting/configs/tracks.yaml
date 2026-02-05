@@ -10,7 +10,7 @@ data:
   frame_size: [1280, 720]
   max_samples_train: 3680
   max_samples_val: 940
-  representations: ["xt", "yt"]
+  representations: ["xt", "yt", "cstr3"]
   past_steps: 12
   future_steps: 24
   stride: 1

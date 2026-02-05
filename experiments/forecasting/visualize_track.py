@@ -52,6 +52,24 @@ def _build_model(cfg: dict, device: torch.device) -> torch.nn.Module:
     return model
 
 
+def _read_track_ids(path: Path) -> list[int]:
+    if not path.exists():
+        return []
+    ids: set[int] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            ids.add(int(parts[1]))
+        except ValueError:
+            continue
+    return sorted(ids)
+
+
 def _to_gif(frames, out_path: Path, duration_ms: int) -> None:
     from PIL import Image
 
@@ -120,6 +138,12 @@ def main() -> None:
         default="all",
         help="Which split folders to use when split_files are configured (default: all).",
     )
+    parser.add_argument(
+        "--track-folder",
+        type=str,
+        default=None,
+        help="Optional folder override for the track ID (e.g., '4' for track 4003).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -131,9 +155,30 @@ def main() -> None:
 
     folders = None
     split_files = data_cfg.get("split_files")
-    if split_files and args.split != "all":
-        split_path = Path(split_files["train" if args.split == "train" else "val"])
-        folders = [line.strip("/").strip() for line in split_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.track_folder is not None:
+        folders = [args.track_folder]
+    elif split_files:
+        if args.split == "all":
+            train_path = Path(split_files["train"])
+            val_path = Path(split_files["val"])
+            train_folders = [
+                line.strip("/").strip()
+                for line in train_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            val_folders = [
+                line.strip("/").strip()
+                for line in val_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            folders = sorted(set(train_folders + val_folders))
+        else:
+            split_path = Path(split_files["train" if args.split == "train" else "val"])
+            folders = [
+                line.strip("/").strip()
+                for line in split_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
 
     dataset = TrackForecastDataset(
         images_root=Path(data_cfg["images_root"]),
@@ -165,7 +210,9 @@ def main() -> None:
     count = 0
     with torch.no_grad():
         for sample in dataset:
+            print(count, sample.track_id)
             if sample.track_id != args.track_id:
+                print()
                 continue
             inputs = {r: sample.inputs[r].unsqueeze(0).to(device) for r in sample.inputs}
             past_boxes = sample.past_boxes.unsqueeze(0).to(device)
@@ -208,7 +255,30 @@ def main() -> None:
                 break
 
     if not frames:
-        raise RuntimeError(f"No samples found for track_id={args.track_id}")
+        try:
+            available = sorted({s.track_id for s in dataset})
+        except Exception:
+            available = []
+        if not available:
+            # fallback: list raw track IDs from tracks file
+            tracks_path = (
+                Path(data_cfg["labels_root"])
+                / (folders[0] if folders else "")
+                / data_cfg.get("tracks_file", "tracks.txt")
+            )
+            available = _read_track_ids(tracks_path)
+        if available:
+            preview = ", ".join(str(t) for t in available[:50])
+            more = f" (and {len(available) - 50} more)" if len(available) > 50 else ""
+            raise RuntimeError(
+                f"No samples found for track_id={args.track_id}. "
+                f"Available track IDs: {preview}{more}"
+            )
+        raise RuntimeError(
+            f"No samples found for track_id={args.track_id}. "
+            "Dataset yielded zero samples (check that rendered images exist and "
+            "max_samples_* isn't too small)."
+        )
 
     _to_gif(frames, args.output, args.duration_ms)
     print(f"Wrote {args.output} ({len(frames)} frames)")
