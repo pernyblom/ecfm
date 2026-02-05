@@ -16,6 +16,7 @@ from experiments.forecasting.data.dataset import ForecastDataset, split_dataset
 from experiments.forecasting.data.track_dataset import TrackForecastDataset
 from experiments.forecasting.metrics import ade_fde_bbox_px, ade_fde_center_px, miou
 from experiments.forecasting.models.fusion import MultiRepForecast
+from experiments.forecasting.models.transformer import MultiRepTransformer
 from experiments.forecasting.utils.config import load_config
 
 
@@ -28,7 +29,18 @@ def _collate_samples(batch):
     past_boxes = torch.stack([b.past_boxes for b in batch], dim=0)
     future_boxes = torch.stack([b.future_boxes for b in batch], dim=0)
     frame_keys = [b.frame_keys for b in batch]
-    return type("Batch", (), {"inputs": inputs, "past_boxes": past_boxes, "future_boxes": future_boxes, "frame_keys": frame_keys})
+    track_ids = [getattr(b, "track_id", None) for b in batch]
+    return type(
+        "Batch",
+        (),
+        {
+            "inputs": inputs,
+            "past_boxes": past_boxes,
+            "future_boxes": future_boxes,
+            "frame_keys": frame_keys,
+            "track_ids": track_ids,
+        },
+    )
 
 
 def _boxes_to_xyxy(boxes: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
@@ -50,10 +62,14 @@ def _render_forecast_image(
     pred_boxes: torch.Tensor,
     gt_boxes: torch.Tensor,
     frame_size: tuple[int, int],
+    backdrop: "PIL.Image.Image | None" = None,
 ) -> "PIL.Image.Image":
     from PIL import Image, ImageDraw
 
-    img = Image.new("RGB", frame_size, (0, 0, 0))
+    if backdrop is None:
+        img = Image.new("RGB", frame_size, (0, 0, 0))
+    else:
+        img = backdrop.resize(frame_size, resample=Image.BILINEAR).convert("RGB")
     draw = ImageDraw.Draw(img)
 
     past_xyxy = _boxes_to_xyxy(past_boxes, frame_size)
@@ -68,6 +84,30 @@ def _render_forecast_image(
         draw.rectangle([x0, y0, x1, y1], outline=(0, 255, 0), width=2)
 
     return img
+
+
+def _parse_frame_key(key: str) -> tuple[str, str]:
+    if "/" in key:
+        folder, stem = key.split("/", 1)
+        return folder, stem
+    return "", key
+
+
+def _load_backdrop(
+    images_root: Path,
+    frame_key: str,
+    rep: str,
+    frame_size: tuple[int, int],
+) -> "PIL.Image.Image | None":
+    from PIL import Image
+
+    folder, stem = _parse_frame_key(frame_key)
+    base = images_root / folder if folder else images_root
+    img_path = base / f"{stem}_{rep}.png"
+    if not img_path.exists():
+        return None
+    img = Image.open(img_path).convert("RGB")
+    return img.resize(frame_size, resample=Image.BILINEAR)
 
 
 def main() -> None:
@@ -117,6 +157,7 @@ def main() -> None:
                 max_tracks=data_cfg.get("max_tracks_train"),
                 max_samples=data_cfg.get("max_samples_train"),
                 seed=int(data_cfg.get("seed", 123)),
+                cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
             )
             val_set = TrackForecastDataset(
                 images_root=Path(data_cfg["images_root"]),
@@ -136,6 +177,7 @@ def main() -> None:
                 max_tracks=data_cfg.get("max_tracks_val"),
                 max_samples=data_cfg.get("max_samples_val"),
                 seed=int(data_cfg.get("seed", 123)) + 1,
+                cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
             )
         else:
             train_set = ForecastDataset(
@@ -183,6 +225,7 @@ def main() -> None:
                 max_tracks=data_cfg.get("max_tracks"),
                 max_samples=data_cfg.get("max_samples"),
                 seed=int(data_cfg.get("seed", 123)),
+                cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
             )
         else:
             dataset = ForecastDataset(
@@ -220,15 +263,34 @@ def main() -> None:
         if torch.cuda.is_available()
         else "cpu"
     )
-    model = MultiRepForecast(
-        reps=data_cfg["representations"],
-        cnn_channels=model_cfg["cnn_channels"],
-        feature_dim=model_cfg["feature_dim"],
-        use_past_boxes=model_cfg["use_past_boxes"],
-        rnn_hidden=model_cfg["rnn_hidden"],
-        rnn_layers=model_cfg["rnn_layers"],
-        future_steps=data_cfg["future_steps"],
-    ).to(device)
+    model_type = model_cfg.get("type", "gru")
+    if model_type == "transformer":
+        model = MultiRepTransformer(
+            reps=data_cfg["representations"],
+            cnn_channels=model_cfg["cnn_channels"],
+            feature_dim=model_cfg["feature_dim"],
+            d_model=model_cfg.get("d_model", 256),
+            nhead=model_cfg.get("nhead", 4),
+            num_encoder_layers=model_cfg.get("num_encoder_layers", 4),
+            num_decoder_layers=model_cfg.get("num_decoder_layers", 4),
+            dim_feedforward=model_cfg.get("dim_feedforward", 512),
+            dropout=model_cfg.get("dropout", 0.1),
+            use_past_boxes=model_cfg["use_past_boxes"],
+            past_steps=data_cfg["past_steps"],
+            future_steps=data_cfg["future_steps"],
+            predict_past=bool(model_cfg.get("predict_past", False)),
+            pos_encoding=model_cfg.get("pos_encoding", "learned"),
+        ).to(device)
+    else:
+        model = MultiRepForecast(
+            reps=data_cfg["representations"],
+            cnn_channels=model_cfg["cnn_channels"],
+            feature_dim=model_cfg["feature_dim"],
+            use_past_boxes=model_cfg["use_past_boxes"],
+            rnn_hidden=model_cfg["rnn_hidden"],
+            rnn_layers=model_cfg["rnn_layers"],
+            future_steps=data_cfg["future_steps"],
+        ).to(device)
 
     optim = torch.optim.Adam(
         model.parameters(),
@@ -239,13 +301,29 @@ def main() -> None:
     vis_enabled = bool(train_cfg.get("visualize", False))
     vis_samples = int(train_cfg.get("vis_samples", 4))
     vis_dir = Path(train_cfg.get("vis_output_dir", "outputs/forecast_vis"))
+    vis_backdrop_rep = train_cfg.get("vis_backdrop_rep")
     if vis_enabled:
         vis_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/forecast_ckpt"))
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_every = int(train_cfg.get("checkpoint_every", 1))
+    resume_path = train_cfg.get("resume_from")
+    start_epoch = 0
+    best_val = None
+    if resume_path:
+        resume_path = Path(resume_path)
+        if resume_path.exists():
+            state = torch.load(resume_path, map_location=device)
+            model.load_state_dict(state["model"])
+            optim.load_state_dict(state["optim"])
+            start_epoch = int(state.get("epoch", 0)) + 1
+            best_val = state.get("best_val")
+            print(f"Resumed from {resume_path} at epoch {start_epoch}")
 
     print("Train batches", len(train_loader))
     print("Val batches", len(val_loader))
 
-    for epoch in range(train_cfg["epochs"]):
+    for epoch in range(start_epoch, train_cfg["epochs"]):
         model.train()
         for step, batch in enumerate(train_loader):
             inputs = {k: v.to(device) for k, v in batch.inputs.items()}
@@ -253,16 +331,27 @@ def main() -> None:
             future = batch.future_boxes.to(device)
 
             pred = model(inputs, past_boxes)
-            loss = loss_fn(pred, future)
+            if pred.shape[1] == data_cfg["past_steps"] + data_cfg["future_steps"]:
+                pred_past = pred[:, : data_cfg["past_steps"]]
+                pred_future = pred[:, data_cfg["past_steps"] :]
+                past_loss = loss_fn(pred_past, past_boxes)
+                future_loss = loss_fn(pred_future, future)
+                loss = (
+                    float(train_cfg.get("past_loss_weight", 1.0)) * past_loss
+                    + float(train_cfg.get("future_loss_weight", 1.0)) * future_loss
+                )
+            else:
+                pred_future = pred
+                loss = loss_fn(pred_future, future)
 
             optim.zero_grad()
             loss.backward()
             optim.step()
 
             if step % train_cfg["log_every"] == 0:
-                ade_bb, fde_bb = ade_fde_bbox_px(pred.detach(), future, frame_size_t)
-                ade_c, fde_c = ade_fde_center_px(pred.detach(), future, frame_size_t)
-                miou_val = miou(pred.detach(), future, frame_size_t)
+                ade_bb, fde_bb = ade_fde_bbox_px(pred_future.detach(), future, frame_size_t)
+                ade_c, fde_c = ade_fde_center_px(pred_future.detach(), future, frame_size_t)
+                miou_val = miou(pred_future.detach(), future, frame_size_t)
                 print(
                     f"epoch {epoch} step {step} loss {loss.item():.4f} "
                     f"ADE_BB {ade_bb.item():.2f} FDE_BB {fde_bb.item():.2f} "
@@ -283,10 +372,21 @@ def main() -> None:
                 past_boxes = batch.past_boxes.to(device)
                 future = batch.future_boxes.to(device)
                 pred = model(inputs, past_boxes)
-                loss = loss_fn(pred, future)
-                ade_bb, fde_bb = ade_fde_bbox_px(pred, future, frame_size_t)
-                ade_c, fde_c = ade_fde_center_px(pred, future, frame_size_t)
-                miou_val = miou(pred, future, frame_size_t)
+                if pred.shape[1] == data_cfg["past_steps"] + data_cfg["future_steps"]:
+                    pred_future = pred[:, data_cfg["past_steps"] :]
+                    pred_past = pred[:, : data_cfg["past_steps"]]
+                    past_loss = loss_fn(pred_past, past_boxes)
+                    future_loss = loss_fn(pred_future, future)
+                    loss = (
+                        float(train_cfg.get("past_loss_weight", 1.0)) * past_loss
+                        + float(train_cfg.get("future_loss_weight", 1.0)) * future_loss
+                    )
+                else:
+                    pred_future = pred
+                    loss = loss_fn(pred_future, future)
+                ade_bb, fde_bb = ade_fde_bbox_px(pred_future, future, frame_size_t)
+                ade_c, fde_c = ade_fde_center_px(pred_future, future, frame_size_t)
+                miou_val = miou(pred_future, future, frame_size_t)
                 losses.append(loss.item())
                 ade_bb_vals.append(ade_bb.item())
                 fde_bb_vals.append(fde_bb.item())
@@ -302,6 +402,22 @@ def main() -> None:
                     f"FDE_C {sum(fde_c_vals)/len(fde_c_vals):.2f} "
                     f"mIoU {sum(miou_vals)/len(miou_vals):.4f}"
                 )
+            val_loss = sum(losses) / len(losses) if losses else None
+
+        if val_loss is not None:
+            if best_val is None or val_loss < best_val:
+                best_val = val_loss
+                best_path = ckpt_dir / "best.pt"
+                torch.save(
+                    {
+                        "model": model.state_dict(),
+                        "optim": optim.state_dict(),
+                        "epoch": epoch,
+                        "best_val": best_val,
+                        "config": cfg,
+                    },
+                    best_path,
+                )
 
         if vis_enabled:
             model.eval()
@@ -312,16 +428,42 @@ def main() -> None:
                     past_boxes = batch.past_boxes.to(device)
                     future = batch.future_boxes.to(device)
                     pred = model(inputs, past_boxes)
-                    n = min(vis_samples, pred.shape[0])
+                    pred_future = pred[:, data_cfg["past_steps"] :] if pred.shape[1] == data_cfg["past_steps"] + data_cfg["future_steps"] else pred
+                    n = min(vis_samples, pred_future.shape[0])
                     for i in range(n):
+                        frame_key = batch.frame_keys[i][data_cfg["past_steps"] - 1]
+                        backdrop = (
+                            _load_backdrop(
+                                Path(data_cfg["images_root"]),
+                                frame_key,
+                                vis_backdrop_rep,
+                                frame_size_t,
+                            )
+                            if vis_backdrop_rep
+                            else None
+                        )
                         img = _render_forecast_image(
                             past_boxes[i].cpu(),
-                            pred[i].cpu(),
+                            pred_future[i].cpu(),
                             future[i].cpu(),
                             frame_size_t,
+                            backdrop=backdrop,
                         )
                         out_path = vis_dir / f"epoch_{epoch:03d}_sample_{i:02d}.png"
                         img.save(out_path)
+
+        if ckpt_every > 0 and (epoch + 1) % ckpt_every == 0:
+            ckpt_path = ckpt_dir / f"epoch_{epoch:03d}.pt"
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "optim": optim.state_dict(),
+                    "epoch": epoch,
+                    "best_val": best_val,
+                    "config": cfg,
+                },
+                ckpt_path,
+            )
 
 
 if __name__ == "__main__":

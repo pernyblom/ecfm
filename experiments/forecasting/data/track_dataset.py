@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -15,6 +18,7 @@ class TrackSample:
     past_boxes: torch.Tensor
     future_boxes: torch.Tensor
     frame_keys: List[str]
+    track_id: int
 
 
 @dataclass
@@ -104,6 +108,7 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         max_tracks: Optional[int] = None,
         max_samples: Optional[int] = None,
         seed: int = 123,
+        cache_dir: Optional[Path] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -122,11 +127,17 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         self.max_tracks = max_tracks
         self.max_samples = max_samples
         self.seed = seed
+        self.cache_dir = Path(cache_dir) if cache_dir else None
 
         self.frames_by_folder = self._discover_frames()
         self.allowed_tracks = self._select_track_subset()
-        self.samples = self._build_samples()
-        self._apply_sample_limit()
+        cached = self._load_cache()
+        if cached is not None:
+            self.samples = cached
+        else:
+            self.samples = self._build_samples()
+            self._apply_sample_limit()
+            self._save_cache()
 
     def _labels_dir(self, folder: str) -> Path:
         if self.folders is None:
@@ -192,8 +203,12 @@ class TrackForecastDataset(torch.utils.data.Dataset):
                 return False
         return True
 
-    def _build_samples(self) -> List[Tuple[str, List[str], List[Tuple[float, float, float, float]]]]:
-        samples: List[Tuple[str, List[str], List[Tuple[float, float, float, float]]]] = []
+    def _build_samples(
+        self,
+    ) -> List[Tuple[str, int, List[str], List[Tuple[float, float, float, float]]]]:
+        samples: List[
+            Tuple[str, int, List[str], List[Tuple[float, float, float, float]]]
+        ] = []
         total = self.past_steps + self.future_steps
 
         print("Building samples...")
@@ -252,7 +267,7 @@ class TrackForecastDataset(torch.utils.data.Dataset):
                     if not all(self._has_all_reps(folder, stem) for stem in window_stems):
                         continue
                     window_boxes = [boxes[i] for i in window_idx]
-                    samples.append((folder, window_stems, window_boxes))
+                    samples.append((folder, track_id, window_stems, window_boxes))
 
         return samples
 
@@ -265,11 +280,59 @@ class TrackForecastDataset(torch.utils.data.Dataset):
         idx = rng.permutation(len(self.samples))[: self.max_samples]
         self.samples = [self.samples[i] for i in idx]
 
+    def _cache_key(self) -> str:
+        payload = {
+            "labels_root": str(self.labels_root),
+            "images_root": str(self.images_root),
+            "folders": self.folders,
+            "labels_subdir": self.labels_subdir,
+            "tracks_file": self.tracks_file,
+            "label_time_unit": self.label_time_unit,
+            "track_time_unit": self.track_time_unit,
+            "time_align": self.time_align,
+            "frame_size": self.frame_size_override,
+            "max_tracks": self.max_tracks,
+            "max_samples": self.max_samples,
+            "seed": self.seed,
+            "past_steps": self.past_steps,
+            "future_steps": self.future_steps,
+            "stride": self.stride,
+            "representations": self.representations,
+        }
+        raw = json.dumps(payload, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _cache_path(self) -> Optional[Path]:
+        if self.cache_dir is None:
+            return None
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        return self.cache_dir / f"track_samples_{self._cache_key()}.pkl"
+
+    def _load_cache(self):
+        path = self._cache_path()
+        if path is None or not path.exists():
+            return None
+        try:
+            with path.open("rb") as f:
+                return pickle.load(f)
+        except Exception:
+            return None
+
+    def _save_cache(self) -> None:
+        path = self._cache_path()
+        if path is None:
+            return
+        try:
+            with path.open("wb") as f:
+                pickle.dump(self.samples, f)
+        except Exception:
+            pass
+
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> TrackSample:
-        folder, stems, boxes = self.samples[idx]
+        folder, track_id, stems, boxes = self.samples[idx]
         past_stems = stems[: self.past_steps]
         future_stems = stems[self.past_steps :]
         past_boxes = boxes[: self.past_steps]
@@ -290,4 +353,5 @@ class TrackForecastDataset(torch.utils.data.Dataset):
             past_boxes=torch.tensor(past_boxes, dtype=torch.float32),
             future_boxes=torch.tensor(future_boxes, dtype=torch.float32),
             frame_keys=frame_keys,
+            track_id=int(track_id),
         )

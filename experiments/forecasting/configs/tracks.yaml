@@ -18,26 +18,45 @@ data:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   image_size: [224, 224]
-  seed: 1234
+  seed: 123456
+  cache_dir: outputs/track_cache
 
 model:
+  # type: transformer
+  type: gru
   cnn_channels: [16, 32, 64]
   feature_dim: 128
   use_past_boxes: true
   rnn_hidden: 256
-  rnn_layers: 1
+  rnn_layers: 2
+  predict_past: true
+  predict_past: false
+  # pos_encoding: learned
+  pos_encoding: sinusoidal
+  d_model: 256
+  nhead: 4
+  num_encoder_layers: 4
+  num_decoder_layers: 4
+  dim_feedforward: 512
+  dropout: 0.1
 
 train:
   batch_size: 32
-  epochs: 100
-  lr: 1.0e-3
+  epochs: 200
+  lr: 2.0e-4
   weight_decay: 0.0
   device: cuda
   log_every: 20
+  past_loss_weight: 0.5
+  future_loss_weight: 1.0
   visualize: true
-  vis_samples: 8
-  vis_output_dir: outputs/forecast_vis_tracks
+  vis_samples: 16
+  vis_output_dir: outputs/forecast_vis_tracks_gru
+  vis_backdrop_rep: "cstr3"
+  checkpoint_dir: outputs/forecast_ckpt_tracks_gru
+  checkpoint_every: 1
+  resume_from: null
 
 eval:
-  batch_size: 8
+  batch_size: 32
   device: cuda
