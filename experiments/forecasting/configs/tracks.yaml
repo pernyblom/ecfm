@@ -18,7 +18,7 @@ data:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   image_size: [224, 224]
-  seed: 123456
+  seed: 1234567
   cache_dir: outputs/track_cache
 
 model:
