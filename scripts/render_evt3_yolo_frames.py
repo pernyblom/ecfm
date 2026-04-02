@@ -655,12 +655,22 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             continue
         label_time = float(label_time_raw) * float(args.label_unit)
         window = float(args.window) * float(args.label_unit)
-        if args.center:
+        window_mode = getattr(args, "window_mode", None)
+        if window_mode is None:
+            window_mode = "center" if args.center else "trailing"
+        if window_mode == "center":
             t0 = label_time - window / 2.0
             t1 = label_time + window / 2.0
-        else:
+        elif window_mode == "leading":
             t0 = label_time
             t1 = label_time + window
+        elif window_mode == "trailing":
+            t0 = label_time - window
+            t1 = label_time
+        else:
+            raise ValueError(f"Unknown window_mode: {window_mode}")
+        t0 = max(0.0, t0)
+        t1 = max(t0, t1)
 
         idx0 = int(np.searchsorted(t, t0, side="left"))
         idx1 = int(np.searchsorted(t, t1, side="left"))
@@ -821,7 +831,18 @@ def main() -> None:
     parser.add_argument(
         "--center",
         action="store_true",
-        help="Center the time window on the label timestamp (default: start at label)",
+        help="Legacy alias for --window-mode center.",
+    )
+    parser.add_argument(
+        "--window-mode",
+        type=str,
+        default="trailing",
+        choices=["trailing", "center", "leading"],
+        help=(
+            "How the event window is placed relative to the label time. "
+            "'trailing' uses only past events, 'center' spans past and future, "
+            "and 'leading' uses future events (default: trailing)."
+        ),
     )
     parser.add_argument(
         "--endian",

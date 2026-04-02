@@ -1,0 +1,55 @@
+data:
+  images_root: outputs/fred_reps
+  labels_root: datasets/FRED
+  labels_subdir: Event_YOLO
+  tracks_file: cleaned_tracks.txt
+  label_time_unit: 1.0e-6
+  track_time_unit: 1.0
+  time_align: start
+  frame_size: [1280, 720]
+  representations: ["xt_my", "yt_mx"]
+  image_size: [224, 224]
+  history_steps: 12
+  future_steps: 12
+  stride: 1
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    val: datasets/FRED/dataset_splits/canonical/test_split.txt
+  max_tracks: null
+  max_samples_train: 8000
+  max_samples_val: 2000
+  seed: 123456
+  cache_dir: outputs/pose_dynamics_cache
+  camera:
+    # Normalized camera intrinsics used by projection:
+    # u = fx * (x/z) + cx
+    # v = fy * (y/z) + cy
+    intrinsics: [1.0, 1.0, 0.5, 0.5]  # fx, fy, cx, cy
+    # Approximate camera pose [tx, ty, tz, roll, pitch, yaw].
+    pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+model:
+  cnn_channels: [16, 32, 64]
+  feature_dim: 128
+  hidden_dim: 256
+  min_depth: 0.1
+
+train:
+  batch_size: 32
+  epochs: 120
+  lr: 2.0e-4
+  weight_decay: 0.0
+  device: cuda
+  num_workers: 0
+  log_every: 20
+  center_weight: 1.0
+  pose_reg_weight: 1.0e-3
+  intr_reg_weight: 1.0e-3
+  acc_reg_weight: 1.0e-4
+  checkpoint_dir: outputs/pose_dynamics_ckpt
+  checkpoint_every: 1
+  resume_from: null
+  vis_every: 5
+  vis_samples: 8
+  vis_output_dir: outputs/pose_dynamics_vis
+  vis_rep: xt_my

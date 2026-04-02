@@ -77,6 +77,13 @@ def main() -> None:
         help="Optional RGB image directory (defaults to sibling RGB or PADDED_RGB)",
     )
     parser.add_argument("--window", type=float, default=33333.0)
+    parser.add_argument(
+        "--window-mode",
+        type=str,
+        default="trailing",
+        choices=["trailing", "center", "leading"],
+        help="Placement of the event window relative to each label time (default: trailing).",
+    )
     parser.add_argument("--label-unit", type=float, default=1.0)
     parser.add_argument("--event-unit", type=float, default=1.0)
     parser.add_argument("--ts-shift-us", type=float, default=None)
