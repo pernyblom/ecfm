@@ -15,6 +15,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         cnn_channels=model_cfg["cnn_channels"],
         feature_dim=model_cfg["feature_dim"],
         hidden_dim=model_cfg.get("hidden_dim", 256),
+        history_steps=int(data_cfg.get("history_steps", 12)),
         future_steps=data_cfg["future_steps"],
         min_depth=float(model_cfg.get("min_depth", 0.1)),
     ).to(device)

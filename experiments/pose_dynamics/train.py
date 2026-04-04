@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
@@ -87,18 +88,113 @@ def _build_dataset(data_cfg: Dict, folders: List[str], *, max_samples_key: str, 
     )
 
 
+def _init_metric_sums(future_steps: int):
+    return {
+        "loss": 0.0,
+        "center_l1": 0.0,
+        "pose_reg": 0.0,
+        "intr_reg": 0.0,
+        "acc_reg": 0.0,
+        "endpoint_l2": 0.0,
+        "oob_step_rate": 0.0,
+        "oob_traj_rate": 0.0,
+        "horizon_l1": torch.zeros(future_steps, dtype=torch.float64),
+        "horizon_l2": torch.zeros(future_steps, dtype=torch.float64),
+    }
+
+
+def _update_metric_sums(sums, metrics: Dict[str, float], pred, target):
+    for key in ("loss", "center_l1", "pose_reg", "intr_reg", "acc_reg"):
+        sums[key] += metrics[key]
+
+    abs_err = (pred["pred_centers"] - target).abs()
+    l1_per_step = abs_err.mean(dim=(0, 2)).detach().cpu().to(torch.float64)
+    l2_per_step = (
+        (pred["pred_centers"] - target).pow(2).sum(dim=-1).sqrt().mean(dim=0).detach().cpu().to(torch.float64)
+    )
+    endpoint_l2 = float(l2_per_step[-1].item())
+
+    oob_mask = ((pred["pred_centers"] < 0.0) | (pred["pred_centers"] > 1.0)).any(dim=-1)
+    oob_step_rate = float(oob_mask.float().mean().item())
+    oob_traj_rate = float(oob_mask.any(dim=1).float().mean().item())
+
+    sums["horizon_l1"] += l1_per_step
+    sums["horizon_l2"] += l2_per_step
+    sums["endpoint_l2"] += endpoint_l2
+    sums["oob_step_rate"] += oob_step_rate
+    sums["oob_traj_rate"] += oob_traj_rate
+
+
+def _finalize_metric_sums(sums, count: int):
+    if count == 0:
+        out = {k: float("nan") for k in ("loss", "center_l1", "pose_reg", "intr_reg", "acc_reg", "endpoint_l2", "oob_step_rate", "oob_traj_rate")}
+        out["horizon_l1"] = []
+        out["horizon_l2"] = []
+        return out
+
+    out = {
+        "loss": sums["loss"] / count,
+        "center_l1": sums["center_l1"] / count,
+        "pose_reg": sums["pose_reg"] / count,
+        "intr_reg": sums["intr_reg"] / count,
+        "acc_reg": sums["acc_reg"] / count,
+        "endpoint_l2": sums["endpoint_l2"] / count,
+        "oob_step_rate": sums["oob_step_rate"] / count,
+        "oob_traj_rate": sums["oob_traj_rate"] / count,
+        "horizon_l1": (sums["horizon_l1"] / count).tolist(),
+        "horizon_l2": (sums["horizon_l2"] / count).tolist(),
+    }
+    return out
+
+
+def _summarize_horizons(values: List[float]) -> str:
+    if not values:
+        return "h[n/a]"
+    first = values[0]
+    mid = values[len(values) // 2]
+    last = values[-1]
+    return f"h1 {first:.5f} h{len(values)//2 + 1} {mid:.5f} h{len(values)} {last:.5f}"
+
+
+def _sequence_key(frame_key: str) -> str:
+    if "/" not in frame_key:
+        return frame_key
+    return frame_key.split("/", 1)[0]
+
+
+def _collect_sequence_metrics(seq_sums, frame_keys: List[str], pred_centers: torch.Tensor, future_centers: torch.Tensor):
+    seq_err = (pred_centers - future_centers).abs().mean(dim=(1, 2)).detach().cpu().tolist()
+    for frame_key, err in zip(frame_keys, seq_err):
+        seq_key = _sequence_key(frame_key)
+        seq_sums[seq_key][0] += float(err)
+        seq_sums[seq_key][1] += 1
+
+
+def _format_sequence_summary(seq_sums, limit: int = 3) -> str:
+    if not seq_sums:
+        return "seq[n/a]"
+    ranked = sorted(
+        ((total / count, key, count) for key, (total, count) in seq_sums.items() if count > 0),
+        reverse=True,
+    )
+    parts = [f"{key}:{err:.5f} ({count})" for err, key, count in ranked[:limit]]
+    return "worst_seq " + " | ".join(parts)
+
+
 def _train_epoch(model, loader, optimizer, device, train_cfg):
     model.train()
-    sums = {"loss": 0.0, "center_l1": 0.0, "pose_reg": 0.0, "intr_reg": 0.0, "acc_reg": 0.0}
+    future_steps = int(train_cfg["future_steps"])
+    sums = _init_metric_sums(future_steps)
     count = 0
     for step, batch in enumerate(loader):
         inputs = {k: v.to(device) for k, v in batch.inputs.items()}
+        past_centers = batch.past_centers.to(device)
         future_centers = batch.future_centers.to(device)
         dt = batch.dt.to(device)
         intrinsics = batch.intrinsics.to(device)
         camera_pose = batch.camera_pose.to(device)
 
-        pred = model(inputs, intrinsics, camera_pose, dt)
+        pred = model(inputs, past_centers, intrinsics, camera_pose, dt)
         loss, metrics = compute_losses(
             pred,
             future_centers,
@@ -112,8 +208,7 @@ def _train_epoch(model, loader, optimizer, device, train_cfg):
         loss.backward()
         optimizer.step()
 
-        for k in sums.keys():
-            sums[k] += metrics[k]
+        _update_metric_sums(sums, metrics, pred, future_centers)
         count += 1
 
         if step % int(train_cfg.get("log_every", 20)) == 0:
@@ -123,27 +218,30 @@ def _train_epoch(model, loader, optimizer, device, train_cfg):
                 f"center {metrics['center_l1']:.5f} "
                 f"pose_reg {metrics['pose_reg']:.5f} "
                 f"intr_reg {metrics['intr_reg']:.5f} "
-                f"acc_reg {metrics['acc_reg']:.5f}"
+                f"acc_reg {metrics['acc_reg']:.5f} "
+                f"end_l2 {float(((pred['pred_centers'][:, -1] - future_centers[:, -1]).pow(2).sum(dim=-1).sqrt().mean()).item()):.5f} "
+                f"oob {float((((pred['pred_centers'] < 0.0) | (pred['pred_centers'] > 1.0)).any(dim=-1).float().mean()).item()):.3f}"
             )
 
-    if count == 0:
-        return {k: float("nan") for k in sums.keys()}
-    return {k: sums[k] / count for k in sums.keys()}
+    return _finalize_metric_sums(sums, count)
 
 
 @torch.no_grad()
 def _eval_epoch(model, loader, device, train_cfg):
     model.eval()
-    sums = {"loss": 0.0, "center_l1": 0.0, "pose_reg": 0.0, "intr_reg": 0.0, "acc_reg": 0.0}
+    future_steps = int(train_cfg["future_steps"])
+    sums = _init_metric_sums(future_steps)
+    seq_sums = defaultdict(lambda: [0.0, 0])
     count = 0
     for batch in loader:
         inputs = {k: v.to(device) for k, v in batch.inputs.items()}
+        past_centers = batch.past_centers.to(device)
         future_centers = batch.future_centers.to(device)
         dt = batch.dt.to(device)
         intrinsics = batch.intrinsics.to(device)
         camera_pose = batch.camera_pose.to(device)
 
-        pred = model(inputs, intrinsics, camera_pose, dt)
+        pred = model(inputs, past_centers, intrinsics, camera_pose, dt)
         _, metrics = compute_losses(
             pred,
             future_centers,
@@ -152,12 +250,12 @@ def _eval_epoch(model, loader, device, train_cfg):
             intr_reg_weight=float(train_cfg.get("intr_reg_weight", 1.0e-3)),
             acc_reg_weight=float(train_cfg.get("acc_reg_weight", 1.0e-4)),
         )
-        for k in sums.keys():
-            sums[k] += metrics[k]
+        _update_metric_sums(sums, metrics, pred, future_centers)
+        _collect_sequence_metrics(seq_sums, batch.frame_keys, pred["pred_centers"], future_centers)
         count += 1
-    if count == 0:
-        return {k: float("nan") for k in sums.keys()}
-    return {k: sums[k] / count for k in sums.keys()}
+    out = _finalize_metric_sums(sums, count)
+    out["sequence_summary"] = _format_sequence_summary(seq_sums)
+    return out
 
 
 def main() -> None:
@@ -168,6 +266,8 @@ def main() -> None:
     cfg = load_config(args.config)
     data_cfg = cfg["data"]
     train_cfg = cfg["train"]
+    train_cfg = dict(train_cfg)
+    train_cfg["future_steps"] = int(data_cfg["future_steps"])
 
     split_files = data_cfg.get("split_files")
     if not split_files:
@@ -229,14 +329,19 @@ def main() -> None:
             "train "
             f"loss {train_metrics['loss']:.5f} center {train_metrics['center_l1']:.5f} "
             f"pose_reg {train_metrics['pose_reg']:.5f} intr_reg {train_metrics['intr_reg']:.5f} "
-            f"acc_reg {train_metrics['acc_reg']:.5f}"
+            f"acc_reg {train_metrics['acc_reg']:.5f} end_l2 {train_metrics['endpoint_l2']:.5f} "
+            f"oob_step {train_metrics['oob_step_rate']:.3f} oob_traj {train_metrics['oob_traj_rate']:.3f}"
         )
         print(
             "val   "
             f"loss {val_metrics['loss']:.5f} center {val_metrics['center_l1']:.5f} "
             f"pose_reg {val_metrics['pose_reg']:.5f} intr_reg {val_metrics['intr_reg']:.5f} "
-            f"acc_reg {val_metrics['acc_reg']:.5f}"
+            f"acc_reg {val_metrics['acc_reg']:.5f} end_l2 {val_metrics['endpoint_l2']:.5f} "
+            f"oob_step {val_metrics['oob_step_rate']:.3f} oob_traj {val_metrics['oob_traj_rate']:.3f}"
         )
+        print(f"train { _summarize_horizons(train_metrics['horizon_l1']) }")
+        print(f"val   { _summarize_horizons(val_metrics['horizon_l1']) }")
+        print(f"val   {val_metrics['sequence_summary']}")
 
         val_loss = val_metrics["loss"]
         if val_loss == val_loss and (best_val is None or val_loss < best_val):

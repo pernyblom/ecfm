@@ -44,11 +44,13 @@ class PoseDynamicsProjector(nn.Module):
         cnn_channels: List[int],
         feature_dim: int,
         hidden_dim: int,
+        history_steps: int,
         future_steps: int,
         min_depth: float = 0.1,
     ) -> None:
         super().__init__()
         self.reps = reps
+        self.history_steps = int(history_steps)
         self.future_steps = int(future_steps)
         self.min_depth = float(min_depth)
 
@@ -56,7 +58,16 @@ class PoseDynamicsProjector(nn.Module):
             {rep: SmallCNN(in_channels=3, channels=cnn_channels, feature_dim=feature_dim) for rep in reps}
         )
 
-        fused_dim = feature_dim * len(reps)
+        history_points = self.history_steps + 1
+        history_input_dim = history_points * 2 + max(self.history_steps, 0) * 2
+        self.history_encoder = nn.Sequential(
+            nn.Linear(history_input_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, feature_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        fused_dim = feature_dim * (len(reps) + 1)
         self.fusion = nn.Sequential(
             nn.Linear(fused_dim, hidden_dim),
             nn.ReLU(inplace=True),
@@ -73,6 +84,7 @@ class PoseDynamicsProjector(nn.Module):
     def forward(
         self,
         inputs: Dict[str, torch.Tensor],
+        past_centers: torch.Tensor,
         intrinsics: torch.Tensor,
         camera_pose: torch.Tensor,
         dt: torch.Tensor,
@@ -80,7 +92,16 @@ class PoseDynamicsProjector(nn.Module):
         feats = []
         for rep in self.reps:
             feats.append(self.encoders[rep](inputs[rep]))
-        fused = self.fusion(torch.cat(feats, dim=-1))
+
+        history_flat = past_centers.reshape(past_centers.shape[0], -1)
+        if past_centers.shape[1] > 1:
+            history_delta = past_centers[:, 1:] - past_centers[:, :-1]
+            history_delta_flat = history_delta.reshape(history_delta.shape[0], -1)
+        else:
+            history_delta_flat = past_centers.new_zeros((past_centers.shape[0], 0))
+        history_feat = self.history_encoder(torch.cat([history_flat, history_delta_flat], dim=-1))
+
+        fused = self.fusion(torch.cat([*feats, history_feat], dim=-1))
 
         pose_delta = 0.1 * torch.tanh(self.pose_delta_head(fused))
         intr_delta = 0.05 * torch.tanh(self.intr_delta_head(fused))

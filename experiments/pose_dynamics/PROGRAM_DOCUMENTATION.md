@@ -165,6 +165,7 @@ Each stored sample contains:
 If `max_samples` is set, `_apply_sample_limit()` randomly keeps only that many samples.
 
 The resulting sample list can be cached as a pickle file under `cache_dir`. The cache key depends on config-like parameters, not on the underlying dataset file contents.
+The cache key now also includes dataset state such as track-file metadata, label-file metadata, and representation availability so caches are invalidated when the underlying inputs change.
 
 ## Batch Preparation
 
@@ -177,7 +178,7 @@ The resulting sample list can be cached as a pickle file under `cache_dir`. The 
 - `intrinsics`: `[B, 4]`
 - `camera_pose`: `[B, 6]`
 
-`past_centers` is batched but is not consumed by the model during training.
+`past_centers` is consumed by the model during training and visualization.
 
 ## Model Forward Pass
 
@@ -191,9 +192,20 @@ For every representation listed in config:
 - each encoder uses stride-2 convolution blocks followed by global average pooling,
 - the pooled feature is projected to `feature_dim`.
 
-These features are concatenated and passed through a small MLP fusion block.
+These image features are concatenated with a learned history feature derived from `past_centers`, then passed through a small MLP fusion block.
 
-### 10. Camera correction heads
+### 10. History encoding
+
+The model now uses `past_centers` explicitly.
+
+It encodes:
+
+- the flattened past center positions,
+- the center-to-center deltas across the history window.
+
+This gives the network direct access to recent observed motion instead of forcing it to infer all temporal context from the anchor image alone.
+
+### 11. Camera correction heads
 
 From the fused feature, the model predicts:
 
@@ -210,7 +222,7 @@ These deltas are applied to the configured priors:
 - intrinsics become corrected `fx, fy, cx, cy`
 - camera pose becomes corrected translation and roll/pitch/yaw
 
-### 11. Latent motion heads
+### 12. Latent motion heads
 
 The same fused feature also predicts:
 
@@ -220,7 +232,7 @@ The same fused feature also predicts:
 
 `z` in the initial position is constrained to be positive with `softplus(...) + min_depth`.
 
-### 12. Temporal integration
+### 13. Temporal integration
 
 For each future step:
 
@@ -233,7 +245,7 @@ For each future step:
 
 This is a learned latent dynamics rollout, not a physically calibrated one.
 
-### 13. Projection to 2D centers
+### 14. Projection to 2D centers
 
 For each predicted 3D point in camera coordinates:
 
@@ -272,12 +284,21 @@ For each epoch:
 4. backpropagate,
 5. update parameters with AdamW,
 6. accumulate average metrics,
-7. evaluate on the validation loader.
+7. evaluate on the validation loader with additional diagnostics.
 
 Checkpoint behavior:
 
 - save `best.pt` whenever validation loss improves,
 - save `epoch_XXX.pt` every `checkpoint_every` epochs.
+
+The training logs now include:
+
+- average loss terms,
+- endpoint L2 error,
+- out-of-bounds step rate,
+- out-of-bounds trajectory rate,
+- compact per-horizon error summaries,
+- worst validation sequences by mean center error.
 
 Optional visualization behavior:
 
@@ -301,7 +322,12 @@ This is useful for debugging whether the projection geometry is at least qualita
 
 ## What The Model Actually Learns
 
-Despite the experiment name, the current model only sees the anchor-frame representation images. It does not ingest `past_centers` or a sequence of past images. So the model is learning:
+The current model sees:
+
+- the anchor-frame representation images,
+- the past normalized center history.
+
+So the model is learning:
 
 - a mapping from one event-history image snapshot to latent camera correction,
 - a latent initial 3D state,
@@ -311,33 +337,20 @@ That means the learned "pose" and "dynamics" are only weakly identifiable. Many 
 
 ## Known Bugs, Risks, and Improvement Suggestions
 
-### 1. Cache invalidation bug
+### 1. Cache behavior is improved, but still metadata-based
 
-The dataset cache key only depends on config-like values and not on source file contents, modification times, or split-file contents. If tracks, labels, or rendered images change without a config change, stale cached samples can be silently reused.
+The cache key is much safer now because it includes dataset-state metadata for tracks, labels, and representation availability. That fixes the original stale-cache issue for normal file edits. The remaining limitation is that cache invalidation is still driven by path metadata and presence checks rather than hashing full file contents.
 
 Relevant code:
 
+- `data/track_projection_dataset.py`, `_dataset_state_signature()`
 - `data/track_projection_dataset.py`, `_cache_key()`
 
-Suggested fix:
+Possible future improvement:
 
-- include split file paths and mtimes, track file mtimes, and possibly label directory mtimes or a manual cache version in the cache key.
+- if you ever need stronger guarantees, include file-content hashes for the track files and selected label files, or add an explicit cache-version knob in config.
 
-### 2. `history_steps` is not used for modeling
-
-The dataset constructs `past_centers`, and the config exposes `history_steps`, but the model forward pass only consumes anchor images, intrinsics, pose priors, and `dt`. This makes the experiment description sound more temporal than the actual model is.
-
-Relevant code:
-
-- sample generation stores `past_centers`
-- `train.py` batches `past_centers`
-- `models/pose_dynamics.py` never reads them
-
-Suggested fix:
-
-- either feed past centers or past image features into the model, or rename/document the setting more explicitly as visualization/context only.
-
-### 3. Visualization silently ignores samples beyond the first batch
+### 2. Visualization silently ignores samples beyond the first batch
 
 `export_batch_visualizations()` calls `next(iter(loader), None)` and never iterates further. If `max_samples` is larger than `batch_size`, the extra requested samples are not exported.
 
@@ -349,7 +362,7 @@ Suggested fix:
 
 - iterate over the loader until `max_samples` images have been written.
 
-### 4. Device selection is narrower than the config suggests
+### 3. Device selection is narrower than the config suggests
 
 The code uses:
 
@@ -367,7 +380,7 @@ Suggested fix:
 
 - honor the configured device directly, or fall back only after explicit validation.
 
-### 5. Weak identifiability of latent 3D state
+### 4. Weak identifiability of latent 3D state
 
 The only supervised signal is 2D future center reprojection error plus small regularizers. There is no direct supervision for depth, velocity, pose correction, or consistency across views/time. This can let the model fit trajectories with unrealistic latent geometry.
 
@@ -379,7 +392,7 @@ Suggested improvements:
 - compare predicted motion direction against observed past motion,
 - add uncertainty estimation or calibration checks.
 
-### 6. Constant camera priors per sample
+### 5. Constant camera priors per sample
 
 Every sample receives the same configured intrinsics and pose prior. If the dataset has sequence-dependent or camera-dependent variation, the model must absorb all of it through learned deltas from image appearance alone.
 
@@ -388,7 +401,7 @@ Suggested improvements:
 - support per-sequence or per-frame camera metadata,
 - log learned delta statistics to see whether the priors are doing meaningful work.
 
-### 7. Data-loading efficiency can become a bottleneck
+### 6. Data-loading efficiency can become a bottleneck
 
 All images are opened on demand in `__getitem__`, and `num_workers` defaults to `0` in the base config. This is simple but likely slow for larger runs.
 
@@ -398,16 +411,16 @@ Suggested improvements:
 - add pinned memory when using CUDA,
 - consider image caching or precomputed tensor serialization if I/O becomes dominant.
 
-### 8. Evaluation is fairly thin
+### 7. Evaluation still has room to grow
 
-Only averaged loss components are logged. That makes it hard to tell whether failures come from drift, one bad horizon step, out-of-frame projections, or dataset alignment problems.
+Evaluation is stronger now because training logs include per-horizon summaries, out-of-bounds rates, endpoint error, and a compact worst-sequence summary. The remaining gap is mostly about persistence and deeper analysis rather than visibility during a normal run.
 
 Suggested improvements:
 
-- log per-horizon error,
-- log out-of-bounds prediction rate,
-- log per-sequence metrics,
-- save a small fixed validation subset for stable qualitative comparison across epochs.
+- save metrics to JSON or CSV for plotting,
+- log a fixed validation subset for directly comparable qualitative snapshots,
+- keep full per-horizon arrays instead of only the compact summary in stdout,
+- add calibration or uncertainty diagnostics if latent geometry becomes important.
 
 ## Practical Summary
 

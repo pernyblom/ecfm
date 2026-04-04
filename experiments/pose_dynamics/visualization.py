@@ -154,6 +154,7 @@ def export_batch_visualizations(
     inputs = {k: v.to(device) for k, v in batch.inputs.items()}
     pred = model(
         inputs,
+        batch.past_centers.to(device),
         batch.intrinsics.to(device),
         batch.camera_pose.to(device),
         batch.dt.to(device),
