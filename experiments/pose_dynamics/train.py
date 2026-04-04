@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -29,7 +30,9 @@ def _collate_samples(batch: List[ProjectionSample]):
     reps = batch[0].inputs.keys()
     inputs = {rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps}
     past_centers = torch.stack([b.past_centers for b in batch], dim=0)
+    past_sizes = torch.stack([b.past_sizes for b in batch], dim=0)
     future_centers = torch.stack([b.future_centers for b in batch], dim=0)
+    future_sizes = torch.stack([b.future_sizes for b in batch], dim=0)
     dt = torch.stack([b.dt for b in batch], dim=0)
     intrinsics = torch.stack([b.intrinsics for b in batch], dim=0)
     camera_pose = torch.stack([b.camera_pose for b in batch], dim=0)
@@ -42,7 +45,9 @@ def _collate_samples(batch: List[ProjectionSample]):
         {
             "inputs": inputs,
             "past_centers": past_centers,
+            "past_sizes": past_sizes,
             "future_centers": future_centers,
+            "future_sizes": future_sizes,
             "dt": dt,
             "intrinsics": intrinsics,
             "camera_pose": camera_pose,
@@ -92,9 +97,12 @@ def _init_metric_sums(future_steps: int):
     return {
         "loss": 0.0,
         "center_l1": 0.0,
+        "size_range": 0.0,
         "pose_reg": 0.0,
         "intr_reg": 0.0,
         "acc_reg": 0.0,
+        "speed_bound": 0.0,
+        "acc_bound": 0.0,
         "endpoint_l2": 0.0,
         "oob_step_rate": 0.0,
         "oob_traj_rate": 0.0,
@@ -104,7 +112,7 @@ def _init_metric_sums(future_steps: int):
 
 
 def _update_metric_sums(sums, metrics: Dict[str, float], pred, target):
-    for key in ("loss", "center_l1", "pose_reg", "intr_reg", "acc_reg"):
+    for key in ("loss", "center_l1", "size_range", "pose_reg", "intr_reg", "acc_reg", "speed_bound", "acc_bound"):
         sums[key] += metrics[key]
 
     abs_err = (pred["pred_centers"] - target).abs()
@@ -127,7 +135,7 @@ def _update_metric_sums(sums, metrics: Dict[str, float], pred, target):
 
 def _finalize_metric_sums(sums, count: int):
     if count == 0:
-        out = {k: float("nan") for k in ("loss", "center_l1", "pose_reg", "intr_reg", "acc_reg", "endpoint_l2", "oob_step_rate", "oob_traj_rate")}
+        out = {k: float("nan") for k in ("loss", "center_l1", "size_range", "pose_reg", "intr_reg", "acc_reg", "speed_bound", "acc_bound", "endpoint_l2", "oob_step_rate", "oob_traj_rate")}
         out["horizon_l1"] = []
         out["horizon_l2"] = []
         return out
@@ -135,9 +143,12 @@ def _finalize_metric_sums(sums, count: int):
     out = {
         "loss": sums["loss"] / count,
         "center_l1": sums["center_l1"] / count,
+        "size_range": sums["size_range"] / count,
         "pose_reg": sums["pose_reg"] / count,
         "intr_reg": sums["intr_reg"] / count,
         "acc_reg": sums["acc_reg"] / count,
+        "speed_bound": sums["speed_bound"] / count,
+        "acc_bound": sums["acc_bound"] / count,
         "endpoint_l2": sums["endpoint_l2"] / count,
         "oob_step_rate": sums["oob_step_rate"] / count,
         "oob_traj_rate": sums["oob_traj_rate"] / count,
@@ -181,6 +192,24 @@ def _format_sequence_summary(seq_sums, limit: int = 3) -> str:
     return "worst_seq " + " | ".join(parts)
 
 
+def _to_jsonable(value):
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, tuple):
+        return [_to_jsonable(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _append_metrics_jsonl(path: Path, record: Dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(_to_jsonable(record), sort_keys=True) + "\n")
+
+
 def _train_epoch(model, loader, optimizer, device, train_cfg):
     model.train()
     future_steps = int(train_cfg["future_steps"])
@@ -190,6 +219,7 @@ def _train_epoch(model, loader, optimizer, device, train_cfg):
         inputs = {k: v.to(device) for k, v in batch.inputs.items()}
         past_centers = batch.past_centers.to(device)
         future_centers = batch.future_centers.to(device)
+        future_sizes = batch.future_sizes.to(device)
         dt = batch.dt.to(device)
         intrinsics = batch.intrinsics.to(device)
         camera_pose = batch.camera_pose.to(device)
@@ -198,10 +228,18 @@ def _train_epoch(model, loader, optimizer, device, train_cfg):
         loss, metrics = compute_losses(
             pred,
             future_centers,
+            target_sizes=future_sizes,
             center_weight=float(train_cfg.get("center_weight", 1.0)),
             pose_reg_weight=float(train_cfg.get("pose_reg_weight", 1.0e-3)),
             intr_reg_weight=float(train_cfg.get("intr_reg_weight", 1.0e-3)),
             acc_reg_weight=float(train_cfg.get("acc_reg_weight", 1.0e-4)),
+            size_weight=float(train_cfg.get("size_weight", 0.0)),
+            size_min=tuple(train_cfg["size_prior"]["min"]) if train_cfg.get("size_prior") else None,
+            size_max=tuple(train_cfg["size_prior"]["max"]) if train_cfg.get("size_prior") else None,
+            speed_bound=float(train_cfg["max_speed"]) if train_cfg.get("max_speed") is not None else None,
+            speed_bound_weight=float(train_cfg.get("speed_bound_weight", 0.0)),
+            acc_bound=float(train_cfg["max_acc"]) if train_cfg.get("max_acc") is not None else None,
+            acc_bound_weight=float(train_cfg.get("acc_bound_weight", 0.0)),
         )
 
         optimizer.zero_grad()
@@ -216,9 +254,12 @@ def _train_epoch(model, loader, optimizer, device, train_cfg):
                 f"step {step} "
                 f"loss {metrics['loss']:.5f} "
                 f"center {metrics['center_l1']:.5f} "
+                f"size {metrics['size_range']:.5f} "
                 f"pose_reg {metrics['pose_reg']:.5f} "
                 f"intr_reg {metrics['intr_reg']:.5f} "
                 f"acc_reg {metrics['acc_reg']:.5f} "
+                f"speed_b {metrics['speed_bound']:.5f} "
+                f"acc_b {metrics['acc_bound']:.5f} "
                 f"end_l2 {float(((pred['pred_centers'][:, -1] - future_centers[:, -1]).pow(2).sum(dim=-1).sqrt().mean()).item()):.5f} "
                 f"oob {float((((pred['pred_centers'] < 0.0) | (pred['pred_centers'] > 1.0)).any(dim=-1).float().mean()).item()):.3f}"
             )
@@ -237,6 +278,7 @@ def _eval_epoch(model, loader, device, train_cfg):
         inputs = {k: v.to(device) for k, v in batch.inputs.items()}
         past_centers = batch.past_centers.to(device)
         future_centers = batch.future_centers.to(device)
+        future_sizes = batch.future_sizes.to(device)
         dt = batch.dt.to(device)
         intrinsics = batch.intrinsics.to(device)
         camera_pose = batch.camera_pose.to(device)
@@ -245,10 +287,18 @@ def _eval_epoch(model, loader, device, train_cfg):
         _, metrics = compute_losses(
             pred,
             future_centers,
+            target_sizes=future_sizes,
             center_weight=float(train_cfg.get("center_weight", 1.0)),
             pose_reg_weight=float(train_cfg.get("pose_reg_weight", 1.0e-3)),
             intr_reg_weight=float(train_cfg.get("intr_reg_weight", 1.0e-3)),
             acc_reg_weight=float(train_cfg.get("acc_reg_weight", 1.0e-4)),
+            size_weight=float(train_cfg.get("size_weight", 0.0)),
+            size_min=tuple(train_cfg["size_prior"]["min"]) if train_cfg.get("size_prior") else None,
+            size_max=tuple(train_cfg["size_prior"]["max"]) if train_cfg.get("size_prior") else None,
+            speed_bound=float(train_cfg["max_speed"]) if train_cfg.get("max_speed") is not None else None,
+            speed_bound_weight=float(train_cfg.get("speed_bound_weight", 0.0)),
+            acc_bound=float(train_cfg["max_acc"]) if train_cfg.get("max_acc") is not None else None,
+            acc_bound_weight=float(train_cfg.get("acc_bound_weight", 0.0)),
         )
         _update_metric_sums(sums, metrics, pred, future_centers)
         _collect_sequence_metrics(seq_sums, batch.frame_keys, pred["pred_centers"], future_centers)
@@ -305,6 +355,7 @@ def main() -> None:
 
     ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/pose_dynamics_ckpt"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(train_cfg.get("metrics_jsonl", ckpt_dir / "metrics.jsonl"))
     ckpt_every = int(train_cfg.get("checkpoint_every", 1))
     best_val = None
     start_epoch = 0
@@ -328,20 +379,34 @@ def main() -> None:
         print(
             "train "
             f"loss {train_metrics['loss']:.5f} center {train_metrics['center_l1']:.5f} "
+            f"size {train_metrics['size_range']:.5f} "
             f"pose_reg {train_metrics['pose_reg']:.5f} intr_reg {train_metrics['intr_reg']:.5f} "
-            f"acc_reg {train_metrics['acc_reg']:.5f} end_l2 {train_metrics['endpoint_l2']:.5f} "
+            f"acc_reg {train_metrics['acc_reg']:.5f} speed_b {train_metrics['speed_bound']:.5f} "
+            f"acc_b {train_metrics['acc_bound']:.5f} end_l2 {train_metrics['endpoint_l2']:.5f} "
             f"oob_step {train_metrics['oob_step_rate']:.3f} oob_traj {train_metrics['oob_traj_rate']:.3f}"
         )
         print(
             "val   "
             f"loss {val_metrics['loss']:.5f} center {val_metrics['center_l1']:.5f} "
+            f"size {val_metrics['size_range']:.5f} "
             f"pose_reg {val_metrics['pose_reg']:.5f} intr_reg {val_metrics['intr_reg']:.5f} "
-            f"acc_reg {val_metrics['acc_reg']:.5f} end_l2 {val_metrics['endpoint_l2']:.5f} "
+            f"acc_reg {val_metrics['acc_reg']:.5f} speed_b {val_metrics['speed_bound']:.5f} "
+            f"acc_b {val_metrics['acc_bound']:.5f} end_l2 {val_metrics['endpoint_l2']:.5f} "
             f"oob_step {val_metrics['oob_step_rate']:.3f} oob_traj {val_metrics['oob_traj_rate']:.3f}"
         )
         print(f"train { _summarize_horizons(train_metrics['horizon_l1']) }")
         print(f"val   { _summarize_horizons(val_metrics['horizon_l1']) }")
         print(f"val   {val_metrics['sequence_summary']}")
+
+        _append_metrics_jsonl(
+            metrics_path,
+            {
+                "epoch": epoch,
+                "best_val_before_epoch": best_val,
+                "train": train_metrics,
+                "val": val_metrics,
+            },
+        )
 
         val_loss = val_metrics["loss"]
         if val_loss == val_loss and (best_val is None or val_loss < best_val):

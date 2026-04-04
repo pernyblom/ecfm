@@ -43,10 +43,20 @@ train:
   num_workers: 0
   log_every: 20
   center_weight: 1.0
+  size_weight: 0.25
+  # Physical target-size prior in world units, used as a projected size range.
+  size_prior:
+    min: [0.25, 0.08]
+    max: [0.65, 0.25]
   pose_reg_weight: 1.0e-3
   intr_reg_weight: 1.0e-3
   acc_reg_weight: 1.0e-4
+  max_speed: 20.0
+  speed_bound_weight: 1.0e-3
+  max_acc: 40.0
+  acc_bound_weight: 1.0e-4
   checkpoint_dir: outputs/pose_dynamics_ckpt
+  metrics_jsonl: outputs/pose_dynamics_ckpt/metrics.jsonl
   checkpoint_every: 1
   resume_from: null
   vis_every: 5

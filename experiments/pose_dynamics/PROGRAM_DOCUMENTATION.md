@@ -155,7 +155,9 @@ Each stored sample contains:
 
 - image paths for all representations at the anchor time,
 - `past_centers`,
+- `past_sizes`,
 - `future_centers`,
+- `future_sizes`,
 - `dt`,
 - constant camera intrinsics and camera pose priors,
 - frame key, frame time, and track id.
@@ -173,12 +175,14 @@ The cache key now also includes dataset state such as track-file metadata, label
 
 - `inputs[rep]`: `[B, 3, H, W]`
 - `past_centers`: `[B, history_steps + 1, 2]`
+- `past_sizes`: `[B, history_steps + 1, 2]`
 - `future_centers`: `[B, future_steps, 2]`
+- `future_sizes`: `[B, future_steps, 2]`
 - `dt`: `[B, future_steps]`
 - `intrinsics`: `[B, 4]`
 - `camera_pose`: `[B, 6]`
 
-`past_centers` is consumed by the model during training and visualization.
+`past_centers` is consumed by the model during training and visualization. `future_sizes` is used by the optional size prior in the loss.
 
 ## Model Forward Pass
 
@@ -258,21 +262,26 @@ The output `pred_centers` has shape `[B, future_steps, 2]` and is directly compa
 
 ## Loss Function
 
-`compute_losses()` uses four terms:
+`compute_losses()` now supports the following terms:
 
 1. `center_loss`: L1 loss between `pred_centers` and target future centers
-2. `pose_reg`: mean squared magnitude of `pose_delta`
-3. `intr_reg`: mean squared magnitude of `intrinsics_delta`
-4. `acc_reg`: mean squared magnitude of predicted accelerations
+2. `size_range`: penalty when tracked box sizes are inconsistent with the predicted depth and configured physical UAV size range
+3. `pose_reg`: mean squared magnitude of `pose_delta`
+4. `intr_reg`: mean squared magnitude of `intrinsics_delta`
+5. `acc_reg`: mean squared magnitude of predicted accelerations
+6. `speed_bound`: hinge penalty for speed above the configured bound
+7. `acc_bound`: hinge penalty for acceleration above the configured bound
 
 Total loss:
 
-`center_weight * center_loss + pose_reg_weight * pose_reg + intr_reg_weight * intr_reg + acc_reg_weight * acc_reg`
+`center_weight * center_loss + size_weight * size_range + pose_reg_weight * pose_reg + intr_reg_weight * intr_reg + acc_reg_weight * acc_reg + speed_bound_weight * speed_bound + acc_bound_weight * acc_bound`
 
 Interpretation:
 
 - the center term drives supervision,
-- the other terms discourage large corrections or unstable dynamics.
+- the size term pushes predicted depth toward values consistent with the tracked target size and configured UAV size range,
+- the regularizers discourage large corrections or unstable dynamics,
+- the bound terms let you softly enforce plausible speed and acceleration limits.
 
 ## Training Loop
 
@@ -294,11 +303,15 @@ Checkpoint behavior:
 The training logs now include:
 
 - average loss terms,
+- size-range violation,
+- speed-bound violation,
+- acceleration-bound violation,
 - endpoint L2 error,
 - out-of-bounds step rate,
 - out-of-bounds trajectory rate,
 - compact per-horizon error summaries,
 - worst validation sequences by mean center error.
+- full per-epoch metric records written to `train.metrics_jsonl`
 
 Optional visualization behavior:
 
@@ -332,6 +345,7 @@ So the model is learning:
 - a mapping from one event-history image snapshot to latent camera correction,
 - a latent initial 3D state,
 - a latent acceleration rollout that best reproduces the future 2D center path.
+- a depth and scale solution that can also be nudged by target-size and kinematic priors.
 
 That means the learned "pose" and "dynamics" are only weakly identifiable. Many different 3D explanations can produce similar 2D trajectories.
 
@@ -380,9 +394,9 @@ Suggested fix:
 
 - honor the configured device directly, or fall back only after explicit validation.
 
-### 4. Weak identifiability of latent 3D state
+### 4. Weak identifiability of latent 3D state is reduced, but not removed
 
-The only supervised signal is 2D future center reprojection error plus small regularizers. There is no direct supervision for depth, velocity, pose correction, or consistency across views/time. This can let the model fit trajectories with unrealistic latent geometry.
+The current setup is better than before because it can use target-size range priors plus speed and acceleration bounds. But there is still no direct supervision for depth, velocity, pose correction, or consistency across views/time. The latent 3D geometry is more constrained, not fully identified.
 
 Suggested improvements:
 
@@ -413,13 +427,12 @@ Suggested improvements:
 
 ### 7. Evaluation still has room to grow
 
-Evaluation is stronger now because training logs include per-horizon summaries, out-of-bounds rates, endpoint error, and a compact worst-sequence summary. The remaining gap is mostly about persistence and deeper analysis rather than visibility during a normal run.
+Evaluation is stronger now because training logs include per-horizon summaries, out-of-bounds rates, endpoint error, size and motion-prior violations, a compact worst-sequence summary, and per-epoch JSONL records. The remaining gap is mostly about downstream analysis rather than visibility during a normal run.
 
 Suggested improvements:
 
-- save metrics to JSON or CSV for plotting,
 - log a fixed validation subset for directly comparable qualitative snapshots,
-- keep full per-horizon arrays instead of only the compact summary in stdout,
+- add plotting or notebook tooling for the JSONL metrics,
 - add calibration or uncertainty diagnostics if latent geometry becomes important.
 
 ## Practical Summary

@@ -1,9 +1,14 @@
 from collections import defaultdict
+import json
+import shutil
+import uuid
+from pathlib import Path
 
 import torch
 import pytest
 
 from experiments.pose_dynamics.train import (
+    _append_metrics_jsonl,
     _collect_sequence_metrics,
     _finalize_metric_sums,
     _format_sequence_summary,
@@ -18,9 +23,12 @@ def test_pose_dynamics_metric_aggregation_and_sequence_summary():
     metrics = {
         "loss": 1.0,
         "center_l1": 0.5,
+        "size_range": 0.05,
         "pose_reg": 0.1,
         "intr_reg": 0.2,
         "acc_reg": 0.3,
+        "speed_bound": 0.4,
+        "acc_bound": 0.6,
     }
     pred = {
         "pred_centers": torch.tensor(
@@ -58,3 +66,25 @@ def test_pose_dynamics_metric_aggregation_and_sequence_summary():
     assert summary.startswith("worst_seq ")
     assert "seq_a:" in summary
     assert "seq_b:" in summary
+
+
+def test_metrics_jsonl_writer_serializes_epoch_record():
+    root = Path.cwd() / "outputs" / "test_tmp" / f"pose_dynamics_metrics_{uuid.uuid4().hex}"
+    try:
+        path = root / "metrics.jsonl"
+        record = {
+            "epoch": 3,
+            "best_val_before_epoch": 0.12,
+            "train": {"loss": 1.0, "horizon_l1": [0.1, 0.2]},
+            "val": {"loss": 0.9, "sequence_summary": "worst_seq seq_a:0.2 (4)"},
+        }
+        _append_metrics_jsonl(path, record)
+
+        lines = path.read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 1
+        parsed = json.loads(lines[0])
+        assert parsed["epoch"] == 3
+        assert parsed["train"]["horizon_l1"] == [0.1, 0.2]
+        assert parsed["val"]["sequence_summary"].startswith("worst_seq ")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)

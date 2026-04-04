@@ -16,7 +16,9 @@ from PIL import Image
 class ProjectionSample:
     inputs: Dict[str, torch.Tensor]
     past_centers: torch.Tensor
+    past_sizes: torch.Tensor
     future_centers: torch.Tensor
+    future_sizes: torch.Tensor
     dt: torch.Tensor
     intrinsics: torch.Tensor
     camera_pose: torch.Tensor
@@ -81,6 +83,8 @@ def _load_image(path: Path, size: Tuple[int, int]) -> torch.Tensor:
 
 
 class TrackProjectionDataset(torch.utils.data.Dataset):
+    CACHE_VERSION = 2
+
     def __init__(
         self,
         images_root: Path,
@@ -214,6 +218,8 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
             Dict[str, str],
             List[Tuple[float, float]],
             List[Tuple[float, float]],
+            List[Tuple[float, float]],
+            List[Tuple[float, float]],
             List[float],
         ]
     ]:
@@ -224,6 +230,8 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
                 str,
                 float,
                 Dict[str, str],
+                List[Tuple[float, float]],
+                List[Tuple[float, float]],
                 List[Tuple[float, float]],
                 List[Tuple[float, float]],
                 List[float],
@@ -287,6 +295,7 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
                 cx = (xq + wq / 2.0) / frame_w
                 cy = (yq + hq / 2.0) / frame_h
                 centers = list(zip(cx.tolist(), cy.tolist()))
+                sizes = list(zip((wq / frame_w).tolist(), (hq / frame_h).tolist()))
                 stems = [label_stems[i] for i in idxs]
                 stem_times = [float(label_times[i]) for i in idxs]
 
@@ -305,7 +314,9 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
                         for rep in self.representations
                     }
                     past_centers = [centers[i] for i in idx_window[: anchor_idx + 1]]
+                    past_sizes = [sizes[i] for i in idx_window[: anchor_idx + 1]]
                     future_centers = [centers[i] for i in idx_window[anchor_idx + 1 :]]
+                    future_sizes = [sizes[i] for i in idx_window[anchor_idx + 1 :]]
                     dt = [
                         max(window_times[i + 1] - window_times[i], 1.0e-6)
                         for i in range(anchor_idx, len(window_times) - 1)
@@ -318,7 +329,9 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
                             window_times[anchor_idx],
                             rep_paths,
                             past_centers,
+                            past_sizes,
                             future_centers,
+                            future_sizes,
                             dt,
                         )
                     )
@@ -401,6 +414,7 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
             "max_tracks": self.max_tracks,
             "max_samples": self.max_samples,
             "seed": self.seed,
+            "cache_version": self.CACHE_VERSION,
             "dataset_state": self._dataset_state_signature(),
         }
         raw = json.dumps(payload, sort_keys=True)
@@ -436,7 +450,7 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> ProjectionSample:
-        folder, track_id, stem, time_s, paths, past_centers, future_centers, dt = self.samples[idx]
+        folder, track_id, stem, time_s, paths, past_centers, past_sizes, future_centers, future_sizes, dt = self.samples[idx]
         inputs = {
             rep: _load_image(Path(path), self.image_size) for rep, path in paths.items()
         }
@@ -444,7 +458,9 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
         return ProjectionSample(
             inputs=inputs,
             past_centers=torch.tensor(past_centers, dtype=torch.float32),
+            past_sizes=torch.tensor(past_sizes, dtype=torch.float32),
             future_centers=torch.tensor(future_centers, dtype=torch.float32),
+            future_sizes=torch.tensor(future_sizes, dtype=torch.float32),
             dt=torch.tensor(dt, dtype=torch.float32),
             intrinsics=torch.tensor(self.intrinsics, dtype=torch.float32),
             camera_pose=torch.tensor(self.camera_pose, dtype=torch.float32),

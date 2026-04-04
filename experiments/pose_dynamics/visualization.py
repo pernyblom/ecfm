@@ -28,7 +28,9 @@ def _collate_samples(batch: List[ProjectionSample]):
     reps = batch[0].inputs.keys()
     inputs = {rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps}
     past_centers = torch.stack([b.past_centers for b in batch], dim=0)
+    past_sizes = torch.stack([b.past_sizes for b in batch], dim=0)
     future_centers = torch.stack([b.future_centers for b in batch], dim=0)
+    future_sizes = torch.stack([b.future_sizes for b in batch], dim=0)
     dt = torch.stack([b.dt for b in batch], dim=0)
     intrinsics = torch.stack([b.intrinsics for b in batch], dim=0)
     camera_pose = torch.stack([b.camera_pose for b in batch], dim=0)
@@ -40,7 +42,9 @@ def _collate_samples(batch: List[ProjectionSample]):
         {
             "inputs": inputs,
             "past_centers": past_centers,
+            "past_sizes": past_sizes,
             "future_centers": future_centers,
+            "future_sizes": future_sizes,
             "dt": dt,
             "intrinsics": intrinsics,
             "camera_pose": camera_pose,

@@ -123,6 +123,7 @@ class PoseDynamicsProjector(nn.Module):
         acc_seq = self.acc_head(fused).view(-1, self.future_steps, 3)
 
         points_cam: List[torch.Tensor] = []
+        vel_seq: List[torch.Tensor] = []
         p_w = pos
         v_w = vel
         for step in range(self.future_steps):
@@ -133,8 +134,10 @@ class PoseDynamicsProjector(nn.Module):
             rel_w = p_w - cam_t
             rel_c = torch.bmm(r_cw, rel_w.unsqueeze(-1)).squeeze(-1)
             points_cam.append(rel_c)
+            vel_seq.append(v_w)
 
         points_cam_t = torch.stack(points_cam, dim=1)
+        vel_seq_t = torch.stack(vel_seq, dim=1)
         x = points_cam_t[:, :, 0]
         y = points_cam_t[:, :, 1]
         z = points_cam_t[:, :, 2].clamp_min(self.min_depth)
@@ -149,6 +152,8 @@ class PoseDynamicsProjector(nn.Module):
             "intrinsics_delta": intr_delta,
             "dynamics_pos0": pos,
             "dynamics_vel0": vel,
+            "dynamics_vel_seq": vel_seq_t,
             "dynamics_acc": acc_seq,
             "intrinsics_corrected": intrinsics_corr,
+            "points_cam": points_cam_t,
         }
