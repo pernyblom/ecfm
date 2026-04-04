@@ -333,6 +333,53 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
         perm = rng.permutation(len(self.samples))[: self.max_samples]
         self.samples = [self.samples[i] for i in perm]
 
+    @staticmethod
+    def _path_state(path: Path) -> Dict[str, object]:
+        if not path.exists():
+            return {"path": str(path), "exists": False}
+        stat = path.stat()
+        return {
+            "path": str(path),
+            "exists": True,
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+
+    def _dataset_state_signature(self) -> Dict[str, object]:
+        folders = self.folders if self.folders is not None else [""]
+        folder_states: List[Dict[str, object]] = []
+        for folder in folders:
+            frames = self.frames_by_folder.get(folder, [])
+            labels_dir = self._labels_dir(folder)
+            images_dir = self._images_dir(folder)
+            tracks_path = self._tracks_path(folder)
+
+            frame_entries: List[Dict[str, object]] = []
+            for frame in frames:
+                label_path = labels_dir / f"{frame.stem}.txt"
+                rep_presence = {
+                    rep: (images_dir / f"{frame.stem}_{rep}.png").exists()
+                    for rep in self.representations
+                }
+                frame_entries.append(
+                    {
+                        "stem": frame.stem,
+                        "label": self._path_state(label_path),
+                        "rep_presence": rep_presence,
+                    }
+                )
+
+            folder_states.append(
+                {
+                    "folder": folder,
+                    "labels_dir": self._path_state(labels_dir),
+                    "images_dir": self._path_state(images_dir),
+                    "tracks": self._path_state(tracks_path),
+                    "frames": frame_entries,
+                }
+            )
+        return {"folders": folder_states}
+
     def _cache_key(self) -> str:
         payload = {
             "images_root": str(self.images_root),
@@ -354,6 +401,7 @@ class TrackProjectionDataset(torch.utils.data.Dataset):
             "max_tracks": self.max_tracks,
             "max_samples": self.max_samples,
             "seed": self.seed,
+            "dataset_state": self._dataset_state_signature(),
         }
         raw = json.dumps(payload, sort_keys=True)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
