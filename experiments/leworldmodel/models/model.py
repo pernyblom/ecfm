@@ -43,6 +43,8 @@ class LeWorldModel(nn.Module):
                 future_steps=self.forecast_future_steps,
                 hidden_dim=int(forecast_cfg.get("hidden_dim", 256)),
                 depth=int(forecast_cfg.get("depth", 2)),
+                use_ssl_features=bool(forecast_cfg.get("use_ssl_features", True)),
+                use_history_boxes=bool(forecast_cfg.get("use_history_boxes", True)),
             )
 
     def encode(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -81,6 +83,8 @@ class LeWorldModel(nn.Module):
             "pred_future_teacher": pred_future_teacher,
             "pred_future_rollout": pred_future_rollout,
         }
-        if self.forecast_head is not None and past_boxes is not None:
-            out["pred_future_boxes"] = self.forecast_head(z_context, past_boxes)
+        if self.forecast_head is not None:
+            context_for_head = z_context if self.forecast_head.use_ssl_features else None
+            boxes_for_head = past_boxes if self.forecast_head.use_history_boxes else None
+            out["pred_future_boxes"] = self.forecast_head(context_for_head, boxes_for_head)
         return out

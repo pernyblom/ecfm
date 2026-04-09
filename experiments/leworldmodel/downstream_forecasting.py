@@ -74,6 +74,10 @@ def main() -> None:
     cfg = load_config(args.config)
     cfg.setdefault("downstream", {}).setdefault("forecasting", {})["enabled"] = True
     forecast_cfg = cfg["downstream"]["forecasting"]
+    if not bool(forecast_cfg.get("use_ssl_features", True)) and not bool(
+        forecast_cfg.get("use_history_boxes", True)
+    ):
+        raise ValueError("downstream.forecasting must enable at least one of use_ssl_features/use_history_boxes.")
     train_cfg = cfg["train"]
     frame_size = tuple(int(v) for v in cfg["data"]["frame_size"])
 

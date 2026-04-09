@@ -65,9 +65,19 @@ class ForecastMLPHead(nn.Module):
         future_steps: int,
         hidden_dim: int,
         depth: int,
+        use_ssl_features: bool = True,
+        use_history_boxes: bool = True,
     ) -> None:
         super().__init__()
-        in_dim = latent_dim * ssl_context_steps + box_history_steps * 4
+        self.use_ssl_features = bool(use_ssl_features)
+        self.use_history_boxes = bool(use_history_boxes)
+        if not self.use_ssl_features and not self.use_history_boxes:
+            raise ValueError("ForecastMLPHead requires at least one input source.")
+        in_dim = 0
+        if self.use_ssl_features:
+            in_dim += latent_dim * ssl_context_steps
+        if self.use_history_boxes:
+            in_dim += box_history_steps * 4
         layers = []
         current = in_dim
         for _ in range(max(depth - 1, 0)):
@@ -78,8 +88,21 @@ class ForecastMLPHead(nn.Module):
         self.net = nn.Sequential(*layers)
         self.future_steps = future_steps
 
-    def forward(self, context_latents: torch.Tensor, past_boxes: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([context_latents.flatten(1), past_boxes.flatten(1)], dim=-1)
+    def forward(
+        self,
+        context_latents: torch.Tensor | None,
+        past_boxes: torch.Tensor | None,
+    ) -> torch.Tensor:
+        parts = []
+        if self.use_ssl_features:
+            if context_latents is None:
+                raise ValueError("context_latents is required when use_ssl_features=True")
+            parts.append(context_latents.flatten(1))
+        if self.use_history_boxes:
+            if past_boxes is None:
+                raise ValueError("past_boxes is required when use_history_boxes=True")
+            parts.append(past_boxes.flatten(1))
+        x = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
         boxes = self.net(x).view(-1, self.future_steps, 4)
         return boxes.sigmoid()
 

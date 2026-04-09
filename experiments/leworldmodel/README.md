@@ -56,6 +56,11 @@ Config notes
   - `sigreg`: sketched Gaussian matching using the Epps-Pulley statistic over
     random 1D projections
 - `downstream.forecasting.enabled` toggles the inline box-forecasting head.
+- `downstream.forecasting.use_ssl_features` controls whether the forecasting
+  head uses SSL latent context.
+- `downstream.forecasting.use_history_boxes` controls whether the forecasting
+  head uses past box history.
+- At least one of those two must be `true`.
 
 About the rendered event window
 - The `--window` value used in `render_fred_splits.py` is fixed at render time.
@@ -81,6 +86,10 @@ python experiments/leworldmodel/downstream_forecasting.py --config experiments/l
 - By default this freezes the SSL backbone and only trains `forecast_head`.
   Change `downstream.forecasting.freeze_ssl_backbone` if you want to finetune
   the full model instead.
+- Useful ablations:
+  - boxes only: `use_ssl_features: false`, `use_history_boxes: true`
+  - latents only: `use_ssl_features: true`, `use_history_boxes: false`
+  - fused: `use_ssl_features: true`, `use_history_boxes: true`
 
 Recommendation
 - Start with `sigreg` for the main LeWorldModel-style run.
