@@ -17,9 +17,11 @@ class LeWorldModelSample:
     inputs: Dict[str, torch.Tensor]
     past_boxes: torch.Tensor
     future_boxes: torch.Tensor
-    frame_keys: List[str]
-    frame_times: List[float]
-    frame_paths: Dict[str, List[str]]
+    image_frame_keys: List[str]
+    box_frame_keys: List[str]
+    image_frame_times: List[float]
+    box_frame_times: List[float]
+    anchor_frame_key: str
     track_id: int
 
 
@@ -91,15 +93,18 @@ def _infer_frame_size(
 
 
 class LeWorldModelTrackDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
 
     def __init__(
         self,
         images_root: Path,
         labels_root: Path,
         representations: List[str],
-        context_steps: int,
-        future_steps: int,
+        ssl_context_steps: int,
+        ssl_future_steps: int,
+        ssl_future_offset_steps: int,
+        forecast_history_steps: int,
+        forecast_future_steps: int,
         stride: int,
         image_size: Tuple[int, int],
         folders: Optional[List[str]] = None,
@@ -118,8 +123,11 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
         self.representations = list(representations)
-        self.context_steps = int(context_steps)
-        self.future_steps = int(future_steps)
+        self.ssl_context_steps = int(ssl_context_steps)
+        self.ssl_future_steps = int(ssl_future_steps)
+        self.ssl_future_offset_steps = int(ssl_future_offset_steps)
+        self.forecast_history_steps = int(forecast_history_steps)
+        self.forecast_future_steps = int(forecast_future_steps)
         self.stride = int(stride)
         self.image_size = tuple(image_size)
         self.folders = folders
@@ -135,10 +143,16 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
         self.seed = int(seed)
         self.cache_dir = Path(cache_dir) if cache_dir else None
 
-        if self.context_steps <= 0:
-            raise ValueError("context_steps must be > 0")
-        if self.future_steps <= 0:
-            raise ValueError("future_steps must be > 0")
+        if self.ssl_context_steps <= 0:
+            raise ValueError("ssl_context_steps must be > 0")
+        if self.ssl_future_steps <= 0:
+            raise ValueError("ssl_future_steps must be > 0")
+        if self.ssl_future_offset_steps <= 0:
+            raise ValueError("ssl_future_offset_steps must be > 0")
+        if self.forecast_history_steps <= 0:
+            raise ValueError("forecast_history_steps must be > 0")
+        if self.forecast_future_steps <= 0:
+            raise ValueError("forecast_future_steps must be > 0")
 
         self.frames_by_folder = self._discover_frames()
         self.allowed_tracks = self._select_track_subset()
@@ -212,35 +226,29 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
                 return False
         return True
 
-    def _window_is_contiguous(self, window_times: List[float]) -> bool:
-        if self.max_frame_gap_s is None or len(window_times) <= 1:
+    def _window_is_contiguous(self, times: List[float]) -> bool:
+        if self.max_frame_gap_s is None or len(times) <= 1:
             return True
-        gaps = np.diff(np.asarray(window_times, dtype=np.float64))
+        gaps = np.diff(np.asarray(times, dtype=np.float64))
         return bool(np.all(gaps <= self.max_frame_gap_s))
 
-    def _build_samples(
-        self,
-    ) -> List[
-        Tuple[
-            str,
-            int,
-            List[str],
-            List[float],
-            Dict[str, List[str]],
-            List[Tuple[float, float, float, float]],
-        ]
-    ]:
-        samples: List[
-            Tuple[
-                str,
-                int,
-                List[str],
-                List[float],
-                Dict[str, List[str]],
-                List[Tuple[float, float, float, float]],
-            ]
-        ] = []
-        total = self.context_steps + self.future_steps
+    def _ssl_times_are_valid(self, times: List[float]) -> bool:
+        if self.max_frame_gap_s is None or len(times) <= 1:
+            return True
+        context_count = self.ssl_context_steps
+        context_times = times[:context_count]
+        future_times = times[context_count:]
+        return self._window_is_contiguous(context_times) and self._window_is_contiguous(future_times)
+
+    def _build_samples(self):
+        samples = []
+        ssl_left = self.ssl_context_steps - 1
+        ssl_future_start = self.ssl_future_offset_steps
+        ssl_right = ssl_future_start + self.ssl_future_steps - 1
+        forecast_left = self.forecast_history_steps - 1
+        forecast_right = self.forecast_future_steps
+        left = max(ssl_left, forecast_left)
+        right = max(ssl_right, forecast_right)
 
         print("Building LeWorldModel track samples...")
         for folder, frames in self.frames_by_folder.items():
@@ -256,6 +264,14 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
 
             label_times = np.array([item.time_s for item in frames], dtype=np.float64)
             label_stems = [item.stem for item in frames]
+            image_frame_mask = np.array(
+                [self._has_all_reps(folder, stem) for stem in label_stems],
+                dtype=bool,
+            )
+            if np.any(image_frame_mask):
+                align_label_times = label_times[image_frame_mask]
+            else:
+                align_label_times = label_times
 
             for track_id, items in tracks.items():
                 if self.allowed_tracks is not None and (folder, int(track_id)) not in self.allowed_tracks:
@@ -270,10 +286,9 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
                     continue
 
                 if self.time_align == "start":
-                    shift = label_times[0] - times[0]
-                    times = times + shift
+                    times = times + (align_label_times[0] - times[0])
                 elif self.time_align == "auto":
-                    shift = label_times[0] - times[0]
+                    shift = align_label_times[0] - times[0]
                     no_shift_count = int(np.sum((label_times >= times[0]) & (label_times <= times[-1])))
                     shift_count = int(
                         np.sum((label_times >= times[0] + shift) & (label_times <= times[-1] + shift))
@@ -302,29 +317,52 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
 
                 stems = [label_stems[i] for i in idxs]
                 stem_times = [float(label_times[i]) for i in idxs]
-                for start in range(0, len(stems) - total * self.stride + 1):
-                    window_idx = [start + i * self.stride for i in range(total)]
-                    window_stems = [stems[i] for i in window_idx]
-                    window_times = [stem_times[i] for i in window_idx]
-                    if not self._window_is_contiguous(window_times):
+                for anchor in range(left * self.stride, len(stems) - right * self.stride):
+                    full_idx = [anchor + i * self.stride for i in range(-left, right + 1)]
+                    full_times = [stem_times[i] for i in full_idx]
+                    if not self._window_is_contiguous(full_times):
                         continue
-                    if not all(self._has_all_reps(folder, stem) for stem in window_stems):
+
+                    ssl_idx = [anchor + i * self.stride for i in range(-ssl_left, 1)]
+                    ssl_idx.extend(
+                        [
+                            anchor + (ssl_future_start + i) * self.stride
+                            for i in range(self.ssl_future_steps)
+                        ]
+                    )
+                    ssl_stems = [stems[i] for i in ssl_idx]
+                    if not all(self._has_all_reps(folder, stem) for stem in ssl_stems):
                         continue
+
+                    forecast_past_idx = [anchor + i * self.stride for i in range(-forecast_left, 1)]
+                    forecast_future_idx = [anchor + i * self.stride for i in range(1, forecast_right + 1)]
+                    image_times = [stem_times[i] for i in ssl_idx]
+                    past_box_times = [stem_times[i] for i in forecast_past_idx]
+                    future_box_times = [stem_times[i] for i in forecast_future_idx]
+                    if not self._ssl_times_are_valid(image_times):
+                        continue
+                    if not self._window_is_contiguous(past_box_times + future_box_times):
+                        continue
+
                     base_dir = self._images_dir(folder)
-                    rep_paths = {
-                        rep: [str(base_dir / f"{stem}_{rep}.png") for stem in window_stems]
+                    image_paths = {
+                        rep: [str(base_dir / f"{stem}_{rep}.png") for stem in ssl_stems]
                         for rep in self.representations
                     }
-                    window_boxes = [boxes[i] for i in window_idx]
                     samples.append(
-                        (
-                            folder,
-                            int(track_id),
-                            window_stems,
-                            window_times,
-                            rep_paths,
-                            window_boxes,
-                        )
+                        {
+                            "folder": folder,
+                            "track_id": int(track_id),
+                            "image_stems": ssl_stems,
+                            "image_times": image_times,
+                            "image_paths": image_paths,
+                            "past_box_stems": [stems[i] for i in forecast_past_idx],
+                            "future_box_stems": [stems[i] for i in forecast_future_idx],
+                            "past_boxes": [boxes[i] for i in forecast_past_idx],
+                            "future_boxes": [boxes[i] for i in forecast_future_idx],
+                            "box_times": past_box_times + future_box_times,
+                            "anchor_stem": stems[anchor],
+                        }
                     )
         return samples
 
@@ -340,8 +378,11 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
             "images_root": str(self.images_root),
             "labels_root": str(self.labels_root),
             "representations": self.representations,
-            "context_steps": self.context_steps,
-            "future_steps": self.future_steps,
+            "ssl_context_steps": self.ssl_context_steps,
+            "ssl_future_steps": self.ssl_future_steps,
+            "ssl_future_offset_steps": self.ssl_future_offset_steps,
+            "forecast_history_steps": self.forecast_history_steps,
+            "forecast_future_steps": self.forecast_future_steps,
             "stride": self.stride,
             "image_size": self.image_size,
             "folders": self.folders,
@@ -390,20 +431,24 @@ class LeWorldModelTrackDataset(torch.utils.data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> LeWorldModelSample:
-        folder, track_id, stems, times, paths, boxes = self.samples[idx]
+        sample = self.samples[idx]
+        folder = sample["folder"]
         inputs = {
             rep: torch.stack([_load_image(Path(path), self.image_size) for path in rep_paths], dim=0)
-            for rep, rep_paths in paths.items()
+            for rep, rep_paths in sample["image_paths"].items()
         }
-        frame_keys = [f"{folder}/{stem}" if folder else stem for stem in stems]
-        past_boxes = torch.tensor(boxes[: self.context_steps], dtype=torch.float32)
-        future_boxes = torch.tensor(boxes[self.context_steps :], dtype=torch.float32)
+        image_frame_keys = [f"{folder}/{stem}" if folder else stem for stem in sample["image_stems"]]
+        past_box_keys = [f"{folder}/{stem}" if folder else stem for stem in sample["past_box_stems"]]
+        future_box_keys = [f"{folder}/{stem}" if folder else stem for stem in sample["future_box_stems"]]
+        anchor_frame_key = f"{folder}/{sample['anchor_stem']}" if folder else sample["anchor_stem"]
         return LeWorldModelSample(
             inputs=inputs,
-            past_boxes=past_boxes,
-            future_boxes=future_boxes,
-            frame_keys=frame_keys,
-            frame_times=times,
-            frame_paths=paths,
-            track_id=int(track_id),
+            past_boxes=torch.tensor(sample["past_boxes"], dtype=torch.float32),
+            future_boxes=torch.tensor(sample["future_boxes"], dtype=torch.float32),
+            image_frame_keys=image_frame_keys,
+            box_frame_keys=past_box_keys + future_box_keys,
+            image_frame_times=list(sample["image_times"]),
+            box_frame_times=list(sample["box_times"]),
+            anchor_frame_key=anchor_frame_key,
+            track_id=int(sample["track_id"]),
         )

@@ -30,9 +30,11 @@ def _collate_samples(batch: List[LeWorldModelSample]):
     inputs = {rep: torch.stack([sample.inputs[rep] for sample in batch], dim=0) for rep in reps}
     past_boxes = torch.stack([sample.past_boxes for sample in batch], dim=0)
     future_boxes = torch.stack([sample.future_boxes for sample in batch], dim=0)
-    frame_keys = [sample.frame_keys for sample in batch]
-    frame_times = [sample.frame_times for sample in batch]
-    frame_paths = [sample.frame_paths for sample in batch]
+    image_frame_keys = [sample.image_frame_keys for sample in batch]
+    box_frame_keys = [sample.box_frame_keys for sample in batch]
+    image_frame_times = [sample.image_frame_times for sample in batch]
+    box_frame_times = [sample.box_frame_times for sample in batch]
+    anchor_frame_keys = [sample.anchor_frame_key for sample in batch]
     track_ids = [sample.track_id for sample in batch]
     return type(
         "Batch",
@@ -41,9 +43,11 @@ def _collate_samples(batch: List[LeWorldModelSample]):
             "inputs": inputs,
             "past_boxes": past_boxes,
             "future_boxes": future_boxes,
-            "frame_keys": frame_keys,
-            "frame_times": frame_times,
-            "frame_paths": frame_paths,
+            "image_frame_keys": image_frame_keys,
+            "box_frame_keys": box_frame_keys,
+            "image_frame_times": image_frame_times,
+            "box_frame_times": box_frame_times,
+            "anchor_frame_keys": anchor_frame_keys,
             "track_ids": track_ids,
         },
     )
@@ -64,8 +68,11 @@ def _build_dataset(data_cfg: Dict, folders: List[str], *, max_samples_key: str, 
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
         representations=data_cfg["representations"],
-        context_steps=int(data_cfg["context_steps"]),
-        future_steps=int(data_cfg["future_steps"]),
+        ssl_context_steps=int(data_cfg["ssl_context_steps"]),
+        ssl_future_steps=int(data_cfg["ssl_future_steps"]),
+        ssl_future_offset_steps=int(data_cfg.get("ssl_future_offset_steps", 1)),
+        forecast_history_steps=int(data_cfg["forecast_history_steps"]),
+        forecast_future_steps=int(data_cfg["forecast_future_steps"]),
         stride=int(data_cfg.get("stride", 1)),
         image_size=tuple(data_cfg["image_size"]),
         folders=folders,
@@ -167,17 +174,9 @@ def _run_epoch(model, loader, optimizer, device, train_cfg, reg_cfg, frame_size,
     return _finalize_metrics(sums)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=Path, required=True)
-    args = parser.parse_args()
-
-    cfg = load_config(args.config)
+def build_loaders(cfg: Dict):
     data_cfg = cfg["data"]
     train_cfg = cfg["train"]
-    reg_cfg = cfg.get("regularizer", {"type": "sigreg"})
-    frame_size = tuple(int(v) for v in data_cfg["frame_size"])
-
     split_files = data_cfg.get("split_files")
     if not split_files:
         raise ValueError("data.split_files is required.")
@@ -203,6 +202,21 @@ def main() -> None:
         num_workers=int(train_cfg.get("num_workers", 0)),
         collate_fn=_collate_samples,
     )
+    return train_loader, val_loader
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, required=True)
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    data_cfg = cfg["data"]
+    train_cfg = cfg["train"]
+    reg_cfg = cfg.get("regularizer", {"type": "sigreg"})
+    frame_size = tuple(int(v) for v in data_cfg["frame_size"])
+
+    train_loader, val_loader = build_loaders(cfg)
 
     device = torch.device(train_cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
     model = build_model(cfg, device)

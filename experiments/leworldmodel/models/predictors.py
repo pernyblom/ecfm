@@ -60,13 +60,14 @@ class ForecastMLPHead(nn.Module):
     def __init__(
         self,
         latent_dim: int,
-        context_steps: int,
+        ssl_context_steps: int,
+        box_history_steps: int,
         future_steps: int,
         hidden_dim: int,
         depth: int,
     ) -> None:
         super().__init__()
-        in_dim = latent_dim * future_steps + context_steps * 4
+        in_dim = latent_dim * ssl_context_steps + box_history_steps * 4
         layers = []
         current = in_dim
         for _ in range(max(depth - 1, 0)):
@@ -77,8 +78,8 @@ class ForecastMLPHead(nn.Module):
         self.net = nn.Sequential(*layers)
         self.future_steps = future_steps
 
-    def forward(self, rollout_latents: torch.Tensor, past_boxes: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([rollout_latents.flatten(1), past_boxes.flatten(1)], dim=-1)
+    def forward(self, context_latents: torch.Tensor, past_boxes: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([context_latents.flatten(1), past_boxes.flatten(1)], dim=-1)
         boxes = self.net(x).view(-1, self.future_steps, 4)
         return boxes.sigmoid()
 

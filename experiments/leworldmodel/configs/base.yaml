@@ -9,8 +9,11 @@ data:
   frame_size: [1280, 720]
   representations: ["xt_my", "yt_mx", "cstr3"]
   image_size: [128, 128]
-  context_steps: 1
-  future_steps: 12
+  ssl_context_steps: 1
+  ssl_future_steps: 1
+  ssl_future_offset_steps: 8
+  forecast_history_steps: 12
+  forecast_future_steps: 24
   stride: 1
   max_frame_gap_s: 0.05
   split_files:
@@ -57,6 +60,12 @@ downstream:
     enabled: false
     hidden_dim: 256
     depth: 2
+    freeze_ssl_backbone: true
+    epochs: 20
+    lr: 2.0e-4
+    weight_decay: 1.0e-4
+    checkpoint_dir: outputs/leworldmodel_forecast_ckpt
+    metrics_jsonl: outputs/leworldmodel_forecast_ckpt/metrics.jsonl
 
 train:
   batch_size: 32
