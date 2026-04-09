@@ -1,0 +1,75 @@
+data:
+  images_root: outputs/fred_reps
+  labels_root: datasets/FRED
+  labels_subdir: Event_YOLO
+  tracks_file: cleaned_tracks.txt
+  label_time_unit: 1.0e-6
+  track_time_unit: 1.0
+  time_align: start
+  frame_size: [1280, 720]
+  representations: ["xt_my", "yt_mx", "cstr3"]
+  image_size: [128, 128]
+  context_steps: 1
+  future_steps: 12
+  stride: 1
+  max_frame_gap_s: 0.05
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    val: datasets/FRED/dataset_splits/canonical/test_split.txt
+  max_tracks: null
+  max_samples_train: 8000
+  max_samples_val: 2000
+  seed: 123456
+  cache_dir: outputs/leworldmodel_cache
+
+model:
+  encoder_type: small_cnn
+  cnn_channels: [16, 32, 64]
+  latent_dim: 128
+  predictor_type: mlp
+  predictor_hidden_dim: 256
+  predictor_depth: 2
+  predictor_d_model: 256
+  predictor_nhead: 4
+  predictor_layers: 4
+  predictor_dim_feedforward: 512
+  predictor_dropout: 0.1
+  vit_patch_size: 16
+  vit_embed_dim: 192
+  vit_depth: 6
+  vit_heads: 3
+  vit_mlp_ratio: 4.0
+  dropout: 0.1
+
+regularizer:
+  type: sigreg
+  num_projections: 256
+  num_integration_steps: 64
+  projection_lambda: 1.0
+  t_min: 0.2
+  t_max: 4.0
+  target_std: 1.0
+  eps: 1.0e-4
+  cov_weight: 1.0
+
+downstream:
+  forecasting:
+    enabled: false
+    hidden_dim: 256
+    depth: 2
+
+train:
+  batch_size: 32
+  epochs: 120
+  lr: 2.0e-4
+  weight_decay: 1.0e-4
+  device: cuda
+  num_workers: 0
+  log_every: 20
+  prediction_weight: 1.0
+  regularizer_weight: 0.1
+  forecast_weight: 0.5
+  checkpoint_dir: outputs/leworldmodel_ckpt
+  metrics_jsonl: outputs/leworldmodel_ckpt/metrics.jsonl
+  checkpoint_every: 1
+  resume_from: null

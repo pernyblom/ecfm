@@ -1,0 +1,173 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+\PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2024
+
+% ready for submission
+\usepackage[preprint]{neurips_2025}
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{neurips_2024}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2024}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage{bm}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{wrapfig}
+\usepackage{fontawesome5}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{pifont}
+\usepackage{bbm}
+\usepackage{multirow}
+\usepackage[shortlabels]{enumitem}
+\usepackage[
+  colorlinks=true,
+  citecolor=NavyBlue,
+  linkcolor=NavyBlue,
+  urlcolor=NavyBlue
+]{hyperref}
+
+\usepackage[capitalize,noabbrev]{cleveref}
+\usepackage[textsize=tiny]{todonotes}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+
+\input{math_commands.tex}
+
+\definecolor{codebg}{RGB}{248,248,248}
+\definecolor{codecolor}{RGB}{140,142,144}
+
+\definecolor{keyword}{RGB}{50, 106, 144}
+\definecolor{string}{RGB}{215, 86, 68}
+\definecolor{comment}{RGB}{130, 193, 139}
+\definecolor{builtin}{RGB}{105, 201, 140}
+\definecolor{var}{RGB}{105, 154, 187}
+\definecolor{num}{RGB}{226, 136, 122}
+
+\lstdefinestyle{pythonstyle}{
+  language=Python,
+  basicstyle= \fontfamily{fvm}\selectfont\small\color{codecolor},
+  keywordstyle=\color{keyword}\bfseries,
+  stringstyle=\color{string},
+  commentstyle=\color{comment}\itshape,
+  emph={obs,actions,lambd,next_emb,emb},
+  emphstyle=\color{var},
+  emph={[2]return, def, for, in},
+  emphstyle={[3]\color{num}\bfseries},
+  literate=
+    {0}{{{\color{num}0}}}{1}
+    {1}{{{\color{num}1}}}{1}
+    {-1}{{{\color{num}-1}}}{2}
+    {.0}{{{\color{num}.0}}}{2}
+    {.1}{{{\color{num}.1}}}{2},
+  showstringspaces=false,
+  breaklines=true,
+  frame=none,
+  xleftmargin=1em,
+}
+
+
+\title{LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels}
+
+\author{%
+Lucas Maes\textnormal{*\textsuperscript{1}}~~ Quentin Le Lidec\textnormal{*\textsuperscript{2}}~~ Damien Scieur\textnormal{\textsuperscript{1,3}}~~ Yann LeCun\textnormal{\textsuperscript{2}}~~Randall Balestriero\textnormal{\textsuperscript{4}}
+\\[8pt]
+$^{1}$Mila \& Université de Montréal~~$^{2}$New York University~~$^{3}$Samsung SAIL ~~$^{4}$Brown University
+}
+
+\begin{document}
+
+\renewcommand{\thefootnote}{}
+\footnotetext{* Equal contribution. Correspondence to \texttt{lucas.maes@mila.quebec}}
+\renewcommand{\thefootnote}{\arabic{footnote}}
+
+\maketitle
+
+\vspace{-2.5em}
+\begin{center}
+\href{https://le-wm.github.io}{%
+  \tcbox[
+    on line,
+    colback=codebg,
+    colframe=codebg,
+    coltext=codecolor,
+    boxrule=0.4pt,
+    arc=4pt,
+    boxsep=2pt,
+    left=4pt, right=4pt, top=2pt, bottom=2pt
+  ]{\fontfamily{fvm}\selectfont\small\faGlobe\enspace Website}}
+\href{https://github.com/lucas-maes/le-wm}{%
+  \tcbox[
+    on line,
+    colback=codebg,
+    colframe=codebg,
+    coltext=codecolor,
+    boxrule=0.4pt,
+    arc=4pt,
+    boxsep=2pt,
+    left=4pt, right=4pt, top=2pt, bottom=2pt
+  ]{\fontfamily{fvm}\selectfont\small\faGithub\enspace Code}}
+\end{center}
+\vspace{2pt}
+
+\begin{abstract}
+Joint Embedding Predictive Architectures (JEPAs) offer a compelling framework for learning world models in compact latent spaces, yet existing methods remain fragile, relying on complex multi-term losses, exponential moving averages, pre-trained encoders, or auxiliary supervision to avoid representation collapse. In this work, we introduce LeWorldModel (LeWM), the first JEPA that trains stably end-to-end from raw pixels using only two loss terms: a next-embedding prediction loss and a regularizer enforcing Gaussian-distributed latent embeddings. This reduces tunable loss hyperparameters from six to one compared to the only existing end-to-end alternative. With ~15M parameters trainable on a single GPU in a few hours, LeWM plans up to $48\times$ faster than foundation-model-based world models while remaining competitive across diverse 2D and 3D control tasks. Beyond control, we show that LeWM's latent space encodes meaningful physical structure through probing of physical quantities. Surprise evaluation confirms that the model reliably detects physically implausible events.
+\end{abstract}
+
+\begin{figure}[h]
+  \centering
+  % a black filled box 10cm wide x 5cm high
+  %\colorbox{black}{\parbox[c][3cm][c]{5cm}{}} 
+  \includegraphics[width=\linewidth]{figs/lewm.pdf}
+  \caption{\small \textbf{LeWorldModel Training Pipeline.} Given frame observations $\vo_{1:T}$ and actions $\va_{1:T}$, the encoder maps frames into low-dimensional latent representations $\vz_{1:T}$. The predictor models the environment dynamics by autoregressively predicting the next latent state $\vz_{t+1}$ from the current latent state $\vz_t$ and action $\va_t$. The encoder and predictor are jointly optimized using a mean-squared error (MSE) prediction loss. LeWM does not rely on any training heuristics, such as stop-gradient, exponential moving averages, or pre-trained representations. To prevent trivial collapse, the SIGReg regularization term enforces Gaussian-distributed latent embeddings, promoting feature diversity. More specifically, latent embeddings are projected onto multiple random directions, and a normality test is applied to each one-dimensional projection. Aggregating these statistics encourages the full embedding distribution to match an isotropic Gaussian.}
+  \label{fig:training-framework}
+\end{figure}
+
+\input{sections/1-intro}
+
+\input{sections/2-related_work}
+
+\input{sections/3-method}
+
+\input{sections/4-exp}
+
+\section{Conclusion}
+
+This work introduced LeWorldModel (LeWM), a stable end-to-end method for learning latent world models of environments. LeWM is a Joint-Embedding Predictive Architecture that uses an encoder to map image observations into a latent space and a predictor that models temporal dynamics in the embedding space by predicting future embeddings conditioned on actions. Across a variety of continuous control environments and using only raw pixel inputs, LeWM outperforms previous approaches in data efficiency, planning time, training time, and stability while maintaining competitive final task performance. The stability and simplicity of training arise from explicitly encouraging latent embeddings to follow an isotropic Gaussian distribution to avoid collapse. Overall, LeWM provides a scalable alternative to existing latent world model methods, offering principled training dynamics alongside interpretable and emergent representation properties.
+
+\paragraph{Limitations \& Future Work.} Despite these promising results, several limitations highlight important research directions. First, planning with current latent world models remains restricted to short horizons. Hierarchical world modeling represents a promising direction to address long-horizon reasoning and planning. Second, our approach still relies on offline datasets with sufficient interaction coverage, which can be costly or difficult to collect. In particular, limited data diversity can affect the effectiveness of the SIGReg regularization in very simple environments with low intrinsic dimensionality, where matching the isotropic Gaussian prior in a high-dimensional latent space becomes challenging. Pre-training on large and diverse natural video datasets could provide strong representation priors and reduce reliance on domain-specific data. Finally, current end-to-end latent world models depend on action labels to predict future states, which can also be costly to obtain. A promising direction is to learn future action representations through inverse dynamics modeling, potentially reducing the need for explicit action annotations.
+
+\bibliography{ref}
+\bibliographystyle{unsrtnat}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\input{appendix}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\end{document}
