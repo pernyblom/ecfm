@@ -7,7 +7,8 @@ data:
   track_time_unit: 1.0
   time_align: start
   frame_size: [1280, 720]
-  representations: ["xt_my", "yt_mx", "cstr3"]
+  # representations: ["xt_my", "yt_mx", "cstr3"]
+  representations: ["cstr3"]
   image_size: [128, 128]
   ssl_context_steps: 1
   ssl_future_steps: 1
@@ -26,7 +27,7 @@ data:
   cache_dir: outputs/leworldmodel_cache
 
 model:
-  encoder_type: small_cnn
+  encoder_type: resnet18
   cnn_channels: [16, 32, 64]
   latent_dim: 128
   predictor_type: mlp
@@ -62,7 +63,7 @@ downstream:
     depth: 2
     use_ssl_features: true
     use_history_boxes: false
-    freeze_ssl_backbone: true
+    freeze_ssl_backbone: false
     epochs: 20
     lr: 2.0e-4
     weight_decay: 1.0e-4
@@ -77,8 +78,10 @@ train:
   device: cuda
   num_workers: 0
   log_every: 20
-  prediction_weight: 1.0
-  regularizer_weight: 0.1
+  # prediction_weight: 1.0
+  # regularizer_weight: 0.1
+  prediction_weight: 0.6
+  regularizer_weight: 0.4
   forecast_weight: 0.5
   checkpoint_dir: outputs/leworldmodel_ckpt
   metrics_jsonl: outputs/leworldmodel_ckpt/metrics.jsonl
