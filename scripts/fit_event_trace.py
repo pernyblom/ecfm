@@ -387,6 +387,87 @@ def clip_curve_to_spatial(coords, spatial_size):
     return np.clip(coords, 0, spatial_size - 1)
 
 
+def extract_fit_predict_trace(
+    bgr,
+    *,
+    time_axis,
+    fit_degree=2,
+    future_steps=0,
+    signal_source='rbmax',
+    blur_ksize=5,
+    blur_sigma=1.2,
+    threshold_mode='otsu',
+    threshold_value=40.0,
+    invert=False,
+    morph_open=3,
+    morph_close=3,
+    min_component_area=20,
+    coord_method='weighted_centroid',
+    green_neighborhood_radius=1,
+):
+    h, w = bgr.shape[:2]
+    input_time_len = w if time_axis == 'x' else h
+    future_time_len = input_time_len if int(future_steps) <= 0 else int(future_steps)
+
+    signal = build_signal_image(bgr, source=signal_source)
+    green = bgr[:, :, 1]
+    blurred, mask = preprocess_mask(
+        signal=signal,
+        blur_ksize=blur_ksize,
+        blur_sigma=blur_sigma,
+        threshold_mode=threshold_mode,
+        threshold_value=threshold_value,
+        invert=invert,
+        morph_open=morph_open,
+        morph_close=morph_close,
+        min_component_area=min_component_area,
+    )
+    times, coords, green_vals = extract_trace_and_green(
+        mask=mask,
+        signal=blurred,
+        green_channel=green,
+        time_axis=time_axis,
+        coord_method=coord_method,
+        neighborhood_radius=green_neighborhood_radius,
+    )
+    if len(times) < max(fit_degree + 1, 5):
+        raise RuntimeError(
+            f"Too few extracted trace points ({len(times)}). "
+            f"Try changing thresholding, signal source, morphology, or coord method."
+        )
+
+    order = np.argsort(times)
+    times = times[order]
+    coords = coords[order]
+    green_vals = green_vals[order]
+
+    coeffs = fit_polynomial(times, coords, degree=fit_degree)
+    fit_coords = poly_eval(coeffs, times)
+    future_times, future_coords, future_info = predict_future_constant_acceleration(
+        times, coeffs, future_steps=future_time_len
+    )
+
+    spatial_size = h if time_axis == 'x' else w
+    fit_coords = clip_curve_to_spatial(fit_coords, spatial_size)
+    future_coords = clip_curve_to_spatial(future_coords, spatial_size)
+    return {
+        'signal': signal,
+        'blurred': blurred,
+        'mask': mask,
+        'times': times,
+        'coords': coords,
+        'green_vals': green_vals,
+        'coeffs': coeffs,
+        'fit_coords': fit_coords,
+        'future_times': future_times,
+        'future_coords': future_coords,
+        'future_info': future_info,
+        'input_time_len': input_time_len,
+        'future_time_len': future_time_len,
+        'spatial_size': spatial_size,
+    }
+
+
 # -----------------------------------------------------------------------------
 # Main logic
 # -----------------------------------------------------------------------------
