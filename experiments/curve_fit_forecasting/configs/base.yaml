@@ -13,6 +13,9 @@ data:
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   image_window_ms: 400.0
   image_window_mode: trailing
+  verify_render_manifest: true
+  render_manifest_name: render_manifest.json
+  window_tolerance_ms: 5.0
   history_ms: 400.0
   forecast_ms: 400.0
   label_period_s: null

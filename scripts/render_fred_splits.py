@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -33,7 +34,43 @@ def _process_folder(folder: str, args_dict: dict) -> str:
     per_args.output_dir = out_dir
     print(f"Rendering {folder} -> {out_dir}")
     render_yolo_frames(per_args)
+    manifest_path = out_dir / "render_manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["folder"] = folder
+            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        except Exception:
+            pass
     return f"Done {folder}"
+
+
+def _aggregate_manifests(output_root: Path, folders: list[str], split_file: Path) -> Path:
+    aggregate = {
+        "output_root": str(output_root),
+        "split_file": str(split_file),
+        "folders": [],
+    }
+    for folder in folders:
+        manifest_path = output_root / folder / "render_manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        aggregate["folders"].append(
+            {
+                "folder": folder,
+                "manifest_path": str(manifest_path),
+                "render_params": manifest.get("render_params"),
+                "sensor_geometry": manifest.get("sensor_geometry"),
+                "num_files": len(manifest.get("files", [])),
+            }
+        )
+    aggregate_path = output_root / f"{split_file.stem}_render_manifest.json"
+    aggregate_path.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
+    return aggregate_path
 
 
 def main() -> None:
@@ -122,6 +159,12 @@ def main() -> None:
         default=1,
         help="Number of worker processes (default: 1)",
     )
+    parser.add_argument(
+        "--max-label-files",
+        type=int,
+        default=None,
+        help="Optional cap on the number of labels processed per folder.",
+    )
     args = parser.parse_args()
 
     folders = _read_split_file(args.split_file)
@@ -131,6 +174,8 @@ def main() -> None:
             msg = _process_folder(folder, args_dict)
             if msg:
                 print(msg)
+        aggregate_path = _aggregate_manifests(args.output_root, folders, args.split_file)
+        print(f"Wrote {aggregate_path}")
         return
 
     with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
@@ -145,6 +190,8 @@ def main() -> None:
                     print(msg)
             except Exception as exc:
                 print(f"Failed {folder}: {exc}")
+    aggregate_path = _aggregate_manifests(args.output_root, folders, args.split_file)
+    print(f"Wrote {aggregate_path}")
 
 
 if __name__ == "__main__":

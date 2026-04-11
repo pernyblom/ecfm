@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -90,6 +91,16 @@ def _find_rgb_frame(rgb_index: list[tuple[float, Path]], label_time: float) -> O
     if abs(label_time - before_t) <= abs(after_t - label_time):
         return before_p
     return after_p
+
+
+def _normalize_path(value) -> Optional[str]:
+    if value is None:
+        return None
+    return str(Path(value))
+
+
+def _representation_list(raw_value: str) -> list[str]:
+    return [r.strip() for r in raw_value.replace(",", ";").split(";") if r.strip()]
 
 
 def _read_rgb_image(path: Path) -> np.ndarray:
@@ -637,6 +648,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
 
     label_files = list(args.yolo_dir.glob("*.txt"))
     label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
+    if getattr(args, "max_label_files", None) is not None:
+        label_files = label_files[: max(0, int(args.max_label_files))]
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rgb_dir = args.rgb_dir
     if rgb_dir is None:
@@ -648,6 +661,45 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             if candidate.exists():
                 rgb_dir = candidate
     rgb_index = _build_rgb_index(rgb_dir, label_unit=args.label_unit) if rgb_dir else []
+
+    representations = _representation_list(args.representation)
+    crop_reps = set(_representation_list(args.crop_representations))
+    manifest = {
+        "raw": str(args.raw),
+        "yolo_dir": str(args.yolo_dir),
+        "output_dir": str(args.output_dir),
+        "rgb_dir": _normalize_path(rgb_dir),
+        "render_params": {
+            "window": float(args.window),
+            "label_unit": float(args.label_unit),
+            "event_unit": float(args.event_unit),
+            "ts_shift_us": None if ts_shift_us is None else float(ts_shift_us),
+            "window_mode": getattr(args, "window_mode", None) or ("center" if args.center else "trailing"),
+            "endian": args.endian,
+            "width": None if args.width is None else int(args.width),
+            "height": None if args.height is None else int(args.height),
+            "pixel_size": int(args.pixel_size),
+            "representation": representations,
+            "crop_representations": sorted(crop_reps),
+            "temporal_bins": int(args.temporal_bins),
+            "spatial_bins": int(args.spatial_bins),
+            "output_size": None if args.output_size is None else [int(v) for v in args.output_size],
+            "grid_x": int(args.grid_x),
+            "grid_y": int(args.grid_y),
+            "draw_rectangles": bool(args.draw_rectangles),
+            "rect_color": [int(v) for v in args.rect_color],
+            "rect_thickness": int(args.rect_thickness),
+            "only_with_rects": bool(args.only_with_rects),
+            "transform": args.transform,
+            "transform_scale": args.transform_scale,
+            "transform_eps": float(args.transform_eps),
+            "max_label_files": None
+            if getattr(args, "max_label_files", None) is None
+            else int(args.max_label_files),
+        },
+        "sensor_geometry": {"width": int(width), "height": int(height)},
+        "files": [],
+    }
 
     for label_path in label_files:
         label_time_raw = _parse_label_time(label_path)
@@ -683,10 +735,6 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         boxes = _read_yolo_boxes(label_path)
         if args.only_with_rects and not boxes:
             continue
-        reps_raw = args.representation.replace(",", ";")
-        representations = [r.strip() for r in reps_raw.split(";") if r.strip()]
-        crop_raw = args.crop_representations.replace(",", ";")
-        crop_reps = {r.strip() for r in crop_raw.split(";") if r.strip()}
         valid = {
             "events",
             "xy",
@@ -703,6 +751,19 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             "gray",
             "xt_my",
             "yt_mx",
+        }
+        file_entry = {
+            "label_path": str(label_path),
+            "label_stem": label_path.stem,
+            "label_time_raw": int(label_time_raw),
+            "label_time_render_units": float(label_time),
+            "window_start_render_units": float(t0),
+            "window_end_render_units": float(t1),
+            "window_duration_render_units": float(t1 - t0),
+            "window_mode": manifest["render_params"]["window_mode"],
+            "num_boxes": int(len(boxes)),
+            "num_events": int(ev.shape[0]),
+            "representations": {},
         }
         for rep in representations:
             if rep not in valid:
@@ -776,13 +837,24 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 )
             out_path = args.output_dir / f"{label_path.stem}_{rep}.png"
             final_path = write_image(out_path, img)
+            file_entry["representations"][rep] = {
+                "path": str(final_path),
+                "image_size": [int(img.shape[1]), int(img.shape[0])],
+                "time_horizontal": bool(time_horizontal),
+                "cropped_to_boxes": bool(rep in crop_reps),
+            }
             print(f"Wrote {final_path}")
+        if file_entry["representations"]:
+            manifest["files"].append(file_entry)
 
     if any(counters.values()):
         print("Ignored word types:")
         for k, v in counters.items():
             if v:
                 print(f"  {k}: {v}")
+    manifest_path = args.output_dir / "render_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"Wrote {manifest_path}")
 
 
 def main() -> None:
@@ -974,6 +1046,12 @@ def main() -> None:
         action="store_false",
         dest="only_with_rects",
         help="Also write images with zero rectangles",
+    )
+    parser.add_argument(
+        "--max-label-files",
+        type=int,
+        default=None,
+        help="Optional cap on the number of label files processed from the folder.",
     )
     args = parser.parse_args()
     render_yolo_frames(args)

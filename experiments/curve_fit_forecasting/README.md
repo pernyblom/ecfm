@@ -21,6 +21,8 @@ Why the dataset shape differs from `experiments/forecasting`
 Defaults
 - `data.image_window_ms = 400`: assumes the rendered event-history image covers
   400 ms by default.
+- `data.verify_render_manifest = true`: requires `render_manifest.json` next to
+  rendered images and validates window mode and duration for each anchor frame.
 - `data.history_ms = 400`: uses 400 ms of history boxes ending at the anchor.
 - `data.forecast_ms = 400`: predicts 400 ms ahead by default.
 - Set `data.forecast_ms = 800` for the mid-term benchmark.
@@ -31,6 +33,9 @@ python experiments/curve_fit_forecasting/eval.py --config experiments/curve_fit_
 ```
 
 Notes
+- `scripts/render_fred_splits.py` now writes per-folder `render_manifest.json`
+  files and a split-level aggregate manifest under the output root. Re-render if
+  your existing image directories do not have these manifests yet.
 - `data.image_window_mode` should stay `trailing` for forecasting. Other modes
   can leak future information into the event image.
 - The curve-fit settings are all exposed under `curve_fit` so thresholds and

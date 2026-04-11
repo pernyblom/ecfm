@@ -71,7 +71,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackCurveForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
 
     def __init__(
         self,
@@ -89,6 +89,9 @@ class TrackCurveForecastDataset(torch.utils.data.Dataset):
         track_time_unit: float = 1.0,
         time_align: str = "start",
         image_window_mode: str = "trailing",
+        verify_render_manifest: bool = True,
+        render_manifest_name: str = "render_manifest.json",
+        window_tolerance_ms: float = 5.0,
         label_period_s: Optional[float] = None,
         max_tracks: Optional[int] = None,
         max_samples: Optional[int] = None,
@@ -109,6 +112,9 @@ class TrackCurveForecastDataset(torch.utils.data.Dataset):
         self.track_time_unit = float(track_time_unit)
         self.time_align = time_align
         self.image_window_mode = image_window_mode
+        self.verify_render_manifest = bool(verify_render_manifest)
+        self.render_manifest_name = str(render_manifest_name)
+        self.window_tolerance_ms = float(window_tolerance_ms)
         self.label_period_s = None if label_period_s is None else float(label_period_s)
         self.max_tracks = max_tracks
         self.max_samples = max_samples
@@ -123,7 +129,10 @@ class TrackCurveForecastDataset(torch.utils.data.Dataset):
             raise ValueError("representations must not be empty.")
         if self.image_window_mode not in {"trailing", "center", "leading"}:
             raise ValueError(f"Unknown image_window_mode: {self.image_window_mode}")
+        if self.window_tolerance_ms < 0:
+            raise ValueError("window_tolerance_ms must be >= 0.")
 
+        self._folder_manifests: Dict[str, Optional[dict]] = {}
         self.frames_by_folder = self._discover_frames()
         self.allowed_tracks = self._select_track_subset()
         cached = self._load_cache()
@@ -148,6 +157,66 @@ class TrackCurveForecastDataset(torch.utils.data.Dataset):
         if self.folders is None:
             return self.labels_root / self.tracks_file
         return self.labels_root / folder / self.tracks_file
+
+    def _manifest_path(self, folder: str) -> Path:
+        if self.folders is None:
+            return self.images_root / self.render_manifest_name
+        return self.images_root / folder / self.render_manifest_name
+
+    def _load_render_manifest(self, folder: str) -> Optional[dict]:
+        if folder in self._folder_manifests:
+            return self._folder_manifests[folder]
+        path = self._manifest_path(folder)
+        if not path.exists():
+            self._folder_manifests[folder] = None
+            return None
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = None
+        self._folder_manifests[folder] = manifest
+        return manifest
+
+    def _validate_manifest_entry(self, folder: str, stem: str) -> None:
+        if not self.verify_render_manifest:
+            return
+        manifest = self._load_render_manifest(folder)
+        if manifest is None:
+            raise FileNotFoundError(
+                f"Missing render manifest for folder '{folder or '.'}'. Expected {self._manifest_path(folder)}."
+            )
+        params = manifest.get("render_params") or {}
+        manifest_mode = params.get("window_mode")
+        if manifest_mode != self.image_window_mode:
+            raise ValueError(
+                f"Render manifest mode mismatch for '{folder}/{stem}': expected "
+                f"{self.image_window_mode}, found {manifest_mode}."
+            )
+        expected_s = self.image_window_ms / 1000.0
+        tol_s = self.window_tolerance_ms / 1000.0
+        by_stem = {
+            entry.get("label_stem"): entry
+            for entry in manifest.get("files", [])
+            if entry.get("label_stem") is not None
+        }
+        entry = by_stem.get(stem)
+        if entry is None:
+            raise ValueError(
+                f"Render manifest for folder '{folder or '.'}' does not contain anchor stem '{stem}'."
+            )
+        actual_render_units = float(
+            entry.get(
+                "window_duration_render_units",
+                entry.get("window_duration_seconds", -1.0),
+            )
+        )
+        render_label_unit = float(params.get("label_unit", 1.0))
+        actual_s = actual_render_units * (self.label_time_unit / max(render_label_unit, 1.0e-12))
+        if abs(actual_s - expected_s) > tol_s:
+            raise ValueError(
+                f"Render manifest duration mismatch for '{folder}/{stem}': expected "
+                f"{expected_s:.6f}s, found {actual_s:.6f}s."
+            )
 
     def _discover_frames(self) -> Dict[str, List[FrameItem]]:
         out: Dict[str, List[FrameItem]] = {}
@@ -291,6 +360,7 @@ class TrackCurveForecastDataset(torch.utils.data.Dataset):
                     anchor_stem = window_stems[anchor_idx]
                     if not self._has_all_reps(folder, anchor_stem):
                         continue
+                    self._validate_manifest_entry(folder, anchor_stem)
                     input_paths = {
                         rep: str(self._images_dir(folder) / f"{anchor_stem}_{rep}.png")
                         for rep in self.representations
@@ -331,6 +401,9 @@ class TrackCurveForecastDataset(torch.utils.data.Dataset):
             "track_time_unit": self.track_time_unit,
             "time_align": self.time_align,
             "image_window_mode": self.image_window_mode,
+            "verify_render_manifest": self.verify_render_manifest,
+            "render_manifest_name": self.render_manifest_name,
+            "window_tolerance_ms": self.window_tolerance_ms,
             "label_period_s": self.label_period_s,
             "max_tracks": self.max_tracks,
             "max_samples": self.max_samples,
