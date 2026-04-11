@@ -5,7 +5,7 @@ data:
   tracks_file: cleaned_tracks.txt
   label_time_unit: 1.0e-6
   track_time_unit: 1.0
-  time_align: start
+  time_align: auto
   frame_size: [1280, 720]
   representations: ["xt_my", "yt_mx"]
   split_files:
@@ -17,15 +17,17 @@ data:
   render_manifest_name: render_manifest.json
   window_tolerance_ms: 5.0
   history_ms: 400.0
-  forecast_ms: 400.0
+  forecast_ms: 800.0
   label_period_s: null
   seed: 123456
-  max_tracks: null
-  max_samples_train: null
-  max_samples_val: null
+  max_tracks: 100000
+  max_samples_train: 20000
+  max_samples_val: 5000
   cache_dir: outputs/curve_fit_forecasting_cache
 
 curve_fit:
+  # point_source: image+history
+  point_source: history_only
   fit_degree: 2
   signal_source: rbmax
   blur_ksize: 5
@@ -41,6 +43,7 @@ curve_fit:
   history_time_slack_px: 2.0
   history_spatial_slack_px: 8.0
   history_size_scale: 1.25
+  max_point_deviation_extra_px: 12.0
   event_point_weight: 1.0
   history_point_weight: 4.0
   min_event_points: 12
@@ -52,6 +55,10 @@ curve_fit:
 eval:
   split: val
   log_every: 100
-  max_visualizations: 16
+  max_visualizations: 64
   vis_output_dir: outputs/curve_fit_forecasting_vis
+  vis_backdrop_rep: cstr3
+  vis_curve_width: 4
+  vis_save_plane_overlays: true
+  vis_plane_reps: ["xt_my", "yt_mx", "cstr3"]
   metrics_output: outputs/curve_fit_forecasting/metrics.json

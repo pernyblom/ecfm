@@ -24,6 +24,7 @@ class PlaneFitResult:
     spatial_size: int
     time_len: int
     time_axis: str
+    history_times_px: np.ndarray
     raw_mask: np.ndarray
     guided_mask: np.ndarray
     detected_times: np.ndarray
@@ -37,6 +38,7 @@ class PlaneFitResult:
 class CurveForecastResult:
     pred_boxes: torch.Tensor
     pred_centers_xy: torch.Tensor
+    fit_centers_xy: torch.Tensor
     xt: PlaneFitResult
     yt: PlaneFitResult
     debug: Dict[str, Any]
@@ -154,6 +156,56 @@ def _build_history_corridor_mask(
     return out
 
 
+def _interp_history_support(
+    query_times_px: np.ndarray,
+    history_times_px: np.ndarray,
+    history_centers_px: np.ndarray,
+    history_half_sizes_px: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if query_times_px.size == 0:
+        return (
+            np.zeros((0,), dtype=np.float64),
+            np.zeros((0,), dtype=np.float64),
+        )
+    order = np.argsort(history_times_px)
+    times = history_times_px[order].astype(np.float64)
+    centers = history_centers_px[order].astype(np.float64)
+    radii = history_half_sizes_px[order].astype(np.float64)
+    if times.size == 1:
+        expected = np.full(query_times_px.shape, centers[0], dtype=np.float64)
+        support = np.full(query_times_px.shape, radii[0], dtype=np.float64)
+        return expected, support
+    clipped_times = np.clip(query_times_px.astype(np.float64), times[0], times[-1])
+    expected = np.interp(clipped_times, times, centers)
+    support = np.interp(clipped_times, times, radii)
+    return expected, support
+
+
+def _filter_points_by_history(
+    times: np.ndarray,
+    coords: np.ndarray,
+    history_times_px: np.ndarray,
+    history_centers_px: np.ndarray,
+    history_half_sizes_px: np.ndarray,
+    params: Dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray]:
+    if times.size == 0:
+        return times, coords
+    expected, support = _interp_history_support(
+        times,
+        history_times_px=history_times_px,
+        history_centers_px=history_centers_px,
+        history_half_sizes_px=history_half_sizes_px,
+    )
+    max_dev = (
+        support * float(params.get("history_size_scale", 1.25))
+        + float(params.get("history_spatial_slack_px", 8.0))
+        + float(params.get("max_point_deviation_extra_px", 12.0))
+    )
+    keep = np.abs(coords.astype(np.float64) - expected) <= np.maximum(max_dev, 1.0)
+    return times[keep], coords[keep]
+
+
 def _fit_plane_guided(
     image_path: Path,
     time_axis: str,
@@ -165,6 +217,43 @@ def _fit_plane_guided(
     bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if bgr is None:
         raise FileNotFoundError(f"Could not read image: {image_path}")
+
+    if str(params.get("point_source", "image+history")).lower() == "history_only":
+        history_weights = np.full(
+            history_times_px.shape,
+            float(params.get("history_point_weight", 4.0)),
+            dtype=np.float64,
+        )
+        coeffs = _fit_polynomial_weighted(
+            history_times_px.astype(np.float64),
+            history_centers_px.astype(np.float64),
+            degree=int(params.get("fit_degree", 2)),
+            weights=history_weights,
+        )
+        history_fit = poly_eval(coeffs, history_times_px.astype(np.float64))
+        history_rmse_px = float(
+            np.sqrt(np.mean((history_fit - history_centers_px.astype(np.float64)) ** 2))
+        )
+        spatial_size = bgr.shape[0] if time_axis == "x" else bgr.shape[1]
+        time_len = bgr.shape[1] if time_axis == "x" else bgr.shape[0]
+        observed_fit = clip_curve_to_spatial(
+            poly_eval(coeffs, history_times_px.astype(np.float64)), spatial_size
+        )
+        empty_mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+        return PlaneFitResult(
+            coeffs=np.asarray(coeffs, dtype=np.float64),
+            spatial_size=int(spatial_size),
+            time_len=int(time_len),
+            time_axis=time_axis,
+            history_times_px=np.asarray(history_times_px, dtype=np.float32),
+            raw_mask=empty_mask,
+            guided_mask=empty_mask,
+            detected_times=np.zeros((0,), dtype=np.float32),
+            detected_coords=np.zeros((0,), dtype=np.float32),
+            history_rmse_px=history_rmse_px,
+            source="history_only",
+            observed_fit=np.asarray(observed_fit, dtype=np.float32),
+        )
 
     signal = build_signal_image(bgr, source=params.get("signal_source", "rbmax"))
     blurred, raw_mask = preprocess_mask(
@@ -199,6 +288,14 @@ def _fit_plane_guided(
         coord_method=params.get("coord_method", "weighted_centroid"),
         neighborhood_radius=int(params.get("green_neighborhood_radius", 1)),
     )
+    times, coords = _filter_points_by_history(
+        times,
+        coords,
+        history_times_px=history_times_px,
+        history_centers_px=history_centers_px,
+        history_half_sizes_px=history_half_sizes_px,
+        params=params,
+    )
     source = "guided"
     if times.size < int(params.get("min_event_points", 12)) and bool(params.get("retry_without_guidance", True)):
         times, coords, _ = extract_trace_and_green(
@@ -209,7 +306,15 @@ def _fit_plane_guided(
             coord_method=params.get("coord_method", "weighted_centroid"),
             neighborhood_radius=int(params.get("green_neighborhood_radius", 1)),
         )
-        source = "unguided"
+        times, coords = _filter_points_by_history(
+            times,
+            coords,
+            history_times_px=history_times_px,
+            history_centers_px=history_centers_px,
+            history_half_sizes_px=history_half_sizes_px,
+            params=params,
+        )
+        source = "unguided_filtered"
 
     history_weights = np.full(
         history_times_px.shape,
@@ -260,6 +365,7 @@ def _fit_plane_guided(
         spatial_size=int(spatial_size),
         time_len=int(time_len),
         time_axis=time_axis,
+        history_times_px=np.asarray(history_times_px, dtype=np.float32),
         raw_mask=raw_mask,
         guided_mask=guided_mask,
         detected_times=np.asarray(times, dtype=np.float32),
@@ -349,6 +455,13 @@ def forecast_sample(
     pred_x = torch.from_numpy(pred_x_px / max(1.0, xt_result.spatial_size - 1)).float()
     pred_y = torch.from_numpy(pred_y_px / max(1.0, yt_result.spatial_size - 1)).float()
     pred_centers_xy = torch.stack([pred_x, pred_y], dim=-1).clamp(0.0, 1.0)
+    fit_x = torch.from_numpy(
+        np.asarray(xt_result.observed_fit, dtype=np.float32) / max(1.0, xt_result.spatial_size - 1)
+    ).float()
+    fit_y = torch.from_numpy(
+        np.asarray(yt_result.observed_fit, dtype=np.float32) / max(1.0, yt_result.spatial_size - 1)
+    ).float()
+    fit_centers_xy = torch.stack([fit_x, fit_y], dim=-1).clamp(0.0, 1.0)
 
     base_size = _predict_box_sizes(
         past_boxes, strategy=str(params.get("size_strategy", "mean"))
@@ -367,6 +480,7 @@ def forecast_sample(
     return CurveForecastResult(
         pred_boxes=pred_boxes,
         pred_centers_xy=pred_centers_xy,
+        fit_centers_xy=fit_centers_xy,
         xt=xt_result,
         yt=yt_result,
         debug=debug,

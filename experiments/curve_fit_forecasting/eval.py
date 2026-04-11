@@ -70,8 +70,15 @@ def _render_boxes_image(
     gt_boxes: torch.Tensor,
     past_boxes: torch.Tensor,
     frame_size: tuple[int, int],
+    fit_centers_xy: torch.Tensor | None = None,
+    pred_centers_xy: torch.Tensor | None = None,
+    backdrop: Image.Image | None = None,
+    curve_width: int = 1,
 ) -> Image.Image:
-    img = Image.new("RGB", frame_size, (0, 0, 0))
+    if backdrop is None:
+        img = Image.new("RGB", frame_size, (0, 0, 0))
+    else:
+        img = backdrop.resize(frame_size, resample=Image.BILINEAR).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = frame_size
 
@@ -89,7 +96,87 @@ def _render_boxes_image(
         draw.rectangle(_to_xyxy(box), outline=(0, 255, 0), width=2)
     for box in pred_boxes:
         draw.rectangle(_to_xyxy(box), outline=(255, 255, 0), width=2)
+
+    def _curve_points(curve_xy: torch.Tensor) -> list[tuple[float, float]]:
+        pts: list[tuple[float, float]] = []
+        for xy in curve_xy:
+            x = float(xy[0]) * w
+            y = float(xy[1]) * h
+            pts.append((x, y))
+        return pts
+
+    if fit_centers_xy is not None and fit_centers_xy.numel() > 0:
+        pts = _curve_points(fit_centers_xy)
+        if len(pts) >= 2:
+            draw.line(pts, fill=(255, 128, 0), width=curve_width)
+    if pred_centers_xy is not None and pred_centers_xy.numel() > 0:
+        pts = _curve_points(pred_centers_xy)
+        if len(pts) >= 2:
+            draw.line(pts, fill=(255, 0, 255), width=curve_width)
     return img
+
+
+def _parse_frame_key(key: str) -> tuple[str, str]:
+    if "/" in key:
+        folder, stem = key.split("/", 1)
+        return folder, stem
+    return "", key
+
+
+def _load_backdrop(
+    images_root: Path,
+    frame_key: str,
+    rep: str | None,
+) -> Image.Image | None:
+    if not rep:
+        return None
+    folder, stem = _parse_frame_key(frame_key)
+    base = images_root / folder if folder else images_root
+    for ext in (".png", ".jpg", ".jpeg"):
+        path = base / f"{stem}_{rep}{ext}"
+        if path.exists():
+            return Image.open(path).convert("RGB")
+    return None
+
+
+def _draw_xy_curve_on_image(
+    img: Image.Image,
+    curve_xy: torch.Tensor,
+    *,
+    color: tuple[int, int, int],
+    width: int,
+) -> Image.Image:
+    out = img.copy().convert("RGB")
+    draw = ImageDraw.Draw(out)
+    w, h = out.size
+    pts = [(float(xy[0]) * w, float(xy[1]) * h) for xy in curve_xy]
+    if len(pts) >= 2:
+        draw.line(pts, fill=color, width=width)
+    return out
+
+
+def _draw_plane_curve_on_image(
+    img: Image.Image,
+    *,
+    history_times_px: torch.Tensor | List[float] | object,
+    observed_fit_px: torch.Tensor | List[float] | object,
+    time_axis: str,
+    color: tuple[int, int, int],
+    width: int,
+) -> Image.Image:
+    out = img.copy().convert("RGB")
+    draw = ImageDraw.Draw(out)
+    times = [float(v) for v in history_times_px]
+    coords = [float(v) for v in observed_fit_px]
+    pts: list[tuple[float, float]] = []
+    for t, s in zip(times, coords):
+        if time_axis == "x":
+            pts.append((t, s))
+        else:
+            pts.append((s, t))
+    if len(pts) >= 2:
+        draw.line(pts, fill=color, width=width)
+    return out
 
 
 def main() -> None:
@@ -104,8 +191,13 @@ def main() -> None:
     split = args.split or eval_cfg.get("split", "val")
     dataset = _build_dataset(cfg, split=split)
     frame_size = (int(data_cfg["frame_size"][0]), int(data_cfg["frame_size"][1]))
+    images_root = Path(data_cfg["images_root"])
     vis_dir = Path(eval_cfg.get("vis_output_dir", "outputs/curve_fit_forecast_vis"))
     max_visualizations = int(eval_cfg.get("max_visualizations", 0))
+    vis_backdrop_rep = eval_cfg.get("vis_backdrop_rep")
+    vis_curve_width = int(eval_cfg.get("vis_curve_width", 1))
+    vis_save_plane_overlays = bool(eval_cfg.get("vis_save_plane_overlays", True))
+    vis_plane_reps = list(eval_cfg.get("vis_plane_reps", ["xt_my", "yt_mx", "cstr3"]))
     if max_visualizations > 0:
         vis_dir.mkdir(parents=True, exist_ok=True)
 
@@ -166,13 +258,55 @@ def main() -> None:
         )
 
         if idx < max_visualizations:
+            stem_prefix = f"{idx:04d}_{sample.track_id}_{sample.frame_key.replace('/', '_')}"
+            backdrop = _load_backdrop(images_root, sample.frame_key, vis_backdrop_rep)
             img = _render_boxes_image(
                 pred_boxes=result.pred_boxes,
                 gt_boxes=sample.future_boxes,
                 past_boxes=sample.past_boxes,
                 frame_size=frame_size,
+                fit_centers_xy=result.fit_centers_xy,
+                pred_centers_xy=result.pred_centers_xy,
+                backdrop=backdrop,
+                curve_width=vis_curve_width,
             )
-            img.save(vis_dir / f"{idx:04d}_{sample.track_id}_{sample.frame_key.replace('/', '_')}.png")
+            img.save(vis_dir / f"{stem_prefix}.png")
+
+            if vis_save_plane_overlays:
+                if "xt_my" in vis_plane_reps:
+                    xt_img = Image.open(sample.input_paths["xt_my"]).convert("RGB")
+                    xt_overlay = _draw_plane_curve_on_image(
+                        xt_img,
+                        history_times_px=result.xt.history_times_px,
+                        observed_fit_px=result.xt.observed_fit,
+                        time_axis=result.xt.time_axis,
+                        color=(255, 128, 0),
+                        width=vis_curve_width,
+                    )
+                    xt_overlay.save(vis_dir / f"{stem_prefix}_xt_my_fit.png")
+
+                if "yt_mx" in vis_plane_reps:
+                    yt_img = Image.open(sample.input_paths["yt_mx"]).convert("RGB")
+                    yt_overlay = _draw_plane_curve_on_image(
+                        yt_img,
+                        history_times_px=result.yt.history_times_px,
+                        observed_fit_px=result.yt.observed_fit,
+                        time_axis=result.yt.time_axis,
+                        color=(255, 128, 0),
+                        width=vis_curve_width,
+                    )
+                    yt_overlay.save(vis_dir / f"{stem_prefix}_yt_mx_fit.png")
+
+                if "cstr3" in vis_plane_reps:
+                    cstr3 = _load_backdrop(images_root, sample.frame_key, "cstr3")
+                    if cstr3 is not None:
+                        cstr3_overlay = _draw_xy_curve_on_image(
+                            cstr3,
+                            result.fit_centers_xy,
+                            color=(255, 128, 0),
+                            width=vis_curve_width,
+                        )
+                        cstr3_overlay.save(vis_dir / f"{stem_prefix}_cstr3_fit.png")
 
         if (idx + 1) % max(1, int(eval_cfg.get("log_every", 100))) == 0:
             print(f"{split}: processed {idx + 1}/{len(dataset)} samples")
