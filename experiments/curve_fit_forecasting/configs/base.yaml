@@ -1,0 +1,54 @@
+data:
+  images_root: outputs/fred_reps
+  labels_root: datasets/FRED
+  labels_subdir: Event_YOLO
+  tracks_file: cleaned_tracks.txt
+  label_time_unit: 1.0e-6
+  track_time_unit: 1.0
+  time_align: start
+  frame_size: [1280, 720]
+  representations: ["xt_my", "yt_mx"]
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    val: datasets/FRED/dataset_splits/canonical/test_split.txt
+  image_window_ms: 400.0
+  image_window_mode: trailing
+  history_ms: 400.0
+  forecast_ms: 400.0
+  label_period_s: null
+  seed: 123456
+  max_tracks: null
+  max_samples_train: null
+  max_samples_val: null
+  cache_dir: outputs/curve_fit_forecasting_cache
+
+curve_fit:
+  fit_degree: 2
+  signal_source: rbmax
+  blur_ksize: 5
+  blur_sigma: 1.2
+  threshold_mode: otsu
+  threshold_value: 40.0
+  invert: false
+  morph_open: 3
+  morph_close: 3
+  min_component_area: 20
+  coord_method: weighted_centroid
+  green_neighborhood_radius: 1
+  history_time_slack_px: 2.0
+  history_spatial_slack_px: 8.0
+  history_size_scale: 1.25
+  event_point_weight: 1.0
+  history_point_weight: 4.0
+  min_event_points: 12
+  retry_without_guidance: true
+  fallback_to_history: true
+  max_history_rmse_px: 30.0
+  size_strategy: mean
+
+eval:
+  split: val
+  log_every: 100
+  max_visualizations: 16
+  vis_output_dir: outputs/curve_fit_forecasting_vis
+  metrics_output: outputs/curve_fit_forecasting/metrics.json
