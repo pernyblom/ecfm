@@ -25,7 +25,8 @@ data:
 
 model:
   backbone:
-    type: small_cnn
+    # type: small_cnn
+    type: resnet18
     in_channels: 3
     channels: [32, 64, 128]
     out_dim: 128
@@ -36,7 +37,7 @@ model:
 train:
   device: cuda
   epochs: 20
-  batch_size: 16
+  batch_size: 32
   num_workers: 0
   lr: 1.0e-3
   weight_decay: 1.0e-4
@@ -54,6 +55,6 @@ train:
 
 eval:
   vis_backdrop_rep: cstr3
-  max_visualizations: 24
+  max_visualizations: 128
   vis_output_dir: outputs/object_detection_eval_vis
   metrics_output: outputs/object_detection_eval/metrics.json
