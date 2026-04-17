@@ -15,7 +15,11 @@ if str(ROOT) not in sys.path:
 
 from experiments.object_detection.data.dataset import DetectionSample, FredDetectionDataset
 from experiments.object_detection.losses import compute_losses
-from experiments.object_detection.metrics import summarize_metrics
+from experiments.object_detection.metrics import (
+    detection_scores,
+    map_metrics,
+    summarize_metrics,
+)
 from experiments.object_detection.models.factory import build_model
 from experiments.object_detection.utils.config import load_config
 from experiments.object_detection.visualization import save_sample_visualization
@@ -62,7 +66,7 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
         representations=list(data_cfg["representations"]),
-        heatmap_representations=list(data_cfg.get("heatmap_representations", ["xt_my", "yt_mx"])),
+        heatmap_representations=list(data_cfg.get("heatmap_representations", [])),
         image_size=tuple(data_cfg["image_size"]),
         frame_size=tuple(data_cfg["frame_size"]),
         folders=folders,
@@ -93,34 +97,70 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     data_cfg = cfg["data"]
     model.train(mode=train)
     rows: List[Dict[str, float]] = []
+    pred_boxes_all = []
+    pred_scores_all = []
+    target_boxes_all = []
+    gt_present_all = []
     for step, batch in enumerate(loader):
         inputs = {k: v.to(device) for k, v in batch.inputs.items()}
         target_boxes = batch.box_xywh.to(device)
         target_heatmaps = {k: v.to(device) for k, v in batch.heatmaps.items()}
+        gt_present = torch.tensor(
+            [idx >= 0 for idx in batch.selected_box_index],
+            device=device,
+            dtype=torch.bool,
+        )
+        target_objectness = gt_present.float()
         with torch.set_grad_enabled(train):
             preds = model(inputs)
             loss, loss_metrics = compute_losses(
                 preds,
                 target_boxes,
                 target_heatmaps,
+                target_objectness,
                 heatmap_weight=float(train_cfg.get("heatmap_weight", 1.0)),
                 box_weight=float(train_cfg.get("box_weight", 1.0)),
+                objectness_weight=float(train_cfg.get("objectness_weight", 1.0)),
             )
             if train:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-        metrics = summarize_metrics(preds, target_boxes, target_heatmaps, tuple(data_cfg["frame_size"]))
+        metrics = summarize_metrics(
+            preds,
+            target_boxes,
+            target_heatmaps,
+            gt_present,
+            tuple(data_cfg["frame_size"]),
+        )
         rows.append({**loss_metrics, **metrics})
+        pred_boxes_all.append(preds["boxes"].detach().cpu())
+        pred_scores_all.append(detection_scores(preds).detach().cpu())
+        target_boxes_all.append(target_boxes.detach().cpu())
+        gt_present_all.append(gt_present.detach().cpu())
         if step % int(train_cfg.get("log_every", 20)) == 0:
             phase = "train" if train else "val"
             print(
                 f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
                 f"box_l1 {loss_metrics['box_l1']:.4f} "
+                f"obj_bce {loss_metrics['objectness_bce']:.4f} "
                 f"center_l1_px {metrics['center_l1_px']:.2f} "
-                f"box_iou {metrics['box_iou']:.4f}"
+                f"box_iou {metrics['box_iou']:.4f} "
+                f"mAP_50 {metrics['mAP_50']:.4f} "
+                f"mAP_50:95 {metrics['mAP_50_95']:.4f}"
             )
-    return _mean_dict(rows)
+    out = _mean_dict(rows)
+    if pred_boxes_all:
+        out.update(
+            map_metrics(
+                pred_boxes=torch.cat(pred_boxes_all, dim=0),
+                pred_scores=torch.cat(pred_scores_all, dim=0),
+                target_boxes=torch.cat(target_boxes_all, dim=0),
+                gt_present=torch.cat(gt_present_all, dim=0),
+                frame_size=tuple(data_cfg["frame_size"]),
+            )
+        )
+    return out
 
 
 @torch.no_grad()
@@ -145,8 +185,8 @@ def _export_visualizations(model, loader, device: torch.device, cfg: Dict, epoch
             inputs={rep: batch.inputs[rep][i] for rep in batch.inputs},
             pred_boxes=preds["boxes"][i].cpu(),
             target_box=batch.box_xywh[i].cpu(),
-            pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds["heatmaps"]},
-            target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps},
+            pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
+            target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},
             xy_backdrop_rep=backdrop_rep,
         )
 

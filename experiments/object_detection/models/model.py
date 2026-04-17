@@ -42,6 +42,19 @@ class BoxHead(nn.Module):
         return torch.cat([center, size], dim=-1)
 
 
+class ObjectnessHead(nn.Module):
+    def __init__(self, in_dim: int, hidden_dim: int = 128) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x).squeeze(-1)
+
+
 class MultiRepObjectDetector(nn.Module):
     def __init__(
         self,
@@ -62,13 +75,11 @@ class MultiRepObjectDetector(nn.Module):
         fused_dim = per_rep_dim * len(self.representations)
         self.fusion = nn.Sequential(nn.Linear(fused_dim, fusion_hidden_dim), nn.ReLU(inplace=True))
         heatmap_in_dim = fusion_hidden_dim + per_rep_dim
-        self.heatmap_heads = nn.ModuleDict(
-            {
-                rep: HeatmapHead(heatmap_in_dim, image_size, heatmap_hidden_dim)
-                for rep in self.heatmap_representations
-            }
-        )
+        self.heatmap_heads = nn.ModuleDict()
+        for rep in self.heatmap_representations:
+            self.heatmap_heads[rep] = HeatmapHead(heatmap_in_dim, image_size, heatmap_hidden_dim)
         self.box_head = BoxHead(fusion_hidden_dim, box_hidden_dim)
+        self.objectness_head = ObjectnessHead(fusion_hidden_dim, min(box_hidden_dim, 128))
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         enc = {rep: self.encoders[rep](inputs[rep]) for rep in self.representations}
@@ -77,4 +88,9 @@ class MultiRepObjectDetector(nn.Module):
             rep: self.heatmap_heads[rep](torch.cat([fused, enc[rep].pooled], dim=-1))
             for rep in self.heatmap_representations
         }
-        return {"fused_features": fused, "boxes": self.box_head(fused), "heatmaps": heatmaps}
+        return {
+            "fused_features": fused,
+            "boxes": self.box_head(fused),
+            "heatmaps": heatmaps,
+            "objectness_logits": self.objectness_head(fused),
+        }

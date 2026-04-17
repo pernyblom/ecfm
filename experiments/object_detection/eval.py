@@ -13,7 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.object_detection.metrics import summarize_metrics
+from experiments.object_detection.metrics import (
+    detection_scores,
+    map_metrics,
+    summarize_metrics,
+)
 from experiments.object_detection.models.factory import build_model
 from experiments.object_detection.train import _build_dataset, _collate
 from experiments.object_detection.utils.config import load_config
@@ -50,6 +54,10 @@ def main() -> None:
     model.eval()
 
     rows: List[Dict[str, float]] = []
+    pred_boxes_all = []
+    pred_scores_all = []
+    target_boxes_all = []
+    gt_present_all = []
     eval_cfg = cfg.get("eval", {})
     vis_dir = Path(eval_cfg.get("vis_output_dir", "outputs/object_detection_eval_vis"))
     max_vis = int(eval_cfg.get("max_visualizations", 0))
@@ -61,8 +69,25 @@ def main() -> None:
             inputs = {k: v.to(device) for k, v in batch.inputs.items()}
             target_boxes = batch.box_xywh.to(device)
             target_heatmaps = {k: v.to(device) for k, v in batch.heatmaps.items()}
+            gt_present = torch.tensor(
+                [idx >= 0 for idx in batch.selected_box_index],
+                device=device,
+                dtype=torch.bool,
+            )
             preds = model(inputs)
-            rows.append(summarize_metrics(preds, target_boxes, target_heatmaps, tuple(cfg["data"]["frame_size"])))
+            rows.append(
+                summarize_metrics(
+                    preds,
+                    target_boxes,
+                    target_heatmaps,
+                    gt_present,
+                    tuple(cfg["data"]["frame_size"]),
+                )
+            )
+            pred_boxes_all.append(preds["boxes"].detach().cpu())
+            pred_scores_all.append(detection_scores(preds).detach().cpu())
+            target_boxes_all.append(target_boxes.detach().cpu())
+            gt_present_all.append(gt_present.detach().cpu())
 
             for i in range(batch.box_xywh.shape[0]):
                 vis_idx = batch_idx * loader.batch_size + i
@@ -75,12 +100,22 @@ def main() -> None:
                     inputs={rep: batch.inputs[rep][i] for rep in batch.inputs},
                     pred_boxes=preds["boxes"][i].cpu(),
                     target_box=batch.box_xywh[i].cpu(),
-                    pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds["heatmaps"]},
-                    target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps},
+                    pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
+                    target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},
                     xy_backdrop_rep=backdrop_rep,
                 )
 
     summary = _mean_dict(rows)
+    if pred_boxes_all:
+        summary.update(
+            map_metrics(
+                pred_boxes=torch.cat(pred_boxes_all, dim=0),
+                pred_scores=torch.cat(pred_scores_all, dim=0),
+                target_boxes=torch.cat(target_boxes_all, dim=0),
+                gt_present=torch.cat(gt_present_all, dim=0),
+                frame_size=tuple(cfg["data"]["frame_size"]),
+            )
+        )
     print(json.dumps(summary, indent=2, sort_keys=True))
     if metrics_output:
         out_path = Path(metrics_output)

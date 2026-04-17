@@ -12,7 +12,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
     model_cfg = cfg["model"]
     return MultiRepObjectDetector(
         representations=list(data_cfg["representations"]),
-        heatmap_representations=list(data_cfg.get("heatmap_representations", ["xt_my", "yt_mx"])),
+        heatmap_representations=list(data_cfg.get("heatmap_representations", [])),
         image_size=tuple(data_cfg["image_size"]),
         backbone_cfg=dict(model_cfg.get("backbone", {})),
         fusion_hidden_dim=int(model_cfg.get("fusion_hidden_dim", 256)),

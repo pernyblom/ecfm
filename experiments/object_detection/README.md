@@ -5,6 +5,23 @@ event representations and YOLO labels. The first version uses `xt_my`, `yt_mx`,
 and `cstr3` as inputs, predicts one `xt` heatmap, one `yt` heatmap, and one XY
 box for the anchor frame.
 
+Reported metrics
+- `center_l1_px`
+- `box_iou`
+- `mAP_50`
+- `mAP_50:95`
+- `objectness_acc`
+- per-plane heatmap IoU for `xt_my` and `yt_mx`
+
+The mAP values follow the FRED paper protocol:
+- `mAP_50`: AP at IoU `0.50`
+- `mAP_50:95`: mean AP over IoU thresholds `0.50, 0.55, ..., 0.95`
+
+In the current single-box setup, the detector predicts an explicit objectness
+score for the box. That score is used for AP ranking, which is much closer to
+the detector-style evaluation used in the paper than the earlier heatmap-based
+confidence proxy.
+
 What it does
 - Loads rendered anchor-frame images and YOLO labels from FRED.
 - Uses one encoder per representation and fuses the representation features.
@@ -15,6 +32,14 @@ What it does
 - Saves visualizations for GT and predicted heatmaps directly in `xt_my` and
   `yt_mx`, plus GT and predicted XY boxes over a selectable backdrop such as
   `cstr3`.
+
+Heatmaps are optional
+- Set `data.heatmap_representations: []` to disable heatmap heads and heatmap
+  supervision entirely.
+- In that mode, the model still trains the XY box head and objectness head, and
+  mAP uses the explicit objectness score as before.
+- If heatmaps are disabled, heatmap IoU and heatmap visualizations are simply
+  omitted.
 
 Heatmap target geometry
 - `xt_my` is an XT image where X is horizontal and time is vertical.

@@ -6,7 +6,8 @@ data:
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   labels_subdir: Event_YOLO
   representations: ["xt_my", "yt_mx", "cstr3"]
-  heatmap_representations: ["xt_my", "yt_mx"]
+  # heatmap_representations: ["xt_my", "yt_mx"]  # Set to [] to disable heatmap heads and heatmap supervision.
+  heatmap_representations: []
   image_size: [224, 224]
   frame_size: [1280, 720]
   label_time_unit: 1.0e-6
@@ -39,8 +40,9 @@ train:
   num_workers: 0
   lr: 1.0e-3
   weight_decay: 1.0e-4
-  heatmap_weight: 1.0
+  heatmap_weight: 1.0  # Ignored if data.heatmap_representations is [].
   box_weight: 2.0
+  objectness_weight: 1.0
   log_every: 20
   checkpoint_every: 1
   checkpoint_dir: outputs/object_detection_ckpt
