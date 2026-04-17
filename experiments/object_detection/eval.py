@@ -99,6 +99,7 @@ def main() -> None:
                     stem=stem,
                     inputs={rep: batch.inputs[rep][i] for rep in batch.inputs},
                     pred_boxes=preds["boxes"][i].cpu(),
+                    pred_score=float(preds["objectness_logits"][i].sigmoid().cpu().item()),
                     target_box=batch.box_xywh[i].cpu(),
                     pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
                     target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},

@@ -43,12 +43,35 @@ def _draw_xy_box(img: Image.Image, box: torch.Tensor, color: tuple[int, int, int
     return out
 
 
+def _draw_pred_box_with_score(
+    img: Image.Image,
+    box: torch.Tensor,
+    score: float,
+    color: tuple[int, int, int],
+    width: int = 2,
+) -> Image.Image:
+    out = _draw_xy_box(img, box, color, width=width)
+    draw = ImageDraw.Draw(out)
+    w, h = out.size
+    cx, cy, bw, bh = [float(v) for v in box]
+    x0 = (cx - bw / 2.0) * w
+    y0 = (cy - bh / 2.0) * h
+    label = f"score {score:.3f}"
+    text_x = max(2.0, x0 + 2.0)
+    text_y = max(2.0, y0 - 14.0)
+    bbox = draw.textbbox((text_x, text_y), label)
+    draw.rectangle(bbox, fill=(0, 0, 0))
+    draw.text((text_x, text_y), label, fill=color)
+    return out
+
+
 def save_sample_visualization(
     *,
     output_dir: Path,
     stem: str,
     inputs: Dict[str, torch.Tensor],
     pred_boxes: torch.Tensor,
+    pred_score: float,
     target_box: torch.Tensor,
     pred_heatmaps: Dict[str, torch.Tensor],
     target_heatmaps: Dict[str, torch.Tensor],
@@ -68,4 +91,6 @@ def save_sample_visualization(
     box_rep = xy_backdrop_rep if xy_backdrop_rep in inputs else next(iter(inputs.keys()))
     base = _tensor_to_pil(inputs[box_rep])
     _draw_xy_box(base, target_box, (0, 255, 0)).save(output_dir / f"{stem}_{box_rep}_gt_box.png")
-    _draw_xy_box(base, pred_boxes, (255, 196, 0)).save(output_dir / f"{stem}_{box_rep}_pred_box.png")
+    _draw_pred_box_with_score(base, pred_boxes, pred_score, (255, 196, 0)).save(
+        output_dir / f"{stem}_{box_rep}_pred_box.png"
+    )

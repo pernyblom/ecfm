@@ -16,7 +16,7 @@ data:
   verify_render_manifest: true
   render_manifest_name: render_manifest.json
   window_tolerance_ms: 2.0
-  require_boxes: true
+  require_boxes: false
   select_box: largest
   max_samples_train:
   max_samples_val:
@@ -55,6 +55,6 @@ train:
 
 eval:
   vis_backdrop_rep: cstr3
-  max_visualizations: 128
+  max_visualizations: 256
   vis_output_dir: outputs/object_detection_eval_vis
   metrics_output: outputs/object_detection_eval/metrics.json
