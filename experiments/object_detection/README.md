@@ -41,6 +41,14 @@ Heatmaps are optional
 - If heatmaps are disabled, heatmap IoU and heatmap visualizations are simply
   omitted.
 
+Single-object filtering
+- Set `data.exclude_multiple_objects: true` to skip frames that contain more
+  than one labeled object.
+- This is useful before adding proper multi-detection support.
+- It still keeps:
+  - single-object positive frames
+  - empty frames, if `data.require_boxes: false`
+
 Heatmap target geometry
 - `xt_my` is an XT image where X is horizontal and time is vertical.
 - `yt_mx` is a YT image where Y is vertical and time is horizontal.

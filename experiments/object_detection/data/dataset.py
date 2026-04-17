@@ -94,6 +94,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         window_tolerance_ms: float = 2.0,
         require_boxes: bool = True,
         select_box: str = "largest",
+        exclude_multiple_objects: bool = False,
         max_samples: Optional[int] = None,
         seed: int = 123,
         cache_dir: Optional[Path] = None,
@@ -114,6 +115,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self.window_tolerance_ms = float(window_tolerance_ms)
         self.require_boxes = bool(require_boxes)
         self.select_box = str(select_box)
+        self.exclude_multiple_objects = bool(exclude_multiple_objects)
         self.max_samples = max_samples
         self.seed = int(seed)
         self.cache_dir = Path(cache_dir) if cache_dir else None
@@ -207,6 +209,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 boxes = _read_yolo_boxes(label_path)
                 if self.require_boxes and not boxes:
                     continue
+                if self.exclude_multiple_objects and len(boxes) > 1:
+                    continue
                 if not self._has_all_reps(folder, label_path.stem):
                     continue
                 self._validate_manifest_entry(folder, label_path.stem)
@@ -250,6 +254,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             "window_tolerance_ms": self.window_tolerance_ms,
             "require_boxes": self.require_boxes,
             "select_box": self.select_box,
+            "exclude_multiple_objects": self.exclude_multiple_objects,
             "max_samples": self.max_samples,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,

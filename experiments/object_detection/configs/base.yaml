@@ -18,6 +18,7 @@ data:
   window_tolerance_ms: 2.0
   require_boxes: false
   select_box: largest
+  exclude_multiple_objects: true
   max_samples_train:
   max_samples_val:
   seed: 123
