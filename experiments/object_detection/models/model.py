@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+from typing import Dict, List
+
+import torch
+from torch import nn
+import torch.nn.functional as F
+
+from .backbones import build_single_encoder
+
+
+class HeatmapHead(nn.Module):
+    def __init__(self, in_dim: int, out_size: tuple[int, int], hidden_dim: int = 256) -> None:
+        super().__init__()
+        self.out_size = (int(out_size[0]), int(out_size[1]))
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, self.out_size[0] * self.out_size[1]),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.net(x)
+        return out.view(x.shape[0], 1, self.out_size[1], self.out_size[0])
+
+
+class BoxHead(nn.Module):
+    def __init__(self, in_dim: int, hidden_dim: int = 256) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, 4),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        raw = self.net(x)
+        center = raw[:, :2].sigmoid()
+        size = F.softplus(raw[:, 2:]).clamp(min=1.0e-4, max=1.0)
+        return torch.cat([center, size], dim=-1)
+
+
+class MultiRepObjectDetector(nn.Module):
+    def __init__(
+        self,
+        *,
+        representations: List[str],
+        heatmap_representations: List[str],
+        image_size: tuple[int, int],
+        backbone_cfg: Dict,
+        fusion_hidden_dim: int = 256,
+        heatmap_hidden_dim: int = 256,
+        box_hidden_dim: int = 256,
+    ) -> None:
+        super().__init__()
+        self.representations = list(representations)
+        self.heatmap_representations = list(heatmap_representations)
+        self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
+        per_rep_dim = int(backbone_cfg.get("out_dim", 128))
+        fused_dim = per_rep_dim * len(self.representations)
+        self.fusion = nn.Sequential(nn.Linear(fused_dim, fusion_hidden_dim), nn.ReLU(inplace=True))
+        heatmap_in_dim = fusion_hidden_dim + per_rep_dim
+        self.heatmap_heads = nn.ModuleDict(
+            {
+                rep: HeatmapHead(heatmap_in_dim, image_size, heatmap_hidden_dim)
+                for rep in self.heatmap_representations
+            }
+        )
+        self.box_head = BoxHead(fusion_hidden_dim, box_hidden_dim)
+
+    def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        enc = {rep: self.encoders[rep](inputs[rep]) for rep in self.representations}
+        fused = self.fusion(torch.cat([enc[rep].pooled for rep in self.representations], dim=-1))
+        heatmaps = {
+            rep: self.heatmap_heads[rep](torch.cat([fused, enc[rep].pooled], dim=-1))
+            for rep in self.heatmap_representations
+        }
+        return {"fused_features": fused, "boxes": self.box_head(fused), "heatmaps": heatmaps}
