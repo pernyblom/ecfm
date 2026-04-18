@@ -19,7 +19,6 @@ class DetectionSample:
     heatmaps: Dict[str, torch.Tensor]
     frame_key: str
     frame_time_s: float
-    selected_box_index: int
     input_paths: Dict[str, str]
 
 
@@ -60,19 +59,8 @@ def _read_yolo_boxes(path: Path) -> List[Tuple[float, float, float, float]]:
     return out
 
 
-def _select_box_index(boxes: List[Tuple[float, float, float, float]], mode: str) -> int:
-    if mode == "largest":
-        return int(np.argmax([w * h for _, _, w, h in boxes]))
-    if mode == "first":
-        return 0
-    if mode == "center":
-        scores = [abs(cx - 0.5) + abs(cy - 0.5) for cx, cy, _, _ in boxes]
-        return int(np.argmin(scores))
-    raise ValueError(f"Unknown select_box mode: {mode}")
-
-
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
 
     def __init__(
         self,
@@ -92,8 +80,6 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         render_manifest_name: str = "render_manifest.json",
         window_tolerance_ms: float = 2.0,
         require_boxes: bool = True,
-        select_box: str = "largest",
-        exclude_multiple_objects: bool = False,
         max_samples: Optional[int] = None,
         seed: int = 123,
         cache_dir: Optional[Path] = None,
@@ -113,12 +99,12 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self.render_manifest_name = str(render_manifest_name)
         self.window_tolerance_ms = float(window_tolerance_ms)
         self.require_boxes = bool(require_boxes)
-        self.select_box = str(select_box)
-        self.exclude_multiple_objects = bool(exclude_multiple_objects)
         self.max_samples = max_samples
         self.seed = int(seed)
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self._folder_manifests: Dict[str, Optional[dict]] = {}
+        self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
+        self._folder_available_stems: Dict[str, set[str]] = {}
 
         if not self.representations:
             raise ValueError("representations must not be empty.")
@@ -171,11 +157,14 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 f"Window mode mismatch for '{folder}/{stem}': expected {self.image_window_mode}, "
                 f"found {params.get('window_mode')}"
             )
-        by_stem = {
-            entry.get("label_stem"): entry
-            for entry in manifest.get("files", [])
-            if entry.get("label_stem") is not None
-        }
+        by_stem = self._folder_manifest_entries.get(folder)
+        if by_stem is None:
+            by_stem = {
+                entry.get("label_stem"): entry
+                for entry in manifest.get("files", [])
+                if entry.get("label_stem") is not None
+            }
+            self._folder_manifest_entries[folder] = by_stem
         entry = by_stem.get(stem)
         if entry is None:
             raise ValueError(f"Manifest entry missing for '{folder}/{stem}'.")
@@ -189,8 +178,18 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             )
 
     def _has_all_reps(self, folder: str, stem: str) -> bool:
-        base = self._images_dir(folder)
-        return all((base / f"{stem}_{rep}.png").exists() for rep in self.representations)
+        if folder not in self._folder_available_stems:
+            base = self._images_dir(folder)
+            available: Optional[set[str]] = None
+            for rep in self.representations:
+                suffix = f"_{rep}.png"
+                rep_stems = {
+                    path.name[: -len(suffix)]
+                    for path in base.glob(f"*{suffix}")
+                }
+                available = rep_stems if available is None else available & rep_stems
+            self._folder_available_stems[folder] = available or set()
+        return stem in self._folder_available_stems[folder]
 
     def _folders_to_scan(self) -> List[str]:
         return [""] if self.folders is None else list(self.folders)
@@ -208,8 +207,6 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 boxes = _read_yolo_boxes(label_path)
                 if self.require_boxes and not boxes:
                     continue
-                if self.exclude_multiple_objects and len(boxes) > 1:
-                    continue
                 if not self._has_all_reps(folder, label_path.stem):
                     continue
                 self._validate_manifest_entry(folder, label_path.stem)
@@ -219,7 +216,6 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                         "stem": label_path.stem,
                         "time_s": float(time_raw) * self.label_time_unit,
                         "boxes": boxes,
-                        "selected_box_index": _select_box_index(boxes, self.select_box) if boxes else -1,
                         "input_paths": {
                             rep: str(self._images_dir(folder) / f"{label_path.stem}_{rep}.png")
                             for rep in self.representations
@@ -252,8 +248,6 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             "render_manifest_name": self.render_manifest_name,
             "window_tolerance_ms": self.window_tolerance_ms,
             "require_boxes": self.require_boxes,
-            "select_box": self.select_box,
-            "exclude_multiple_objects": self.exclude_multiple_objects,
             "max_samples": self.max_samples,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,
@@ -332,6 +326,5 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             heatmaps=heatmaps,
             frame_key=frame_key,
             frame_time_s=float(sample["time_s"]),
-            selected_box_index=int(sample["selected_box_index"]),
             input_paths=dict(sample["input_paths"]),
         )

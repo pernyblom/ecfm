@@ -21,7 +21,7 @@ from experiments.object_detection.metrics import (
     summarize_metrics,
 )
 from experiments.object_detection.models.factory import build_model
-from experiments.object_detection.train import _build_dataset, _collate
+from experiments.object_detection.train import _build_dataset, _make_loader
 from experiments.object_detection.utils.config import load_config
 from experiments.object_detection.visualization import save_sample_visualization
 
@@ -55,12 +55,11 @@ def main() -> None:
 
     cfg = load_config(args.config)
     dataset = _build_dataset(cfg, args.split)
-    loader = DataLoader(
+    loader = _make_loader(
         dataset,
         batch_size=int(cfg["train"].get("batch_size", 16)),
         shuffle=False,
-        num_workers=int(cfg["train"].get("num_workers", 0)),
-        collate_fn=_collate,
+        train_cfg=cfg["train"],
     )
     device = torch.device(cfg["train"].get("device", "cpu") if torch.cuda.is_available() else "cpu")
     model = build_model(cfg, device)

@@ -1,9 +1,9 @@
 Object Detection
 
-This experiment trains a simple single-frame detector on FRED using rendered
-event representations and YOLO labels. The first version uses `xt_my`, `yt_mx`,
-and `cstr3` as inputs, predicts one `xt` heatmap, one `yt` heatmap, and a
-fixed set of object queries for the anchor frame.
+This experiment trains a simple single-frame multi-object detector on FRED
+using rendered event representations and YOLO labels. The default setup uses
+`xt_my`, `yt_mx`, and `cstr3` as inputs, predicts optional `xt` and `yt`
+heatmaps, and predicts a fixed set of object queries for the anchor frame.
 
 Current loss
 - box regression uses `L1 + CIoU` on matched queries
@@ -15,8 +15,8 @@ Current loss
   the summaries instead of being reported as dummy zeros
 
 Reported metrics
-- `center_l1_px`
-- `box_iou`
+- `matched_center_l1_px`
+- `matched_box_iou`
 - `mAP_50`
 - `mAP_50:95`
 - `objectness_acc`
@@ -26,10 +26,9 @@ The mAP values follow the FRED paper protocol:
 - `mAP_50`: AP at IoU `0.50`
 - `mAP_50:95`: mean AP over IoU thresholds `0.50, 0.55, ..., 0.95`
 
-In the current single-box setup, the detector predicts an explicit objectness
-score for the box. That score is used for AP ranking, which is much closer to
-the detector-style evaluation used in the paper than the earlier heatmap-based
-confidence proxy.
+The detector predicts an explicit objectness score per query. Those scores are
+used for AP ranking, which is much closer to the detector-style evaluation used
+in the paper than the earlier heatmap-based confidence proxy.
 
 What it does
 - Loads rendered anchor-frame images and YOLO labels from FRED.
@@ -51,13 +50,11 @@ Heatmaps are optional
 - If heatmaps are disabled, heatmap IoU and heatmap visualizations are simply
   omitted.
 
-Single-object filtering
-- Set `data.exclude_multiple_objects: true` to skip frames that contain more
-  than one labeled object.
-- This is useful before adding proper multi-detection support.
-- It still keeps:
-  - single-object positive frames
-  - empty frames, if `data.require_boxes: false`
+Negative frames
+Negative frames are still supported
+- Set `data.require_boxes: false` to keep empty frames.
+- This is useful for learning the objectness head against true negatives.
+- Frames with multiple labeled objects are kept by default.
 
 Heatmap target geometry
 - `xt_my` is an XT image where X is horizontal and time is vertical.
@@ -91,6 +88,18 @@ Train
 ```bash
 python experiments/object_detection/train.py --config experiments/object_detection/configs/base.yaml
 ```
+
+Training throughput notes
+- The dataset sample index is cached under `data.cache_dir`, so the first run
+  after changing dataset-related config is the slow one.
+- The train and validation loaders now default to persistent workers on
+  multi-worker runs, which avoids a full worker respawn at each epoch and when
+  switching from training to validation.
+- Useful loader knobs in `train`:
+  - `num_workers`
+  - `persistent_workers`
+  - `pin_memory`
+  - `prefetch_factor`
 
 Evaluate
 

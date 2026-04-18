@@ -17,8 +17,6 @@ data:
   render_manifest_name: render_manifest.json
   window_tolerance_ms: 2.0
   require_boxes: false
-  select_box: largest
-  exclude_multiple_objects: true
   # max_samples_train: 2000
   max_samples_train:
   # max_samples_val: 400
@@ -43,7 +41,10 @@ train:
   device: cuda
   epochs: 20
   batch_size: 32
-  num_workers: 0
+  num_workers: 8
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
   lr: 1.0e-3
   weight_decay: 1.0e-4
   heatmap_weight: 1.0  # Ignored if data.heatmap_representations is [].

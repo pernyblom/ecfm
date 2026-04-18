@@ -48,7 +48,6 @@ def _collate(batch: List[DetectionSample]):
             },
             "frame_keys": [b.frame_key for b in batch],
             "frame_times_s": [b.frame_time_s for b in batch],
-            "selected_box_index": [b.selected_box_index for b in batch],
             "input_paths": [b.input_paths for b in batch],
         },
     )
@@ -77,8 +76,6 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),
         window_tolerance_ms=float(data_cfg.get("window_tolerance_ms", 2.0)),
         require_boxes=bool(data_cfg.get("require_boxes", True)),
-        select_box=data_cfg.get("select_box", "largest"),
-        exclude_multiple_objects=bool(data_cfg.get("exclude_multiple_objects", False)),
         max_samples=max_samples,
         seed=int(data_cfg.get("seed", 123)),
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
@@ -104,6 +101,24 @@ def _weighted_mean_dict(rows: List[Dict[str, float]], weights: List[int]) -> Dic
         if key_weight > 0:
             out[key] = weighted_sum / key_weight
     return out
+
+
+def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) -> DataLoader:
+    num_workers = int(train_cfg.get("num_workers", 0))
+    loader_kwargs = {
+        "dataset": dataset,
+        "batch_size": batch_size,
+        "shuffle": shuffle,
+        "num_workers": num_workers,
+        "collate_fn": _collate,
+        "pin_memory": bool(train_cfg.get("pin_memory", torch.cuda.is_available())),
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = bool(train_cfg.get("persistent_workers", True))
+        prefetch_factor = train_cfg.get("prefetch_factor")
+        if prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+    return DataLoader(**loader_kwargs)
 
 
 def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, train: bool) -> Dict[str, float]:
@@ -223,7 +238,9 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    print("Building train dataset...")
     train_set = _build_dataset(cfg, "train")
+    print("Building val dataset...")
     val_set = _build_dataset(cfg, "val")
     print(f"Train samples: {len(train_set)}")
     print(f"Val samples: {len(val_set)}")
@@ -237,19 +254,17 @@ def main() -> None:
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
     )
 
-    train_loader = DataLoader(
+    train_loader = _make_loader(
         train_set,
         batch_size=int(train_cfg["batch_size"]),
         shuffle=True,
-        num_workers=int(train_cfg.get("num_workers", 0)),
-        collate_fn=_collate,
+        train_cfg=train_cfg,
     )
-    val_loader = DataLoader(
+    val_loader = _make_loader(
         val_set,
         batch_size=int(train_cfg["batch_size"]),
         shuffle=False,
-        num_workers=int(train_cfg.get("num_workers", 0)),
-        collate_fn=_collate,
+        train_cfg=train_cfg,
     )
 
     ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/object_detection_ckpt"))
