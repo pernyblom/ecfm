@@ -96,6 +96,37 @@ Evaluate
 python experiments/object_detection/eval.py --config experiments/object_detection/configs/base.yaml --checkpoint outputs/object_detection_ckpt/best.pt
 ```
 
+Render sequence videos
+
+```bash
+python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/base.yaml --checkpoint outputs/object_detection_ckpt/best.pt --folder 8 --reps "cstr3;xt_my;yt_mx" --score-threshold 0.5 --draw-ground-truth
+```
+
+This writes per-frame overlays and, when `ffmpeg` is available, one MP4 per
+requested representation. On `xt_my` and `yt_mx`, the box is drawn as a stripe
+that spans the full time axis.
+
+For `rgb`, the script first uses a rendered `*_rgb.png` if it exists under the
+representation output folder. If not, it falls back to the original dataset
+`RGB` or `PADDED_RGB` frames for visualization only. This does not change the
+representations used by the model itself.
+
+Compose a 2x2 grid video
+
+```bash
+python experiments/object_detection/compose_grid_video.py --sequence-dir outputs/object_detection_sequence_videos/8 --output outputs/object_detection_sequence_videos/8/8_grid.mp4
+```
+
+This places:
+- `cstr3` top-left
+- `yt_mx` top-right
+- `xt_my` bottom-left
+- `rgb` bottom-right
+
+The output size is exactly `2 * tile_width` by `2 * tile_height`, where the
+tile size defaults to the `cstr3` video size. The RGB panel is scaled to fit
+inside its quadrant while preserving aspect ratio.
+
 Extension points
 - Add more inputs via `data.representations`.
 - Add more plane-supervision targets via `data.heatmap_representations`.

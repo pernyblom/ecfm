@@ -19,7 +19,9 @@ data:
   require_boxes: false
   select_box: largest
   exclude_multiple_objects: true
+  # max_samples_train: 2000
   max_samples_train:
+  # max_samples_val: 400
   max_samples_val:
   seed: 123
   cache_dir: outputs/object_detection_cache
