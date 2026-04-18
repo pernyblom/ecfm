@@ -22,7 +22,7 @@ def boxes_xyxy_px(boxes: torch.Tensor, frame_size: tuple[int, int]) -> torch.Ten
     return torch.cat([xy0, xy1], dim=-1)
 
 
-def pairwise_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
+def aligned_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
     pred_xyxy = boxes_xyxy_px(pred, frame_size)
     tgt_xyxy = boxes_xyxy_px(target, frame_size)
     inter0 = torch.maximum(pred_xyxy[..., :2], tgt_xyxy[..., :2])
@@ -39,6 +39,23 @@ def pairwise_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple
     return torch.where(union > 0, inter / union, torch.zeros_like(union))
 
 
+def pairwise_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
+    pred_xyxy = boxes_xyxy_px(pred, frame_size)
+    tgt_xyxy = boxes_xyxy_px(target, frame_size)
+    inter0 = torch.maximum(pred_xyxy[:, None, :2], tgt_xyxy[None, :, :2])
+    inter1 = torch.minimum(pred_xyxy[:, None, 2:], tgt_xyxy[None, :, 2:])
+    inter_wh = (inter1 - inter0).clamp(min=0.0)
+    inter = inter_wh[..., 0] * inter_wh[..., 1]
+    pred_area = (pred_xyxy[:, 2] - pred_xyxy[:, 0]).clamp(min=0.0) * (
+        pred_xyxy[:, 3] - pred_xyxy[:, 1]
+    ).clamp(min=0.0)
+    tgt_area = (tgt_xyxy[:, 2] - tgt_xyxy[:, 0]).clamp(min=0.0) * (
+        tgt_xyxy[:, 3] - tgt_xyxy[:, 1]
+    ).clamp(min=0.0)
+    union = pred_area[:, None] + tgt_area[None, :] - inter
+    return torch.where(union > 0, inter / union, torch.zeros_like(union))
+
+
 def detection_scores(preds: Dict[str, torch.Tensor]) -> torch.Tensor:
     return preds["objectness_logits"].sigmoid()
 
@@ -49,7 +66,7 @@ def _matched_center_l1_px(pred: torch.Tensor, target: torch.Tensor, frame_size: 
 
 
 def _matched_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
-    return pairwise_box_iou(pred, target, frame_size).mean()
+    return aligned_box_iou(pred, target, frame_size).mean()
 
 
 def build_detections(
