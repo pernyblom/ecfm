@@ -73,31 +73,52 @@ def build_detections(
     return detections, gt_by_frame
 
 
-def average_precision_at_iou(
+def _prepare_detections_for_map(
     detections: list[dict],
     gt_by_frame: dict[str, torch.Tensor],
     frame_size: tuple[int, int],
-    iou_threshold: float,
-) -> float:
-    num_gt = int(sum(int(boxes.shape[0]) for boxes in gt_by_frame.values()))
-    if num_gt == 0 or not detections:
-        return 0.0
+) -> tuple[list[dict], dict[str, torch.Tensor], int]:
+    if not detections:
+        return [], {}, int(sum(int(boxes.shape[0]) for boxes in gt_by_frame.values()))
     ordered = sorted(detections, key=lambda item: item["score"], reverse=True)
+    frame_to_det_indices: dict[str, list[int]] = {}
+    for det_idx, det in enumerate(ordered):
+        frame_to_det_indices.setdefault(det["frame_key"], []).append(det_idx)
+    ious_by_frame: dict[str, torch.Tensor] = {}
+    for frame_key, det_indices in frame_to_det_indices.items():
+        gt_boxes = gt_by_frame[frame_key]
+        if gt_boxes.numel() == 0:
+            continue
+        det_boxes = torch.stack([ordered[idx]["box"] for idx in det_indices], dim=0)
+        ious_by_frame[frame_key] = pairwise_box_iou(det_boxes, gt_boxes, frame_size)
+    return ordered, ious_by_frame, int(sum(int(boxes.shape[0]) for boxes in gt_by_frame.values()))
+
+
+def average_precision_at_iou(
+    ordered_detections: list[dict],
+    gt_by_frame: dict[str, torch.Tensor],
+    ious_by_frame: dict[str, torch.Tensor],
+    iou_threshold: float,
+    num_gt: int,
+) -> float:
+    if num_gt == 0 or not ordered_detections:
+        return 0.0
     used = {
         frame_key: torch.zeros((boxes.shape[0],), dtype=torch.bool)
         for frame_key, boxes in gt_by_frame.items()
     }
     tp_vals: list[float] = []
     fp_vals: list[float] = []
-    for det in ordered:
+    frame_offsets = {frame_key: 0 for frame_key in ious_by_frame}
+    for det in ordered_detections:
         frame_key = det["frame_key"]
         gt_boxes = gt_by_frame[frame_key]
         if gt_boxes.numel() == 0:
             tp_vals.append(0.0)
             fp_vals.append(1.0)
             continue
-        pred_box = det["box"].unsqueeze(0)
-        ious = pairwise_box_iou(pred_box, gt_boxes, frame_size).squeeze(0)
+        ious = ious_by_frame[frame_key][frame_offsets[frame_key]]
+        frame_offsets[frame_key] += 1
         best_iou, best_idx = torch.max(ious, dim=0)
         if float(best_iou.item()) >= iou_threshold and not bool(used[frame_key][best_idx].item()):
             used[frame_key][best_idx] = True
@@ -126,8 +147,15 @@ def map_metrics(
     frame_size: tuple[int, int],
 ) -> Dict[str, float]:
     thresholds = [0.5 + 0.05 * i for i in range(10)]
+    ordered_detections, ious_by_frame, num_gt = _prepare_detections_for_map(detections, gt_by_frame, frame_size)
     ap_values = [
-        average_precision_at_iou(detections=detections, gt_by_frame=gt_by_frame, frame_size=frame_size, iou_threshold=thr)
+        average_precision_at_iou(
+            ordered_detections=ordered_detections,
+            gt_by_frame=gt_by_frame,
+            ious_by_frame=ious_by_frame,
+            iou_threshold=thr,
+            num_gt=num_gt,
+        )
         for thr in thresholds
     ]
     return {"mAP_50": ap_values[0], "mAP_50_95": float(sum(ap_values) / len(ap_values))}
@@ -141,6 +169,7 @@ def summarize_metrics(
     frame_matches: Sequence[tuple[torch.Tensor, torch.Tensor]],
     frame_keys: Sequence[str],
     frame_size: tuple[int, int],
+    include_map: bool = False,
 ) -> Dict[str, float]:
     out: Dict[str, float] = {}
     pred_scores = detection_scores(preds)
@@ -166,8 +195,9 @@ def summarize_metrics(
     neg_mask = ~target_objectness.bool()
     if neg_mask.any():
         out["objectness_neg_mean"] = float(pred_scores[neg_mask].mean().item())
-    detections, gt_by_frame = build_detections(pred_boxes.detach(), pred_scores.detach(), target_boxes_list, frame_keys)
-    out.update(map_metrics(detections, gt_by_frame, frame_size))
+    if include_map:
+        detections, gt_by_frame = build_detections(pred_boxes.detach(), pred_scores.detach(), target_boxes_list, frame_keys)
+        out.update(map_metrics(detections, gt_by_frame, frame_size))
     for rep, target in target_heatmaps.items():
         if rep in preds["heatmaps"]:
             out[f"heatmap_iou_{rep}"] = float(heatmap_iou(preds["heatmaps"][rep], target).item())

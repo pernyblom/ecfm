@@ -55,6 +55,8 @@ train:
   match_score_weight: 1.0
   match_l1_weight: 1.0
   match_ciou_weight: 1.0
+  compute_train_epoch_map: false
+  compute_val_epoch_map: true
   log_every: 20
   checkpoint_every: 1
   checkpoint_dir: outputs/object_detection_ckpt

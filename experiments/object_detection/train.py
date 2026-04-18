@@ -167,6 +167,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             aux["frame_matches"],
             batch.frame_keys,
             tuple(data_cfg["frame_size"]),
+            include_map=False,
         )
         rows.append({**loss_metrics, **metrics})
         row_weights.append(len(batch.frame_keys))
@@ -185,6 +186,8 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             gt_by_frame_all[frame_key] = gt_boxes.detach().cpu()
         if step % int(train_cfg.get("log_every", 20)) == 0:
             phase = "train" if train else "val"
+            map_50 = metrics.get("mAP_50")
+            map_50_95 = metrics.get("mAP_50_95")
             print(
                 f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
                 f"box_reg {loss_metrics['box_regression']:.4f} "
@@ -193,11 +196,17 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 f"obj_bce {loss_metrics['objectness_bce']:.4f} "
                 f"match_l1_px {metrics.get('matched_center_l1_px', float('nan')):.2f} "
                 f"match_iou {metrics.get('matched_box_iou', float('nan')):.4f} "
-                f"mAP_50 {metrics['mAP_50']:.4f} "
-                f"mAP_50:95 {metrics['mAP_50_95']:.4f}"
+                f"mAP_50 {(f'{map_50:.4f}' if map_50 is not None else 'n/a')} "
+                f"mAP_50:95 {(f'{map_50_95:.4f}' if map_50_95 is not None else 'n/a')}"
             )
     out = _weighted_mean_dict(rows, row_weights)
-    if detections_all:
+    compute_epoch_map = bool(
+        train_cfg.get(
+            "compute_train_epoch_map" if train else "compute_val_epoch_map",
+            not train,
+        )
+    )
+    if compute_epoch_map and detections_all:
         out.update(
             map_metrics(
                 detections=detections_all,
@@ -290,6 +299,7 @@ def main() -> None:
             train=True,
         )
         with torch.no_grad():
+            print("Running validation epoch")
             val_metrics = _run_epoch(
                 model=model,
                 loader=val_loader,

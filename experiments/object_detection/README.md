@@ -95,6 +95,10 @@ Training throughput notes
 - The train and validation loaders now default to persistent workers on
   multi-worker runs, which avoids a full worker respawn at each epoch and when
   switching from training to validation.
+- Full epoch mAP is relatively expensive for query-based detection. By default
+  it is computed for validation but not for training. Control this with:
+  - `train.compute_train_epoch_map`
+  - `train.compute_val_epoch_map`
 - Useful loader knobs in `train`:
   - `num_workers`
   - `persistent_workers`
