@@ -86,11 +86,25 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
     )
 
 
-def _mean_dict(rows: List[Dict[str, float]]) -> Dict[str, float]:
+def _weighted_mean_dict(rows: List[Dict[str, float]], weights: List[int]) -> Dict[str, float]:
     if not rows:
         return {}
-    keys = rows[0].keys()
-    return {key: sum(row[key] for row in rows) / len(rows) for key in keys}
+    keys = set()
+    for row in rows:
+        keys.update(row.keys())
+    total_weight = float(sum(weights))
+    out: Dict[str, float] = {}
+    for key in sorted(keys):
+        weighted_sum = 0.0
+        key_weight = 0.0
+        for row, weight in zip(rows, weights):
+            if key not in row:
+                continue
+            weighted_sum += row[key] * weight
+            key_weight += weight
+        if key_weight > 0:
+            out[key] = weighted_sum / key_weight
+    return out
 
 
 def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, train: bool) -> Dict[str, float]:
@@ -98,6 +112,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     data_cfg = cfg["data"]
     model.train(mode=train)
     rows: List[Dict[str, float]] = []
+    row_weights: List[int] = []
     pred_boxes_all = []
     pred_scores_all = []
     target_boxes_all = []
@@ -122,6 +137,8 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 heatmap_weight=float(train_cfg.get("heatmap_weight", 1.0)),
                 box_weight=float(train_cfg.get("box_weight", 1.0)),
                 objectness_weight=float(train_cfg.get("objectness_weight", 1.0)),
+                box_l1_weight=float(train_cfg.get("box_l1_weight", 1.0)),
+                box_ciou_weight=float(train_cfg.get("box_ciou_weight", 1.0)),
             )
             if train:
                 optimizer.zero_grad()
@@ -135,6 +152,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             tuple(data_cfg["frame_size"]),
         )
         rows.append({**loss_metrics, **metrics})
+        row_weights.append(int(target_boxes.shape[0]))
         pred_boxes_all.append(preds["boxes"].detach().cpu())
         pred_scores_all.append(detection_scores(preds).detach().cpu())
         target_boxes_all.append(target_boxes.detach().cpu())
@@ -143,14 +161,16 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             phase = "train" if train else "val"
             print(
                 f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
+                f"box_reg {loss_metrics['box_regression']:.4f} "
                 f"box_l1 {loss_metrics['box_l1']:.4f} "
+                f"box_ciou {loss_metrics['box_ciou']:.4f} "
                 f"obj_bce {loss_metrics['objectness_bce']:.4f} "
                 f"center_l1_px {metrics['center_l1_px']:.2f} "
                 f"box_iou {metrics['box_iou']:.4f} "
                 f"mAP_50 {metrics['mAP_50']:.4f} "
                 f"mAP_50:95 {metrics['mAP_50_95']:.4f}"
             )
-    out = _mean_dict(rows)
+    out = _weighted_mean_dict(rows, row_weights)
     if pred_boxes_all:
         out.update(
             map_metrics(

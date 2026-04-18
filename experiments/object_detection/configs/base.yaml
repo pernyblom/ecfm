@@ -44,6 +44,8 @@ train:
   weight_decay: 1.0e-4
   heatmap_weight: 1.0  # Ignored if data.heatmap_representations is [].
   box_weight: 2.0
+  box_l1_weight: 1.0
+  box_ciou_weight: 1.0
   objectness_weight: 1.0
   log_every: 20
   checkpoint_every: 1

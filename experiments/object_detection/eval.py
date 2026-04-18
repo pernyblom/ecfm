@@ -24,11 +24,24 @@ from experiments.object_detection.utils.config import load_config
 from experiments.object_detection.visualization import save_sample_visualization
 
 
-def _mean_dict(rows: List[Dict[str, float]]) -> Dict[str, float]:
+def _weighted_mean_dict(rows: List[Dict[str, float]], weights: List[int]) -> Dict[str, float]:
     if not rows:
         return {}
-    keys = rows[0].keys()
-    return {key: sum(row[key] for row in rows) / len(rows) for key in keys}
+    keys = set()
+    for row in rows:
+        keys.update(row.keys())
+    out: Dict[str, float] = {}
+    for key in sorted(keys):
+        weighted_sum = 0.0
+        key_weight = 0.0
+        for row, weight in zip(rows, weights):
+            if key not in row:
+                continue
+            weighted_sum += row[key] * weight
+            key_weight += weight
+        if key_weight > 0:
+            out[key] = weighted_sum / key_weight
+    return out
 
 
 def main() -> None:
@@ -54,6 +67,7 @@ def main() -> None:
     model.eval()
 
     rows: List[Dict[str, float]] = []
+    row_weights: List[int] = []
     pred_boxes_all = []
     pred_scores_all = []
     target_boxes_all = []
@@ -84,6 +98,7 @@ def main() -> None:
                     tuple(cfg["data"]["frame_size"]),
                 )
             )
+            row_weights.append(int(target_boxes.shape[0]))
             pred_boxes_all.append(preds["boxes"].detach().cpu())
             pred_scores_all.append(detection_scores(preds).detach().cpu())
             target_boxes_all.append(target_boxes.detach().cpu())
@@ -106,7 +121,7 @@ def main() -> None:
                     xy_backdrop_rep=backdrop_rep,
                 )
 
-    summary = _mean_dict(rows)
+    summary = _weighted_mean_dict(rows, row_weights)
     if pred_boxes_all:
         summary.update(
             map_metrics(

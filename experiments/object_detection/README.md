@@ -5,6 +5,13 @@ event representations and YOLO labels. The first version uses `xt_my`, `yt_mx`,
 and `cstr3` as inputs, predicts one `xt` heatmap, one `yt` heatmap, and one XY
 box for the anchor frame.
 
+Current loss
+- box regression uses `L1 + CIoU`
+- objectness uses binary cross-entropy
+- heatmap heads, when enabled, use binary cross-entropy
+- if heatmaps are disabled, heatmap-only losses and metrics are omitted from
+  the summaries instead of being reported as dummy zeros
+
 Reported metrics
 - `center_l1_px`
 - `box_iou`
@@ -29,6 +36,7 @@ What it does
   - an `xt_my` heatmap
   - a `yt_mx` heatmap
   - an XY box in normalized YOLO format `(cx, cy, w, h)`
+  - an objectness score for the box
 - Saves visualizations for GT and predicted heatmaps directly in `xt_my` and
   `yt_mx`, plus GT and predicted XY boxes over a selectable backdrop such as
   `cstr3`.

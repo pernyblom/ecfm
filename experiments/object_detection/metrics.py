@@ -166,18 +166,13 @@ def summarize_metrics(
         )
     )
     if "objectness_logits" in preds:
-        target_obj = gt_present.float()
         pred_obj = preds["objectness_logits"].sigmoid()
         pred_label = pred_obj >= 0.5
         out["objectness_acc"] = float((pred_label == gt_present.bool()).float().mean().item())
         if gt_present.any():
             out["objectness_pos_mean"] = float(pred_obj[gt_present.bool()].mean().item())
-        else:
-            out["objectness_pos_mean"] = 0.0
         if (~gt_present.bool()).any():
             out["objectness_neg_mean"] = float(pred_obj[(~gt_present.bool())].mean().item())
-        else:
-            out["objectness_neg_mean"] = 0.0
     for rep, target in target_heatmaps.items():
         if rep in preds["heatmaps"]:
             out[f"heatmap_iou_{rep}"] = float(heatmap_iou(preds["heatmaps"][rep], target).item())
