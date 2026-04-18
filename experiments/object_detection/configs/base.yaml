@@ -41,10 +41,10 @@ train:
   device: cuda
   epochs: 20
   batch_size: 32
-  num_workers: 8
+  num_workers: 4
   persistent_workers: true
   pin_memory: true
-  prefetch_factor: 2
+  prefetch_factor: 4
   lr: 1.0e-3
   weight_decay: 1.0e-4
   heatmap_weight: 1.0  # Ignored if data.heatmap_representations is [].

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import sys
 from pathlib import Path
@@ -25,6 +26,16 @@ from experiments.object_detection.utils.config import load_config
 from experiments.object_detection.visualization import save_sample_visualization
 
 
+@dataclass
+class Batch:
+    inputs: Dict[str, torch.Tensor]
+    gt_boxes_xywh: List[torch.Tensor]
+    heatmaps: Dict[str, torch.Tensor]
+    frame_keys: List[str]
+    frame_times_s: List[float]
+    input_paths: List[Dict[str, str]]
+
+
 def _read_split_file(path: Path) -> List[str]:
     out: List[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -37,19 +48,15 @@ def _read_split_file(path: Path) -> List[str]:
 def _collate(batch: List[DetectionSample]):
     reps = batch[0].inputs.keys()
     heatmap_reps = batch[0].heatmaps.keys()
-    return type(
-        "Batch",
-        (),
-        {
-            "inputs": {rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps},
-            "gt_boxes_xywh": [b.gt_boxes_xywh for b in batch],
-            "heatmaps": {
-                rep: torch.stack([b.heatmaps[rep] for b in batch], dim=0) for rep in heatmap_reps
-            },
-            "frame_keys": [b.frame_key for b in batch],
-            "frame_times_s": [b.frame_time_s for b in batch],
-            "input_paths": [b.input_paths for b in batch],
+    return Batch(
+        inputs={rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps},
+        gt_boxes_xywh=[b.gt_boxes_xywh for b in batch],
+        heatmaps={
+            rep: torch.stack([b.heatmaps[rep] for b in batch], dim=0) for rep in heatmap_reps
         },
+        frame_keys=[b.frame_key for b in batch],
+        frame_times_s=[b.frame_time_s for b in batch],
+        input_paths=[b.input_paths for b in batch],
     )
 
 
