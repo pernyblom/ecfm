@@ -18,4 +18,6 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         fusion_hidden_dim=int(model_cfg.get("fusion_hidden_dim", 256)),
         heatmap_hidden_dim=int(model_cfg.get("heatmap_hidden_dim", 256)),
         box_hidden_dim=int(model_cfg.get("box_hidden_dim", 256)),
+        num_queries=int(model_cfg.get("num_queries", 8)),
+        query_hidden_dim=int(model_cfg.get("query_hidden_dim", 256)),
     ).to(device)

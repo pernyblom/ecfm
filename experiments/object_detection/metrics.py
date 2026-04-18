@@ -1,35 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, List, Sequence
 
 import torch
-
-
-def box_center_l1_px(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
-    scale = torch.tensor([frame_size[0], frame_size[1]], device=pred.device, dtype=pred.dtype)
-    return ((pred[:, :2] - target[:, :2]) * scale).abs().mean()
-
-
-def box_iou_mean(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
-    wh = torch.tensor([frame_size[0], frame_size[1]], device=pred.device, dtype=pred.dtype)
-    pred_xy = pred[:, :2] * wh
-    pred_wh = pred[:, 2:] * wh
-    tgt_xy = target[:, :2] * wh
-    tgt_wh = target[:, 2:] * wh
-
-    pred0 = pred_xy - pred_wh / 2.0
-    pred1 = pred_xy + pred_wh / 2.0
-    tgt0 = tgt_xy - tgt_wh / 2.0
-    tgt1 = tgt_xy + tgt_wh / 2.0
-
-    inter0 = torch.maximum(pred0, tgt0)
-    inter1 = torch.minimum(pred1, tgt1)
-    inter_wh = (inter1 - inter0).clamp(min=0.0)
-    inter = inter_wh[:, 0] * inter_wh[:, 1]
-    pred_area = pred_wh[:, 0].clamp(min=0.0) * pred_wh[:, 1].clamp(min=0.0)
-    tgt_area = tgt_wh[:, 0].clamp(min=0.0) * tgt_wh[:, 1].clamp(min=0.0)
-    union = pred_area + tgt_area - inter
-    return torch.where(union > 0, inter / union, torch.zeros_like(union)).mean()
 
 
 def heatmap_iou(pred_logits: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
@@ -40,139 +13,161 @@ def heatmap_iou(pred_logits: torch.Tensor, target: torch.Tensor, threshold: floa
     return torch.where(union > 0, inter / union, torch.zeros_like(union)).mean()
 
 
-def _boxes_xyxy_px(boxes: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
+def boxes_xyxy_px(boxes: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
     wh = torch.tensor([frame_size[0], frame_size[1]], device=boxes.device, dtype=boxes.dtype)
-    xy = boxes[:, :2] * wh
-    box_wh = boxes[:, 2:] * wh
+    xy = boxes[..., :2] * wh
+    box_wh = boxes[..., 2:] * wh
     xy0 = xy - box_wh / 2.0
     xy1 = xy + box_wh / 2.0
     return torch.cat([xy0, xy1], dim=-1)
 
 
 def pairwise_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
-    pred_xyxy = _boxes_xyxy_px(pred, frame_size)
-    tgt_xyxy = _boxes_xyxy_px(target, frame_size)
-    inter0 = torch.maximum(pred_xyxy[:, :2], tgt_xyxy[:, :2])
-    inter1 = torch.minimum(pred_xyxy[:, 2:], tgt_xyxy[:, 2:])
+    pred_xyxy = boxes_xyxy_px(pred, frame_size)
+    tgt_xyxy = boxes_xyxy_px(target, frame_size)
+    inter0 = torch.maximum(pred_xyxy[..., :2], tgt_xyxy[..., :2])
+    inter1 = torch.minimum(pred_xyxy[..., 2:], tgt_xyxy[..., 2:])
     inter_wh = (inter1 - inter0).clamp(min=0.0)
-    inter = inter_wh[:, 0] * inter_wh[:, 1]
-    pred_area = (pred_xyxy[:, 2] - pred_xyxy[:, 0]).clamp(min=0.0) * (
-        pred_xyxy[:, 3] - pred_xyxy[:, 1]
+    inter = inter_wh[..., 0] * inter_wh[..., 1]
+    pred_area = (pred_xyxy[..., 2] - pred_xyxy[..., 0]).clamp(min=0.0) * (
+        pred_xyxy[..., 3] - pred_xyxy[..., 1]
     ).clamp(min=0.0)
-    tgt_area = (tgt_xyxy[:, 2] - tgt_xyxy[:, 0]).clamp(min=0.0) * (
-        tgt_xyxy[:, 3] - tgt_xyxy[:, 1]
+    tgt_area = (tgt_xyxy[..., 2] - tgt_xyxy[..., 0]).clamp(min=0.0) * (
+        tgt_xyxy[..., 3] - tgt_xyxy[..., 1]
     ).clamp(min=0.0)
     union = pred_area + tgt_area - inter
     return torch.where(union > 0, inter / union, torch.zeros_like(union))
 
 
 def detection_scores(preds: Dict[str, torch.Tensor]) -> torch.Tensor:
-    if "objectness_logits" in preds:
-        return preds["objectness_logits"].sigmoid()
-    return torch.ones(preds["boxes"].shape[0], device=preds["boxes"].device, dtype=preds["boxes"].dtype)
+    return preds["objectness_logits"].sigmoid()
+
+
+def _matched_center_l1_px(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
+    scale = torch.tensor([frame_size[0], frame_size[1]], device=pred.device, dtype=pred.dtype)
+    return ((pred[:, :2] - target[:, :2]) * scale).abs().mean()
+
+
+def _matched_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
+    return pairwise_box_iou(pred, target, frame_size).mean()
+
+
+def build_detections(
+    pred_boxes: torch.Tensor,
+    pred_scores: torch.Tensor,
+    target_boxes_list: Sequence[torch.Tensor],
+    frame_keys: Sequence[str],
+) -> tuple[list[dict], dict[str, torch.Tensor]]:
+    detections: list[dict] = []
+    gt_by_frame: dict[str, torch.Tensor] = {}
+    for frame_idx, frame_key in enumerate(frame_keys):
+        gt_by_frame[frame_key] = target_boxes_list[frame_idx].detach().cpu()
+        for query_idx in range(pred_boxes.shape[1]):
+            detections.append(
+                {
+                    "frame_key": frame_key,
+                    "score": float(pred_scores[frame_idx, query_idx].item()),
+                    "box": pred_boxes[frame_idx, query_idx].detach().cpu(),
+                }
+            )
+    return detections, gt_by_frame
 
 
 def average_precision_at_iou(
-    pred_boxes: torch.Tensor,
-    pred_scores: torch.Tensor,
-    target_boxes: torch.Tensor,
-    gt_present: torch.Tensor,
+    detections: list[dict],
+    gt_by_frame: dict[str, torch.Tensor],
     frame_size: tuple[int, int],
     iou_threshold: float,
-) -> torch.Tensor:
-    if pred_boxes.numel() == 0:
-        return torch.tensor(0.0)
-    valid_gt = gt_present.bool()
-    num_gt = int(valid_gt.sum().item())
-    if num_gt == 0:
-        return torch.tensor(0.0, device=pred_boxes.device, dtype=pred_boxes.dtype)
-
-    order = torch.argsort(pred_scores, descending=True)
-    pred_boxes = pred_boxes[order]
-    target_boxes = target_boxes[order]
-    valid_gt = valid_gt[order]
-    ious = pairwise_box_iou(pred_boxes, target_boxes, frame_size)
-
-    tp = ((ious >= iou_threshold) & valid_gt).float()
-    fp = 1.0 - tp
+) -> float:
+    num_gt = int(sum(int(boxes.shape[0]) for boxes in gt_by_frame.values()))
+    if num_gt == 0 or not detections:
+        return 0.0
+    ordered = sorted(detections, key=lambda item: item["score"], reverse=True)
+    used = {
+        frame_key: torch.zeros((boxes.shape[0],), dtype=torch.bool)
+        for frame_key, boxes in gt_by_frame.items()
+    }
+    tp_vals: list[float] = []
+    fp_vals: list[float] = []
+    for det in ordered:
+        frame_key = det["frame_key"]
+        gt_boxes = gt_by_frame[frame_key]
+        if gt_boxes.numel() == 0:
+            tp_vals.append(0.0)
+            fp_vals.append(1.0)
+            continue
+        pred_box = det["box"].unsqueeze(0)
+        ious = pairwise_box_iou(pred_box, gt_boxes, frame_size).squeeze(0)
+        best_iou, best_idx = torch.max(ious, dim=0)
+        if float(best_iou.item()) >= iou_threshold and not bool(used[frame_key][best_idx].item()):
+            used[frame_key][best_idx] = True
+            tp_vals.append(1.0)
+            fp_vals.append(0.0)
+        else:
+            tp_vals.append(0.0)
+            fp_vals.append(1.0)
+    tp = torch.tensor(tp_vals, dtype=torch.float32)
+    fp = torch.tensor(fp_vals, dtype=torch.float32)
     tp_cum = torch.cumsum(tp, dim=0)
     fp_cum = torch.cumsum(fp, dim=0)
     recall = tp_cum / max(num_gt, 1)
     precision = tp_cum / torch.clamp(tp_cum + fp_cum, min=1.0e-8)
-
-    recall = torch.cat(
-        [
-            torch.tensor([0.0], device=recall.device, dtype=recall.dtype),
-            recall,
-            torch.tensor([1.0], device=recall.device, dtype=recall.dtype),
-        ]
-    )
-    precision = torch.cat(
-        [
-            torch.tensor([1.0], device=precision.device, dtype=precision.dtype),
-            precision,
-            torch.tensor([0.0], device=precision.device, dtype=precision.dtype),
-        ]
-    )
+    recall = torch.cat([torch.tensor([0.0]), recall, torch.tensor([1.0])])
+    precision = torch.cat([torch.tensor([1.0]), precision, torch.tensor([0.0])])
     for i in range(precision.numel() - 2, -1, -1):
         precision[i] = torch.maximum(precision[i], precision[i + 1])
     delta = recall[1:] - recall[:-1]
-    return torch.sum(delta * precision[1:])
+    return float(torch.sum(delta * precision[1:]).item())
 
 
 def map_metrics(
-    pred_boxes: torch.Tensor,
-    pred_scores: torch.Tensor,
-    target_boxes: torch.Tensor,
-    gt_present: torch.Tensor,
+    detections: list[dict],
+    gt_by_frame: dict[str, torch.Tensor],
     frame_size: tuple[int, int],
 ) -> Dict[str, float]:
     thresholds = [0.5 + 0.05 * i for i in range(10)]
     ap_values = [
-        average_precision_at_iou(
-            pred_boxes=pred_boxes,
-            pred_scores=pred_scores,
-            target_boxes=target_boxes,
-            gt_present=gt_present,
-            frame_size=frame_size,
-            iou_threshold=thr,
-        )
+        average_precision_at_iou(detections=detections, gt_by_frame=gt_by_frame, frame_size=frame_size, iou_threshold=thr)
         for thr in thresholds
     ]
-    return {
-        "mAP_50": float(ap_values[0].item()),
-        "mAP_50_95": float(torch.stack(ap_values).mean().item()),
-    }
+    return {"mAP_50": ap_values[0], "mAP_50_95": float(sum(ap_values) / len(ap_values))}
 
 
 def summarize_metrics(
     preds: Dict[str, torch.Tensor],
-    target_boxes: torch.Tensor,
+    target_boxes_list: Sequence[torch.Tensor],
     target_heatmaps: Dict[str, torch.Tensor],
-    gt_present: torch.Tensor,
+    target_objectness: torch.Tensor,
+    frame_matches: Sequence[tuple[torch.Tensor, torch.Tensor]],
+    frame_keys: Sequence[str],
     frame_size: tuple[int, int],
 ) -> Dict[str, float]:
-    out = {
-        "center_l1_px": float(box_center_l1_px(preds["boxes"], target_boxes, frame_size).item()),
-        "box_iou": float(box_iou_mean(preds["boxes"], target_boxes, frame_size).item()),
-    }
-    out.update(
-        map_metrics(
-            pred_boxes=preds["boxes"],
-            pred_scores=detection_scores(preds),
-            target_boxes=target_boxes,
-            gt_present=gt_present,
-            frame_size=frame_size,
-        )
-    )
-    if "objectness_logits" in preds:
-        pred_obj = preds["objectness_logits"].sigmoid()
-        pred_label = pred_obj >= 0.5
-        out["objectness_acc"] = float((pred_label == gt_present.bool()).float().mean().item())
-        if gt_present.any():
-            out["objectness_pos_mean"] = float(pred_obj[gt_present.bool()].mean().item())
-        if (~gt_present.bool()).any():
-            out["objectness_neg_mean"] = float(pred_obj[(~gt_present.bool())].mean().item())
+    out: Dict[str, float] = {}
+    pred_scores = detection_scores(preds)
+    pred_boxes = preds["boxes"]
+
+    matched_pred_boxes: List[torch.Tensor] = []
+    matched_gt_boxes: List[torch.Tensor] = []
+    for batch_idx, (pred_idx, gt_idx) in enumerate(frame_matches):
+        if pred_idx.numel() == 0:
+            continue
+        gt_boxes = target_boxes_list[batch_idx].to(pred_boxes.device)
+        matched_pred_boxes.append(pred_boxes[batch_idx, pred_idx])
+        matched_gt_boxes.append(gt_boxes[gt_idx])
+    if matched_pred_boxes:
+        pred_cat = torch.cat(matched_pred_boxes, dim=0)
+        gt_cat = torch.cat(matched_gt_boxes, dim=0)
+        out["matched_center_l1_px"] = float(_matched_center_l1_px(pred_cat, gt_cat, frame_size).item())
+        out["matched_box_iou"] = float(_matched_box_iou(pred_cat, gt_cat, frame_size).item())
+    pred_label = pred_scores >= 0.5
+    out["objectness_acc"] = float((pred_label == target_objectness.bool()).float().mean().item())
+    if target_objectness.bool().any():
+        out["objectness_pos_mean"] = float(pred_scores[target_objectness.bool()].mean().item())
+    neg_mask = ~target_objectness.bool()
+    if neg_mask.any():
+        out["objectness_neg_mean"] = float(pred_scores[neg_mask].mean().item())
+    detections, gt_by_frame = build_detections(pred_boxes.detach(), pred_scores.detach(), target_boxes_list, frame_keys)
+    out.update(map_metrics(detections, gt_by_frame, frame_size))
     for rep, target in target_heatmaps.items():
         if rep in preds["heatmaps"]:
             out[f"heatmap_iou_{rep}"] = float(heatmap_iou(preds["heatmaps"][rep], target).item())

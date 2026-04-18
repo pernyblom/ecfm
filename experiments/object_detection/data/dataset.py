@@ -15,12 +15,11 @@ from PIL import Image
 @dataclass
 class DetectionSample:
     inputs: Dict[str, torch.Tensor]
-    box_xywh: torch.Tensor
+    gt_boxes_xywh: torch.Tensor
     heatmaps: Dict[str, torch.Tensor]
     frame_key: str
     frame_time_s: float
     selected_box_index: int
-    all_boxes_xywh: torch.Tensor
     input_paths: Dict[str, str]
 
 
@@ -310,32 +309,29 @@ class FredDetectionDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> DetectionSample:
         sample = self.samples[idx]
         inputs = {rep: _load_image(Path(path), self.image_size) for rep, path in sample["input_paths"].items()}
-        all_boxes = (
+        gt_boxes = (
             torch.tensor(sample["boxes"], dtype=torch.float32)
             if sample["boxes"]
             else torch.zeros((0, 4), dtype=torch.float32)
         )
-        if sample["selected_box_index"] >= 0:
-            box = all_boxes[sample["selected_box_index"]]
-            heatmaps = {
-                rep: self._box_to_heatmap(rep, tuple(float(v) for v in box.tolist()))
-                for rep in self.heatmap_representations
-            }
-        else:
-            box = torch.zeros((4,), dtype=torch.float32)
-            heatmaps = {
-                rep: torch.zeros((1, self.image_size[1], self.image_size[0]), dtype=torch.float32)
-                for rep in self.heatmap_representations
-            }
+        heatmaps = {
+            rep: torch.zeros((1, self.image_size[1], self.image_size[0]), dtype=torch.float32)
+            for rep in self.heatmap_representations
+        }
+        for box in gt_boxes:
+            for rep in self.heatmap_representations:
+                heatmaps[rep] = torch.maximum(
+                    heatmaps[rep],
+                    self._box_to_heatmap(rep, tuple(float(v) for v in box.tolist())),
+                )
         folder = sample["folder"]
         frame_key = f"{folder}/{sample['stem']}" if folder else sample["stem"]
         return DetectionSample(
             inputs=inputs,
-            box_xywh=box,
+            gt_boxes_xywh=gt_boxes,
             heatmaps=heatmaps,
             frame_key=frame_key,
             frame_time_s=float(sample["time_s"]),
             selected_box_index=int(sample["selected_box_index"]),
-            all_boxes_xywh=all_boxes,
             input_paths=dict(sample["input_paths"]),
         )

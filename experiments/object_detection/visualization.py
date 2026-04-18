@@ -25,44 +25,15 @@ def _overlay_heatmap(background: Image.Image, heatmap: torch.Tensor, color: tupl
     return Image.fromarray(np.clip(overlay, 0, 255).astype(np.uint8))
 
 
-def _draw_xy_box(img: Image.Image, box: torch.Tensor, color: tuple[int, int, int], width: int = 2) -> Image.Image:
-    out = img.copy().convert("RGB")
-    draw = ImageDraw.Draw(out)
-    w, h = out.size
-    cx, cy, bw, bh = [float(v) for v in box]
-    draw.rectangle(
-        [
-            (cx - bw / 2.0) * w,
-            (cy - bh / 2.0) * h,
-            (cx + bw / 2.0) * w,
-            (cy + bh / 2.0) * h,
-        ],
-        outline=color,
-        width=width,
-    )
-    return out
-
-
-def _draw_pred_box_with_score(
-    img: Image.Image,
-    box: torch.Tensor,
-    score: float,
-    color: tuple[int, int, int],
-    width: int = 2,
-) -> Image.Image:
-    out = _draw_xy_box(img, box, color, width=width)
-    draw = ImageDraw.Draw(out)
-    w, h = out.size
+def _draw_xy_box(draw: ImageDraw.ImageDraw, box: torch.Tensor, color: tuple[int, int, int], size: tuple[int, int], width: int = 2) -> None:
+    w, h = size
     cx, cy, bw, bh = [float(v) for v in box]
     x0 = (cx - bw / 2.0) * w
     y0 = (cy - bh / 2.0) * h
-    label = f"score {score:.3f}"
-    text_x = max(2.0, x0 + 2.0)
-    text_y = max(2.0, y0 - 14.0)
-    bbox = draw.textbbox((text_x, text_y), label)
-    draw.rectangle(bbox, fill=(0, 0, 0))
-    draw.text((text_x, text_y), label, fill=color)
-    return out
+    x1 = (cx + bw / 2.0) * w
+    y1 = (cy + bh / 2.0) * h
+    draw.rectangle([x0, y0, x1, y1], outline=color, width=width)
+    return None
 
 
 def save_sample_visualization(
@@ -71,11 +42,12 @@ def save_sample_visualization(
     stem: str,
     inputs: Dict[str, torch.Tensor],
     pred_boxes: torch.Tensor,
-    pred_score: float,
-    target_box: torch.Tensor,
+    pred_scores: torch.Tensor,
+    target_boxes: torch.Tensor,
     pred_heatmaps: Dict[str, torch.Tensor],
     target_heatmaps: Dict[str, torch.Tensor],
     xy_backdrop_rep: str,
+    score_threshold: float = 0.5,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     for rep, img_t in inputs.items():
@@ -90,7 +62,27 @@ def save_sample_visualization(
 
     box_rep = xy_backdrop_rep if xy_backdrop_rep in inputs else next(iter(inputs.keys()))
     base = _tensor_to_pil(inputs[box_rep])
-    _draw_xy_box(base, target_box, (0, 255, 0)).save(output_dir / f"{stem}_{box_rep}_gt_box.png")
-    _draw_pred_box_with_score(base, pred_boxes, pred_score, (255, 196, 0)).save(
-        output_dir / f"{stem}_{box_rep}_pred_box.png"
-    )
+    gt_img = base.copy().convert("RGB")
+    gt_draw = ImageDraw.Draw(gt_img)
+    for box in target_boxes:
+        _draw_xy_box(gt_draw, box, (0, 255, 0), gt_img.size)
+    gt_img.save(output_dir / f"{stem}_{box_rep}_gt_box.png")
+
+    pred_img = base.copy().convert("RGB")
+    pred_draw = ImageDraw.Draw(pred_img)
+    for box, score in zip(pred_boxes, pred_scores):
+        score_value = float(score)
+        if score_value < score_threshold:
+            continue
+        _draw_xy_box(pred_draw, box, (255, 196, 0), pred_img.size)
+        w, h = pred_img.size
+        cx, cy, bw, bh = [float(v) for v in box]
+        x0 = (cx - bw / 2.0) * w
+        y0 = (cy - bh / 2.0) * h
+        label = f"score {score_value:.3f}"
+        text_x = max(2.0, x0 + 2.0)
+        text_y = max(2.0, y0 - 14.0)
+        bbox = pred_draw.textbbox((text_x, text_y), label)
+        pred_draw.rectangle(bbox, fill=(0, 0, 0))
+        pred_draw.text((text_x, text_y), label, fill=(255, 196, 0))
+    pred_img.save(output_dir / f"{stem}_{box_rep}_pred_box.png")

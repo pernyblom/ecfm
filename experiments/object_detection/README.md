@@ -2,13 +2,15 @@ Object Detection
 
 This experiment trains a simple single-frame detector on FRED using rendered
 event representations and YOLO labels. The first version uses `xt_my`, `yt_mx`,
-and `cstr3` as inputs, predicts one `xt` heatmap, one `yt` heatmap, and one XY
-box for the anchor frame.
+and `cstr3` as inputs, predicts one `xt` heatmap, one `yt` heatmap, and a
+fixed set of object queries for the anchor frame.
 
 Current loss
-- box regression uses `L1 + CIoU`
-- objectness uses binary cross-entropy
+- box regression uses `L1 + CIoU` on matched queries
+- objectness uses binary cross-entropy over all queries
 - heatmap heads, when enabled, use binary cross-entropy
+- matching between predicted queries and GT boxes uses an internal exact matcher
+  suited for the small number of objects per FRED frame
 - if heatmaps are disabled, heatmap-only losses and metrics are omitted from
   the summaries instead of being reported as dummy zeros
 
@@ -35,8 +37,8 @@ What it does
 - Predicts:
   - an `xt_my` heatmap
   - a `yt_mx` heatmap
-  - an XY box in normalized YOLO format `(cx, cy, w, h)`
-  - an objectness score for the box
+  - `K` query boxes in normalized YOLO format `(cx, cy, w, h)`
+  - `K` objectness scores
 - Saves visualizations for GT and predicted heatmaps directly in `xt_my` and
   `yt_mx`, plus GT and predicted XY boxes over a selectable backdrop such as
   `cstr3`.
@@ -131,11 +133,10 @@ Extension points
 - Add more inputs via `data.representations`.
 - Add more plane-supervision targets via `data.heatmap_representations`.
 - Swap the encoder via `model.backbone.type`, for example `resnet18`.
-- Replace the single-box head with a multi-object head later if needed.
+- Increase or decrease `model.num_queries` based on scene complexity.
 
 Current scope
-- The current box head predicts one box per frame.
-- The dataset selects one supervision box with `data.select_box` and defaults to
-  `largest`.
-- This is a pragmatic first step for the current FRED setup while keeping the
-  implementation easy to extend.
+- The detector predicts a fixed number of query boxes per frame and learns which
+  ones correspond to real objects through matching and objectness supervision.
+- If a frame contains more GT boxes than `model.num_queries`, the largest
+  `num_queries` boxes are used for training.

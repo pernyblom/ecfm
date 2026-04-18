@@ -36,6 +36,8 @@ model:
   fusion_hidden_dim: 256
   heatmap_hidden_dim: 256
   box_hidden_dim: 256
+  num_queries: 8
+  query_hidden_dim: 256
 
 train:
   device: cuda
@@ -49,6 +51,9 @@ train:
   box_l1_weight: 1.0
   box_ciou_weight: 1.0
   objectness_weight: 1.0
+  match_score_weight: 1.0
+  match_l1_weight: 1.0
+  match_ciou_weight: 1.0
   log_every: 20
   checkpoint_every: 1
   checkpoint_dir: outputs/object_detection_ckpt
@@ -56,10 +61,12 @@ train:
   vis_every: 1
   vis_samples: 8
   vis_backdrop_rep: cstr3
+  vis_score_threshold: 0.5
   vis_output_dir: outputs/object_detection_vis
 
 eval:
   vis_backdrop_rep: cstr3
   max_visualizations: 256
+  vis_score_threshold: 0.5
   vis_output_dir: outputs/object_detection_eval_vis
   metrics_output: outputs/object_detection_eval/metrics.json

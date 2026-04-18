@@ -37,8 +37,8 @@ class BoxHead(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raw = self.net(x)
-        center = raw[:, :2].sigmoid()
-        size = F.softplus(raw[:, 2:]).clamp(min=1.0e-4, max=1.0)
+        center = raw[..., :2].sigmoid()
+        size = F.softplus(raw[..., 2:]).clamp(min=1.0e-4, max=1.0)
         return torch.cat([center, size], dim=-1)
 
 
@@ -66,10 +66,13 @@ class MultiRepObjectDetector(nn.Module):
         fusion_hidden_dim: int = 256,
         heatmap_hidden_dim: int = 256,
         box_hidden_dim: int = 256,
+        num_queries: int = 8,
+        query_hidden_dim: int = 256,
     ) -> None:
         super().__init__()
         self.representations = list(representations)
         self.heatmap_representations = list(heatmap_representations)
+        self.num_queries = int(num_queries)
         self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
         per_rep_dim = int(backbone_cfg.get("out_dim", 128))
         fused_dim = per_rep_dim * len(self.representations)
@@ -78,6 +81,11 @@ class MultiRepObjectDetector(nn.Module):
         self.heatmap_heads = nn.ModuleDict()
         for rep in self.heatmap_representations:
             self.heatmap_heads[rep] = HeatmapHead(heatmap_in_dim, image_size, heatmap_hidden_dim)
+        self.query_embed = nn.Embedding(self.num_queries, query_hidden_dim)
+        self.query_proj = nn.Sequential(
+            nn.Linear(fusion_hidden_dim + query_hidden_dim, fusion_hidden_dim),
+            nn.ReLU(inplace=True),
+        )
         self.box_head = BoxHead(fusion_hidden_dim, box_hidden_dim)
         self.objectness_head = ObjectnessHead(fusion_hidden_dim, min(box_hidden_dim, 128))
 
@@ -88,9 +96,14 @@ class MultiRepObjectDetector(nn.Module):
             rep: self.heatmap_heads[rep](torch.cat([fused, enc[rep].pooled], dim=-1))
             for rep in self.heatmap_representations
         }
+        batch_size = fused.shape[0]
+        query_embed = self.query_embed.weight.unsqueeze(0).expand(batch_size, -1, -1)
+        fused_queries = fused.unsqueeze(1).expand(-1, self.num_queries, -1)
+        query_features = self.query_proj(torch.cat([fused_queries, query_embed], dim=-1))
         return {
             "fused_features": fused,
-            "boxes": self.box_head(fused),
+            "query_features": query_features,
+            "boxes": self.box_head(query_features),
             "heatmaps": heatmaps,
-            "objectness_logits": self.objectness_head(fused),
+            "objectness_logits": self.objectness_head(query_features),
         }

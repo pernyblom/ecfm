@@ -153,8 +153,8 @@ def _draw_pred_overlay(
     img: Image.Image,
     *,
     rep: str,
-    pred_box: torch.Tensor,
-    pred_score: float,
+    pred_boxes: torch.Tensor,
+    pred_scores: torch.Tensor,
     score_threshold: float,
     gt_boxes: Iterable[Tuple[float, float, float, float]] | None = None,
     draw_gt: bool = False,
@@ -178,21 +178,24 @@ def _draw_pred_overlay(
             else:
                 draw.rectangle(_box_to_xyxy(torch.tensor([cx, cy, bw, bh]), (w, h)), outline=(0, 255, 0), width=2)
 
-    if pred_score >= score_threshold:
+    for pred_box, pred_score in zip(pred_boxes, pred_scores):
+        score_value = float(pred_score)
+        if score_value < score_threshold:
+            continue
         if rep == "xt_my":
             x0 = (float(pred_box[0]) - float(pred_box[2]) / 2.0) * w
             x1 = (float(pred_box[0]) + float(pred_box[2]) / 2.0) * w
             draw.rectangle([x0, 0, x1, h - 1], outline=(255, 196, 0), width=2)
-            _draw_label(draw, x0 + 2.0, 2.0, f"score {pred_score:.3f}", (255, 196, 0))
+            _draw_label(draw, x0 + 2.0, 2.0, f"score {score_value:.3f}", (255, 196, 0))
         elif rep == "yt_mx":
             y0 = (float(pred_box[1]) - float(pred_box[3]) / 2.0) * h
             y1 = (float(pred_box[1]) + float(pred_box[3]) / 2.0) * h
             draw.rectangle([0, y0, w - 1, y1], outline=(255, 196, 0), width=2)
-            _draw_label(draw, 2.0, y0 + 2.0, f"score {pred_score:.3f}", (255, 196, 0))
+            _draw_label(draw, 2.0, y0 + 2.0, f"score {score_value:.3f}", (255, 196, 0))
         else:
             x0, y0, x1, y1 = _box_to_xyxy(pred_box, (w, h))
             draw.rectangle([x0, y0, x1, y1], outline=(255, 196, 0), width=2)
-            _draw_label(draw, x0 + 2.0, y0 - 14.0, f"score {pred_score:.3f}", (255, 196, 0))
+            _draw_label(draw, x0 + 2.0, y0 - 14.0, f"score {score_value:.3f}", (255, 196, 0))
 
     return out
 
@@ -311,8 +314,8 @@ def main() -> None:
 
         with torch.no_grad():
             preds = model(model_inputs)
-            pred_box = preds["boxes"][0].detach().cpu()
-            pred_score = float(preds["objectness_logits"][0].sigmoid().cpu().item())
+            pred_boxes = preds["boxes"][0].detach().cpu()
+            pred_scores = preds["objectness_logits"][0].sigmoid().detach().cpu()
 
         label_path = labels_dir / f"{stem}.txt"
         gt_boxes = _read_yolo_boxes(label_path) if label_path.exists() else []
@@ -332,8 +335,8 @@ def main() -> None:
             vis = _draw_pred_overlay(
                 bg_img,
                 rep=rep,
-                pred_box=pred_box,
-                pred_score=pred_score,
+                pred_boxes=pred_boxes,
+                pred_scores=pred_scores,
                 score_threshold=float(args.score_threshold),
                 gt_boxes=gt_boxes,
                 draw_gt=bool(args.draw_ground_truth),

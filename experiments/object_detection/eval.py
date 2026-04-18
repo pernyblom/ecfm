@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.object_detection.losses import compute_losses
 from experiments.object_detection.metrics import (
+    build_detections,
     detection_scores,
     map_metrics,
     summarize_metrics,
@@ -68,10 +70,8 @@ def main() -> None:
 
     rows: List[Dict[str, float]] = []
     row_weights: List[int] = []
-    pred_boxes_all = []
-    pred_scores_all = []
-    target_boxes_all = []
-    gt_present_all = []
+    detections_all: List[dict] = []
+    gt_by_frame_all: Dict[str, torch.Tensor] = {}
     eval_cfg = cfg.get("eval", {})
     vis_dir = Path(eval_cfg.get("vis_output_dir", "outputs/object_detection_eval_vis"))
     max_vis = int(eval_cfg.get("max_visualizations", 0))
@@ -81,30 +81,44 @@ def main() -> None:
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             inputs = {k: v.to(device) for k, v in batch.inputs.items()}
-            target_boxes = batch.box_xywh.to(device)
             target_heatmaps = {k: v.to(device) for k, v in batch.heatmaps.items()}
-            gt_present = torch.tensor(
-                [idx >= 0 for idx in batch.selected_box_index],
-                device=device,
-                dtype=torch.bool,
-            )
             preds = model(inputs)
+            _, _, aux = compute_losses(
+                preds,
+                batch.gt_boxes_xywh,
+                target_heatmaps,
+                heatmap_weight=float(cfg["train"].get("heatmap_weight", 1.0)),
+                box_weight=float(cfg["train"].get("box_weight", 1.0)),
+                objectness_weight=float(cfg["train"].get("objectness_weight", 1.0)),
+                box_l1_weight=float(cfg["train"].get("box_l1_weight", 1.0)),
+                box_ciou_weight=float(cfg["train"].get("box_ciou_weight", 1.0)),
+                match_score_weight=float(cfg["train"].get("match_score_weight", 1.0)),
+                match_l1_weight=float(cfg["train"].get("match_l1_weight", 1.0)),
+                match_ciou_weight=float(cfg["train"].get("match_ciou_weight", 1.0)),
+            )
+            pred_scores = detection_scores(preds)
             rows.append(
                 summarize_metrics(
                     preds,
-                    target_boxes,
+                    batch.gt_boxes_xywh,
                     target_heatmaps,
-                    gt_present,
+                    aux["target_objectness"],
+                    aux["frame_matches"],
+                    batch.frame_keys,
                     tuple(cfg["data"]["frame_size"]),
                 )
             )
-            row_weights.append(int(target_boxes.shape[0]))
-            pred_boxes_all.append(preds["boxes"].detach().cpu())
-            pred_scores_all.append(detection_scores(preds).detach().cpu())
-            target_boxes_all.append(target_boxes.detach().cpu())
-            gt_present_all.append(gt_present.detach().cpu())
+            row_weights.append(len(batch.frame_keys))
+            dets, gt_map = build_detections(
+                preds["boxes"].detach().cpu(),
+                pred_scores.detach().cpu(),
+                batch.gt_boxes_xywh,
+                batch.frame_keys,
+            )
+            detections_all.extend(dets)
+            gt_by_frame_all.update({k: v.detach().cpu() for k, v in gt_map.items()})
 
-            for i in range(batch.box_xywh.shape[0]):
+            for i in range(len(batch.frame_keys)):
                 vis_idx = batch_idx * loader.batch_size + i
                 if vis_idx >= max_vis:
                     break
@@ -114,21 +128,20 @@ def main() -> None:
                     stem=stem,
                     inputs={rep: batch.inputs[rep][i] for rep in batch.inputs},
                     pred_boxes=preds["boxes"][i].cpu(),
-                    pred_score=float(preds["objectness_logits"][i].sigmoid().cpu().item()),
-                    target_box=batch.box_xywh[i].cpu(),
+                    pred_scores=preds["objectness_logits"][i].sigmoid().cpu(),
+                    target_boxes=batch.gt_boxes_xywh[i].cpu(),
                     pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
                     target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},
                     xy_backdrop_rep=backdrop_rep,
+                    score_threshold=float(eval_cfg.get("vis_score_threshold", 0.5)),
                 )
 
     summary = _weighted_mean_dict(rows, row_weights)
-    if pred_boxes_all:
+    if detections_all:
         summary.update(
             map_metrics(
-                pred_boxes=torch.cat(pred_boxes_all, dim=0),
-                pred_scores=torch.cat(pred_scores_all, dim=0),
-                target_boxes=torch.cat(target_boxes_all, dim=0),
-                gt_present=torch.cat(gt_present_all, dim=0),
+                detections=detections_all,
+                gt_by_frame=gt_by_frame_all,
                 frame_size=tuple(cfg["data"]["frame_size"]),
             )
         )
