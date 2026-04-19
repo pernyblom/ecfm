@@ -39,7 +39,7 @@ model:
 
 train:
   device: cuda
-  epochs: 20
+  epochs: 40
   batch_size: 32
   num_workers: 4
   persistent_workers: true
