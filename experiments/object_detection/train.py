@@ -83,6 +83,7 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),
         window_tolerance_ms=float(data_cfg.get("window_tolerance_ms", 2.0)),
         require_boxes=bool(data_cfg.get("require_boxes", True)),
+        exclude_multiple_objects=bool(data_cfg.get("exclude_multiple_objects", False)),
         max_samples=max_samples,
         seed=int(data_cfg.get("seed", 123)),
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,

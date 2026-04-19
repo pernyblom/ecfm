@@ -63,6 +63,8 @@ Negative frames
 - Set `data.require_boxes: false` to keep empty frames.
 - This is useful for learning the objectness head against true negatives.
 - Frames with multiple labeled objects are kept by default.
+- Set `data.exclude_multiple_objects: true` if you want to restrict training or
+  evaluation to empty frames plus single-object frames for a simpler head.
 
 Heatmap target geometry
 - `xt_my` is an XT image where X is horizontal and time is vertical.

@@ -17,6 +17,7 @@ data:
   render_manifest_name: render_manifest.json
   window_tolerance_ms: 2.0
   require_boxes: false
+  exclude_multiple_objects: false
   # max_samples_train: 2000
   max_samples_train:
   # max_samples_val: 400
@@ -40,7 +41,7 @@ model:
 train:
   device: cuda
   epochs: 40
-  batch_size: 32
+  batch_size: 64
   num_workers: 4
   persistent_workers: true
   pin_memory: true
