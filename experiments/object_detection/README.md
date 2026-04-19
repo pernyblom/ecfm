@@ -5,6 +5,15 @@ using rendered event representations and YOLO labels. The default setup uses
 `xt_my`, `yt_mx`, and `cstr3` as inputs, predicts optional `xt` and `yt`
 heatmaps, and predicts a fixed set of object queries for the anchor frame.
 
+DETR-lite head
+- The fused representation is broadcast to a fixed set of learned object
+  queries.
+- Each query gets its own learned embedding and is passed through a small MLP
+  head that predicts one box and one objectness logit.
+- Training uses matching between the `K` predicted queries and the GT boxes, so
+  the model can handle `0..K` objects per frame without anchors or NMS in the
+  training loss.
+
 Current loss
 - box regression uses `L1 + CIoU` on matched queries
 - objectness uses binary cross-entropy over all queries
@@ -51,7 +60,6 @@ Heatmaps are optional
   omitted.
 
 Negative frames
-Negative frames are still supported
 - Set `data.require_boxes: false` to keep empty frames.
 - This is useful for learning the objectness head against true negatives.
 - Frames with multiple labeled objects are kept by default.
