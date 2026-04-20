@@ -1,12 +1,13 @@
 import argparse
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 
-from ecfm.utils.evt3 import decode_evt3_raw, read_raw_header
+from ecfm.utils.evt3 import decode_evt3_raw_to_arrayfile, read_raw_header
 from ecfm.data.tokenizer import Region, build_patch
 from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 
@@ -101,6 +102,87 @@ def _normalize_path(value) -> Optional[str]:
 
 def _representation_list(raw_value: str) -> list[str]:
     return [r.strip() for r in raw_value.replace(",", ";").split(";") if r.strip()]
+
+
+def _canonical_rep_list(reps: list[str]) -> list[str]:
+    return sorted(dict.fromkeys(reps))
+
+
+def _load_existing_manifest(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _merge_manifest(existing: Optional[dict], current: dict) -> dict:
+    if existing is None:
+        current["render_params"]["representation"] = _canonical_rep_list(
+            current["render_params"]["representation"]
+        )
+        current["render_params"]["crop_representations"] = _canonical_rep_list(
+            current["render_params"]["crop_representations"]
+        )
+        return current
+
+    merged = dict(existing)
+    merged["raw"] = current["raw"]
+    merged["yolo_dir"] = current["yolo_dir"]
+    merged["output_dir"] = current["output_dir"]
+    merged["rgb_dir"] = current["rgb_dir"]
+    merged["sensor_geometry"] = current["sensor_geometry"]
+
+    old_params = dict(existing.get("render_params") or {})
+    new_params = dict(current["render_params"])
+    old_reps = _representation_list(";".join(str(v) for v in old_params.get("representation", [])))
+    old_crop = _representation_list(";".join(str(v) for v in old_params.get("crop_representations", [])))
+    new_reps = list(new_params.get("representation", []))
+    new_crop = list(new_params.get("crop_representations", []))
+    old_params.pop("representation", None)
+    old_params.pop("crop_representations", None)
+    old_params.pop("max_label_files", None)
+    new_params.pop("representation", None)
+    new_params.pop("crop_representations", None)
+    new_params.pop("max_label_files", None)
+    if old_params != new_params:
+        raise ValueError(
+            "Existing render_manifest.json was created with different render parameters. "
+            "Use a different output directory or remove the old manifest before merging."
+        )
+    merged["render_params"] = dict(existing.get("render_params") or current["render_params"])
+    merged["render_params"]["representation"] = _canonical_rep_list(old_reps + new_reps)
+    merged["render_params"]["crop_representations"] = _canonical_rep_list(old_crop + new_crop)
+    merged["render_params"]["max_label_files"] = current["render_params"]["max_label_files"]
+
+    files_by_stem = {
+        entry.get("label_stem"): dict(entry)
+        for entry in existing.get("files", [])
+        if entry.get("label_stem") is not None
+    }
+    for entry in current.get("files", []):
+        stem = entry.get("label_stem")
+        if stem is None:
+            continue
+        if stem not in files_by_stem:
+            files_by_stem[stem] = entry
+            continue
+        merged_entry = dict(files_by_stem[stem])
+        merged_entry.update({k: v for k, v in entry.items() if k != "representations"})
+        merged_reps = dict(merged_entry.get("representations") or {})
+        merged_reps.update(entry.get("representations") or {})
+        merged_entry["representations"] = merged_reps
+        files_by_stem[stem] = merged_entry
+    merged["files"] = sorted(
+        files_by_stem.values(),
+        key=lambda item: (
+            item.get("label_time_raw") is None,
+            item.get("label_time_raw") or 0,
+            item.get("label_stem") or "",
+        ),
+    )
+    return merged
 
 
 def _read_rgb_image(path: Path) -> np.ndarray:
@@ -617,7 +699,40 @@ def _render_histogram_grid(
 
 
 def render_yolo_frames(args: argparse.Namespace) -> None:
-    events, counters, meta, _ = decode_evt3_raw(args.raw, endian=args.endian)
+    representations = _representation_list(args.representation)
+    crop_reps = set(_representation_list(args.crop_representations))
+    event_reps = [rep for rep in representations if rep not in {"rgb", "grayscale", "gray"}]
+
+    ts_shift_us = args.ts_shift_us
+    if ts_shift_us is None:
+        ts_shift_us = _read_ts_shift_us(args.raw)
+
+    tmp_events_path = None
+    counters = {}
+    if event_reps:
+        with tempfile.NamedTemporaryFile(prefix="evt3_render_", suffix=".f32", delete=False) as tmp:
+            tmp_events_path = Path(tmp.name)
+        print(f"Streaming decode {args.raw} -> {tmp_events_path}")
+        num_events, counters, meta, _ = decode_evt3_raw_to_arrayfile(
+            args.raw,
+            tmp_events_path,
+            endian=args.endian,
+            chunk_bytes=int(float(args.decode_chunk_mb) * 1024 * 1024),
+            event_unit=float(args.event_unit),
+            ts_shift_us=ts_shift_us,
+        )
+        if num_events > 0:
+            events = np.memmap(tmp_events_path, dtype=np.float32, mode="r").reshape(num_events, 4)
+            t = events[:, 2]
+        else:
+            events = np.zeros((0, 4), dtype=np.float32)
+            t = np.zeros((0,), dtype=np.float32)
+    else:
+        _, _, meta = read_raw_header(args.raw)
+        events = np.zeros((0, 4), dtype=np.float32)
+        t = np.zeros((0,), dtype=np.float32)
+        counters = {}
+
     width, height = _parse_geometry(meta)
     if args.width is not None:
         width = args.width
@@ -625,26 +740,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         height = args.height
     if width is None or height is None:
         raise ValueError("Could not determine geometry; pass --width/--height.")
-
-    t = events[:, 2].astype(np.float64) * float(args.event_unit)
-    ts_shift_us = args.ts_shift_us
-    if ts_shift_us is None:
-        ts_shift_us = _read_ts_shift_us(args.raw)
-    if ts_shift_us is not None:
-        shift = float(ts_shift_us) * float(args.event_unit)
-        t = t - shift
-        keep = t >= 0
-        if np.any(keep):
-            events = events[keep]
-            t = t[keep]
-        else:
-            events = events[:0]
-            t = t[:0]
-        print(f"Applied ts_shift_us={ts_shift_us} (dropped events before shift)")
-    if np.any(np.diff(t) < 0):
-        order = np.argsort(t, kind="stable")
-        events = events[order]
-        t = t[order]
+    if ts_shift_us is not None and event_reps:
+        print(f"Applied ts_shift_us={ts_shift_us} during streamed decode")
 
     label_files = list(args.yolo_dir.glob("*.txt"))
     label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
@@ -662,8 +759,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 rgb_dir = candidate
     rgb_index = _build_rgb_index(rgb_dir, label_unit=args.label_unit) if rgb_dir else []
 
-    representations = _representation_list(args.representation)
-    crop_reps = set(_representation_list(args.crop_representations))
+    manifest_path = args.output_dir / "render_manifest.json"
+    existing_manifest = _load_existing_manifest(manifest_path)
     manifest = {
         "raw": str(args.raw),
         "yolo_dir": str(args.yolo_dir),
@@ -728,9 +825,6 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         idx1 = int(np.searchsorted(t, t1, side="left"))
         ev = events[idx0:idx1]
         ev_time = ev
-        if ev.size:
-            ev_time = ev.copy()
-            ev_time[:, 2] = t[idx0:idx1]
 
         boxes = _read_yolo_boxes(label_path)
         if args.only_with_rects and not boxes:
@@ -765,9 +859,21 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             "num_events": int(ev.shape[0]),
             "representations": {},
         }
+        existing_entry = None
+        if existing_manifest is not None:
+            for candidate in existing_manifest.get("files", []):
+                if candidate.get("label_stem") == label_path.stem:
+                    existing_entry = candidate
+                    break
         for rep in representations:
             if rep not in valid:
                 raise ValueError(f"Unknown representation: {rep}")
+            existing_rep = (existing_entry or {}).get("representations", {}).get(rep)
+            if existing_rep and not bool(getattr(args, "overwrite_existing", False)):
+                existing_path = Path(existing_rep.get("path", ""))
+                if existing_path.exists():
+                    file_entry["representations"][rep] = existing_rep
+                    continue
             if rep in {"rgb", "grayscale", "gray"}:
                 rgb_path = _find_rgb_frame(rgb_index, label_time)
                 if rgb_path is None:
@@ -852,9 +958,15 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         for k, v in counters.items():
             if v:
                 print(f"  {k}: {v}")
-    manifest_path = args.output_dir / "render_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    merged_manifest = _merge_manifest(existing_manifest, manifest)
+    manifest_path.write_text(json.dumps(merged_manifest, indent=2), encoding="utf-8")
     print(f"Wrote {manifest_path}")
+
+    if tmp_events_path is not None:
+        try:
+            tmp_events_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -1052,6 +1164,17 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional cap on the number of label files processed from the folder.",
+    )
+    parser.add_argument(
+        "--decode-chunk-mb",
+        type=float,
+        default=64.0,
+        help="Chunk size in MB for streamed EVT3 decode (default: 64).",
+    )
+    parser.add_argument(
+        "--overwrite-existing",
+        action="store_true",
+        help="Re-render representations even if they already exist in the manifest.",
     )
     args = parser.parse_args()
     render_yolo_frames(args)

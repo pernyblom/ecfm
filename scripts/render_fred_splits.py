@@ -21,6 +21,18 @@ def _read_split_file(path: Path) -> list[str]:
     return items
 
 
+def _filter_folders(folders: list[str], start_folder: str | None) -> list[str]:
+    if not start_folder:
+        return folders
+    start_folder = str(start_folder).strip().strip("/")
+    if not start_folder:
+        return folders
+    if start_folder.isdigit():
+        start_num = int(start_folder)
+        return [folder for folder in folders if folder.isdigit() and int(folder) >= start_num]
+    return [folder for folder in folders if folder >= start_folder]
+
+
 def _process_folder(folder: str, args_dict: dict) -> str:
     base = Path(args_dict["fred_root"]) / folder
     raw_path = base / "Event" / "events.raw"
@@ -154,6 +166,12 @@ def main() -> None:
     )
     parser.add_argument("--transform-eps", type=float, default=1e-6)
     parser.add_argument(
+        "--decode-chunk-mb",
+        type=float,
+        default=64.0,
+        help="Chunk size in MB for streamed EVT3 decode inside each folder render.",
+    )
+    parser.add_argument(
         "--num-workers",
         type=int,
         default=1,
@@ -165,9 +183,20 @@ def main() -> None:
         default=None,
         help="Optional cap on the number of labels processed per folder.",
     )
+    parser.add_argument(
+        "--start-folder",
+        type=str,
+        default=None,
+        help="Optional first folder ID to process from the split file.",
+    )
+    parser.add_argument(
+        "--overwrite-existing",
+        action="store_true",
+        help="Re-render representations even if they already exist in the per-folder manifest.",
+    )
     args = parser.parse_args()
 
-    folders = _read_split_file(args.split_file)
+    folders = _filter_folders(_read_split_file(args.split_file), args.start_folder)
     args_dict = vars(args).copy()
     if args.num_workers <= 1:
         for folder in folders:
