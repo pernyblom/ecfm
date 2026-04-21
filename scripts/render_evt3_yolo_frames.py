@@ -708,188 +708,204 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         ts_shift_us = _read_ts_shift_us(args.raw)
 
     tmp_events_path = None
+    events = None
+    t = None
     counters = {}
-    if event_reps:
-        with tempfile.NamedTemporaryFile(prefix="evt3_render_", suffix=".f32", delete=False) as tmp:
-            tmp_events_path = Path(tmp.name)
-        print(f"Streaming decode {args.raw} -> {tmp_events_path}")
-        num_events, counters, meta, _ = decode_evt3_raw_to_arrayfile(
-            args.raw,
-            tmp_events_path,
-            endian=args.endian,
-            chunk_bytes=int(float(args.decode_chunk_mb) * 1024 * 1024),
-            event_unit=float(args.event_unit),
-            ts_shift_us=ts_shift_us,
-        )
-        if num_events > 0:
-            events = np.memmap(tmp_events_path, dtype=np.float32, mode="r").reshape(num_events, 4)
-            t = events[:, 2]
+    try:
+        if event_reps:
+            with tempfile.NamedTemporaryFile(prefix="evt3_render_", suffix=".f32", delete=False) as tmp:
+                tmp_events_path = Path(tmp.name)
+            print(f"Streaming decode {args.raw} -> {tmp_events_path}")
+            num_events, counters, meta, _ = decode_evt3_raw_to_arrayfile(
+                args.raw,
+                tmp_events_path,
+                endian=args.endian,
+                chunk_bytes=int(float(args.decode_chunk_mb) * 1024 * 1024),
+                event_unit=float(args.event_unit),
+                ts_shift_us=ts_shift_us,
+            )
+            if num_events > 0:
+                events = np.memmap(tmp_events_path, dtype=np.float32, mode="r").reshape(num_events, 4)
+                t = events[:, 2]
+            else:
+                events = np.zeros((0, 4), dtype=np.float32)
+                t = np.zeros((0,), dtype=np.float32)
         else:
+            _, _, meta = read_raw_header(args.raw)
             events = np.zeros((0, 4), dtype=np.float32)
             t = np.zeros((0,), dtype=np.float32)
-    else:
-        _, _, meta = read_raw_header(args.raw)
-        events = np.zeros((0, 4), dtype=np.float32)
-        t = np.zeros((0,), dtype=np.float32)
-        counters = {}
+            counters = {}
 
-    width, height = _parse_geometry(meta)
-    if args.width is not None:
-        width = args.width
-    if args.height is not None:
-        height = args.height
-    if width is None or height is None:
-        raise ValueError("Could not determine geometry; pass --width/--height.")
-    if ts_shift_us is not None and event_reps:
-        print(f"Applied ts_shift_us={ts_shift_us} during streamed decode")
+        width, height = _parse_geometry(meta)
+        if args.width is not None:
+            width = args.width
+        if args.height is not None:
+            height = args.height
+        if width is None or height is None:
+            raise ValueError("Could not determine geometry; pass --width/--height.")
+        if ts_shift_us is not None and event_reps:
+            print(f"Applied ts_shift_us={ts_shift_us} during streamed decode")
 
-    label_files = list(args.yolo_dir.glob("*.txt"))
-    label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
-    if getattr(args, "max_label_files", None) is not None:
-        label_files = label_files[: max(0, int(args.max_label_files))]
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    rgb_dir = args.rgb_dir
-    if rgb_dir is None:
-        candidate = args.yolo_dir.parent / "RGB"
-        if candidate.exists():
-            rgb_dir = candidate
-        else:
-            candidate = args.yolo_dir.parent / "PADDED_RGB"
+        label_files = list(args.yolo_dir.glob("*.txt"))
+        label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
+        if getattr(args, "max_label_files", None) is not None:
+            label_files = label_files[: max(0, int(args.max_label_files))]
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        rgb_dir = args.rgb_dir
+        if rgb_dir is None:
+            candidate = args.yolo_dir.parent / "RGB"
             if candidate.exists():
                 rgb_dir = candidate
-    rgb_index = _build_rgb_index(rgb_dir, label_unit=args.label_unit) if rgb_dir else []
+            else:
+                candidate = args.yolo_dir.parent / "PADDED_RGB"
+                if candidate.exists():
+                    rgb_dir = candidate
+        rgb_index = _build_rgb_index(rgb_dir, label_unit=args.label_unit) if rgb_dir else []
 
-    manifest_path = args.output_dir / "render_manifest.json"
-    existing_manifest = _load_existing_manifest(manifest_path)
-    manifest = {
-        "raw": str(args.raw),
-        "yolo_dir": str(args.yolo_dir),
-        "output_dir": str(args.output_dir),
-        "rgb_dir": _normalize_path(rgb_dir),
-        "render_params": {
-            "window": float(args.window),
-            "label_unit": float(args.label_unit),
-            "event_unit": float(args.event_unit),
-            "ts_shift_us": None if ts_shift_us is None else float(ts_shift_us),
-            "window_mode": getattr(args, "window_mode", None) or ("center" if args.center else "trailing"),
-            "endian": args.endian,
-            "width": None if args.width is None else int(args.width),
-            "height": None if args.height is None else int(args.height),
-            "pixel_size": int(args.pixel_size),
-            "representation": representations,
-            "crop_representations": sorted(crop_reps),
-            "temporal_bins": int(args.temporal_bins),
-            "spatial_bins": int(args.spatial_bins),
-            "output_size": None if args.output_size is None else [int(v) for v in args.output_size],
-            "grid_x": int(args.grid_x),
-            "grid_y": int(args.grid_y),
-            "draw_rectangles": bool(args.draw_rectangles),
-            "rect_color": [int(v) for v in args.rect_color],
-            "rect_thickness": int(args.rect_thickness),
-            "only_with_rects": bool(args.only_with_rects),
-            "transform": args.transform,
-            "transform_scale": args.transform_scale,
-            "transform_eps": float(args.transform_eps),
-            "max_label_files": None
-            if getattr(args, "max_label_files", None) is None
-            else int(args.max_label_files),
-        },
-        "sensor_geometry": {"width": int(width), "height": int(height)},
-        "files": [],
-    }
-
-    for label_path in label_files:
-        label_time_raw = _parse_label_time(label_path)
-        if label_time_raw is None:
-            continue
-        label_time = float(label_time_raw) * float(args.label_unit)
-        window = float(args.window) * float(args.label_unit)
-        window_mode = getattr(args, "window_mode", None)
-        if window_mode is None:
-            window_mode = "center" if args.center else "trailing"
-        if window_mode == "center":
-            t0 = label_time - window / 2.0
-            t1 = label_time + window / 2.0
-        elif window_mode == "leading":
-            t0 = label_time
-            t1 = label_time + window
-        elif window_mode == "trailing":
-            t0 = label_time - window
-            t1 = label_time
-        else:
-            raise ValueError(f"Unknown window_mode: {window_mode}")
-        t0 = max(0.0, t0)
-        t1 = max(t0, t1)
-
-        idx0 = int(np.searchsorted(t, t0, side="left"))
-        idx1 = int(np.searchsorted(t, t1, side="left"))
-        ev = events[idx0:idx1]
-        ev_time = ev
-
-        boxes = _read_yolo_boxes(label_path)
-        if args.only_with_rects and not boxes:
-            continue
-        valid = {
-            "events",
-            "xy",
-            "xt",
-            "yt",
-            "xy_p45",
-            "xy_m45",
-            "yt_p45",
-            "yt_m45",
-            "cstr2",
-            "cstr3",
-            "rgb",
-            "grayscale",
-            "gray",
-            "xt_my",
-            "yt_mx",
+        manifest_path = args.output_dir / "render_manifest.json"
+        existing_manifest = _load_existing_manifest(manifest_path)
+        manifest = {
+            "raw": str(args.raw),
+            "yolo_dir": str(args.yolo_dir),
+            "output_dir": str(args.output_dir),
+            "rgb_dir": _normalize_path(rgb_dir),
+            "render_params": {
+                "window": float(args.window),
+                "label_unit": float(args.label_unit),
+                "event_unit": float(args.event_unit),
+                "ts_shift_us": None if ts_shift_us is None else float(ts_shift_us),
+                "window_mode": getattr(args, "window_mode", None) or ("center" if args.center else "trailing"),
+                "endian": args.endian,
+                "width": None if args.width is None else int(args.width),
+                "height": None if args.height is None else int(args.height),
+                "pixel_size": int(args.pixel_size),
+                "representation": representations,
+                "crop_representations": sorted(crop_reps),
+                "temporal_bins": int(args.temporal_bins),
+                "spatial_bins": int(args.spatial_bins),
+                "output_size": None if args.output_size is None else [int(v) for v in args.output_size],
+                "grid_x": int(args.grid_x),
+                "grid_y": int(args.grid_y),
+                "draw_rectangles": bool(args.draw_rectangles),
+                "rect_color": [int(v) for v in args.rect_color],
+                "rect_thickness": int(args.rect_thickness),
+                "only_with_rects": bool(args.only_with_rects),
+                "transform": args.transform,
+                "transform_scale": args.transform_scale,
+                "transform_eps": float(args.transform_eps),
+                "max_label_files": None
+                if getattr(args, "max_label_files", None) is None
+                else int(args.max_label_files),
+            },
+            "sensor_geometry": {"width": int(width), "height": int(height)},
+            "files": [],
         }
-        file_entry = {
-            "label_path": str(label_path),
-            "label_stem": label_path.stem,
-            "label_time_raw": int(label_time_raw),
-            "label_time_render_units": float(label_time),
-            "window_start_render_units": float(t0),
-            "window_end_render_units": float(t1),
-            "window_duration_render_units": float(t1 - t0),
-            "window_mode": manifest["render_params"]["window_mode"],
-            "num_boxes": int(len(boxes)),
-            "num_events": int(ev.shape[0]),
-            "representations": {},
-        }
-        existing_entry = None
-        if existing_manifest is not None:
-            for candidate in existing_manifest.get("files", []):
-                if candidate.get("label_stem") == label_path.stem:
-                    existing_entry = candidate
-                    break
-        for rep in representations:
-            if rep not in valid:
-                raise ValueError(f"Unknown representation: {rep}")
-            existing_rep = (existing_entry or {}).get("representations", {}).get(rep)
-            if existing_rep and not bool(getattr(args, "overwrite_existing", False)):
-                existing_path = Path(existing_rep.get("path", ""))
-                if existing_path.exists():
-                    file_entry["representations"][rep] = existing_rep
-                    continue
-            if rep in {"rgb", "grayscale", "gray"}:
-                rgb_path = _find_rgb_frame(rgb_index, label_time)
-                if rgb_path is None:
-                    print(f"Warning: no RGB frame found for {label_path.name}")
-                    continue
-                img = _read_rgb_image(rgb_path)
-                if rep in {"grayscale", "gray"}:
-                    img = _to_grayscale(img)
-            elif rep == "events":
-                if args.grid_x == 1 and args.grid_y == 1:
-                    img = events_to_image(
-                        ev,
-                        width,
-                        height,
-                        pixel_size=args.pixel_size,
-                    )
+
+        for label_path in label_files:
+            label_time_raw = _parse_label_time(label_path)
+            if label_time_raw is None:
+                continue
+            label_time = float(label_time_raw) * float(args.label_unit)
+            window = float(args.window) * float(args.label_unit)
+            window_mode = getattr(args, "window_mode", None)
+            if window_mode is None:
+                window_mode = "center" if args.center else "trailing"
+            if window_mode == "center":
+                t0 = label_time - window / 2.0
+                t1 = label_time + window / 2.0
+            elif window_mode == "leading":
+                t0 = label_time
+                t1 = label_time + window
+            elif window_mode == "trailing":
+                t0 = label_time - window
+                t1 = label_time
+            else:
+                raise ValueError(f"Unknown window_mode: {window_mode}")
+            t0 = max(0.0, t0)
+            t1 = max(t0, t1)
+
+            idx0 = int(np.searchsorted(t, t0, side="left"))
+            idx1 = int(np.searchsorted(t, t1, side="left"))
+            ev = events[idx0:idx1]
+            ev_time = ev
+
+            boxes = _read_yolo_boxes(label_path)
+            if args.only_with_rects and not boxes:
+                continue
+            valid = {
+                "events",
+                "xy",
+                "xt",
+                "yt",
+                "xy_p45",
+                "xy_m45",
+                "yt_p45",
+                "yt_m45",
+                "cstr2",
+                "cstr3",
+                "rgb",
+                "grayscale",
+                "gray",
+                "xt_my",
+                "yt_mx",
+            }
+            file_entry = {
+                "label_path": str(label_path),
+                "label_stem": label_path.stem,
+                "label_time_raw": int(label_time_raw),
+                "label_time_render_units": float(label_time),
+                "window_start_render_units": float(t0),
+                "window_end_render_units": float(t1),
+                "window_duration_render_units": float(t1 - t0),
+                "window_mode": manifest["render_params"]["window_mode"],
+                "num_boxes": int(len(boxes)),
+                "num_events": int(ev.shape[0]),
+                "representations": {},
+            }
+            existing_entry = None
+            if existing_manifest is not None:
+                for candidate in existing_manifest.get("files", []):
+                    if candidate.get("label_stem") == label_path.stem:
+                        existing_entry = candidate
+                        break
+            for rep in representations:
+                if rep not in valid:
+                    raise ValueError(f"Unknown representation: {rep}")
+                existing_rep = (existing_entry or {}).get("representations", {}).get(rep)
+                if existing_rep and not bool(getattr(args, "overwrite_existing", False)):
+                    existing_path = Path(existing_rep.get("path", ""))
+                    if existing_path.exists():
+                        file_entry["representations"][rep] = existing_rep
+                        continue
+                if rep in {"rgb", "grayscale", "gray"}:
+                    rgb_path = _find_rgb_frame(rgb_index, label_time)
+                    if rgb_path is None:
+                        print(f"Warning: no RGB frame found for {label_path.name}")
+                        continue
+                    img = _read_rgb_image(rgb_path)
+                    if rep in {"grayscale", "gray"}:
+                        img = _to_grayscale(img)
+                elif rep == "events":
+                    if args.grid_x == 1 and args.grid_y == 1:
+                        img = events_to_image(
+                            ev,
+                            width,
+                            height,
+                            pixel_size=args.pixel_size,
+                        )
+                    else:
+                        img = _render_histogram_grid(
+                            ev_time,
+                            width=width,
+                            height=height,
+                            t0=t0,
+                            dt=t1 - t0,
+                            plane="xy",
+                            time_bins=1,
+                            patch_size=args.spatial_bins,
+                            grid_x=args.grid_x,
+                            grid_y=args.grid_y,
+                        )
                 else:
                     img = _render_histogram_grid(
                         ev_time,
@@ -897,76 +913,68 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                         height=height,
                         t0=t0,
                         dt=t1 - t0,
-                        plane="xy",
-                        time_bins=1,
+                        plane=rep,
+                        time_bins=args.temporal_bins,
                         patch_size=args.spatial_bins,
                         grid_x=args.grid_x,
                         grid_y=args.grid_y,
                     )
-            else:
-                img = _render_histogram_grid(
-                    ev_time,
-                    width=width,
-                    height=height,
-                    t0=t0,
-                    dt=t1 - t0,
-                    plane=rep,
-                    time_bins=args.temporal_bins,
-                    patch_size=args.spatial_bins,
-                    grid_x=args.grid_x,
-                    grid_y=args.grid_y,
-                )
-            time_horizontal = rep.startswith("yt")
-            img = _apply_transform(
-                img,
-                rep=rep,
-                transform=args.transform,
-                time_horizontal=time_horizontal,
-                scale_mode=args.transform_scale,
-                eps=args.transform_eps,
-            )
-            if args.output_size is not None:
-                img = _resize_to(img, (args.output_size[0], args.output_size[1]))
-            scaled_boxes = _project_boxes(
-                boxes,
-                dst_w=img.shape[1],
-                dst_h=img.shape[0],
-            )
-            if rep in crop_reps:
-                img, scaled_boxes = _crop_to_boxes(img, scaled_boxes)
-            if args.draw_rectangles and scaled_boxes:
-                draw_rectangles(
+                time_horizontal = rep.startswith("yt")
+                img = _apply_transform(
                     img,
-                    scaled_boxes,
-                    color=tuple(args.rect_color),
-                    thickness=args.rect_thickness,
+                    rep=rep,
+                    transform=args.transform,
+                    time_horizontal=time_horizontal,
+                    scale_mode=args.transform_scale,
+                    eps=args.transform_eps,
                 )
-            out_path = args.output_dir / f"{label_path.stem}_{rep}.png"
-            final_path = write_image(out_path, img)
-            file_entry["representations"][rep] = {
-                "path": str(final_path),
-                "image_size": [int(img.shape[1]), int(img.shape[0])],
-                "time_horizontal": bool(time_horizontal),
-                "cropped_to_boxes": bool(rep in crop_reps),
-            }
-            print(f"Wrote {final_path}")
-        if file_entry["representations"]:
-            manifest["files"].append(file_entry)
+                if args.output_size is not None:
+                    img = _resize_to(img, (args.output_size[0], args.output_size[1]))
+                scaled_boxes = _project_boxes(
+                    boxes,
+                    dst_w=img.shape[1],
+                    dst_h=img.shape[0],
+                )
+                if rep in crop_reps:
+                    img, scaled_boxes = _crop_to_boxes(img, scaled_boxes)
+                if args.draw_rectangles and scaled_boxes:
+                    draw_rectangles(
+                        img,
+                        scaled_boxes,
+                        color=tuple(args.rect_color),
+                        thickness=args.rect_thickness,
+                    )
+                out_path = args.output_dir / f"{label_path.stem}_{rep}.png"
+                final_path = write_image(out_path, img)
+                file_entry["representations"][rep] = {
+                    "path": str(final_path),
+                    "image_size": [int(img.shape[1]), int(img.shape[0])],
+                    "time_horizontal": bool(time_horizontal),
+                    "cropped_to_boxes": bool(rep in crop_reps),
+                }
+            if file_entry["representations"]:
+                manifest["files"].append(file_entry)
 
-    if any(counters.values()):
-        print("Ignored word types:")
-        for k, v in counters.items():
-            if v:
-                print(f"  {k}: {v}")
-    merged_manifest = _merge_manifest(existing_manifest, manifest)
-    manifest_path.write_text(json.dumps(merged_manifest, indent=2), encoding="utf-8")
-    print(f"Wrote {manifest_path}")
-
-    if tmp_events_path is not None:
-        try:
-            tmp_events_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if any(counters.values()):
+            print("Ignored word types:")
+            for k, v in counters.items():
+                if v:
+                    print(f"  {k}: {v}")
+        merged_manifest = _merge_manifest(existing_manifest, manifest)
+        manifest_path.write_text(json.dumps(merged_manifest, indent=2), encoding="utf-8")
+        print(f"Wrote {manifest_path}")
+    finally:
+        if isinstance(events, np.memmap):
+            mm = getattr(events, "_mmap", None)
+            del t
+            del events
+            if mm is not None:
+                mm.close()
+        if tmp_events_path is not None:
+            try:
+                tmp_events_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def main() -> None:
