@@ -5,6 +5,7 @@ import hashlib
 import json
 import pickle
 from pathlib import Path
+import re
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -22,17 +23,18 @@ class DetectionSample:
     input_paths: Dict[str, str]
 
 
+_FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
+_TRAILING_TIME_RE = re.compile(r"_(\d+)$")
+
+
 def _parse_frame_time(name: str) -> Optional[int]:
-    parts = name.split("_frame_")
-    if len(parts) < 2:
-        return None
-    digits = ""
-    for ch in parts[1]:
-        if ch.isdigit():
-            digits += ch
-        else:
-            break
-    return int(digits) if digits else None
+    match = _FRAME_RE.search(name)
+    if match:
+        return int(match.group(1))
+    match = _TRAILING_TIME_RE.search(name)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _load_image(path: Path, size: Tuple[int, int]) -> torch.Tensor:

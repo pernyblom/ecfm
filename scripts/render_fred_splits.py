@@ -58,6 +58,7 @@ def _process_folder(folder: str, args_dict: dict) -> str:
 
 
 def _aggregate_manifests(output_root: Path, folders: list[str], split_file: Path) -> Path:
+    output_root.mkdir(parents=True, exist_ok=True)
     aggregate = {
         "output_root": str(output_root),
         "split_file": str(split_file),
@@ -178,6 +179,16 @@ def main() -> None:
         type=float,
         default=64.0,
         help="Chunk size in MB for streamed EVT3 decode inside each folder render.",
+    )
+    parser.add_argument(
+        "--event-source",
+        type=str,
+        default="raw",
+        choices=["raw", "npz", "auto"],
+        help=(
+            "Event source to use. 'raw' streams from events.raw, 'npz' loads "
+            "output_events.npz, and 'auto' tries raw first then falls back to npz."
+        ),
     )
     parser.add_argument(
         "--num-workers",

@@ -101,12 +101,15 @@ Why `33.333 ms` is the right render window
 Render
 
 ```bash
-python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --num-workers 6 --include-empty
-python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --num-workers 4 --include-empty
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --event-source raw --num-workers 6 --include-empty
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --event-source raw --num-workers 4 --include-empty
 ```
 
 The dataset loader checks `render_manifest.json` and will fail fast if the
 rendered per-representation sizes do not match the configured convention.
+
+`--event-source` defaults to `raw`. Use `auto` only if you want the renderer to
+fall back to `output_events.npz` when streamed raw decode fails.
 
 Train
 

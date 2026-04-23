@@ -22,3 +22,4 @@ docs/fred_paper
 !docs/fred_paper/main.tex
 
 experiments/pose_dynamics/todo.md
+experiments/pose_dynamics/image_examples/*

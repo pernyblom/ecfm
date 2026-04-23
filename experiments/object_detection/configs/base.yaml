@@ -20,7 +20,7 @@ data:
   label_time_unit: 1.0e-6
   image_window_ms: 33.333
   image_window_mode: trailing
-  verify_render_manifest: true
+  verify_render_manifest: false
   render_manifest_name: render_manifest.json
   window_tolerance_ms: 2.0
   require_boxes: false

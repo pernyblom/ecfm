@@ -13,6 +13,7 @@ from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 
 
 _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
+_TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 
 
@@ -36,9 +37,12 @@ def _parse_geometry(meta: dict) -> Tuple[Optional[int], Optional[int]]:
 
 def _parse_label_time(path: Path) -> Optional[int]:
     match = _FRAME_RE.search(path.stem)
-    if not match:
-        return None
-    return int(match.group(1))
+    if match:
+        return int(match.group(1))
+    match = _TRAILING_TIME_RE.search(path.stem)
+    if match:
+        return int(match.group(1))
+    return None
 
 
 def _parse_rgb_time(path: Path) -> Optional[float]:
@@ -242,6 +246,108 @@ def _read_ts_shift_us(raw_path: Path) -> Optional[int]:
         return int(shift)
     except ValueError:
         return None
+
+
+def _load_predecoded_events_npz(
+    npz_path: Path,
+    *,
+    event_unit: float,
+    ts_shift_us: float | None,
+) -> np.ndarray:
+    with np.load(npz_path) as payload:
+        if "data" not in payload:
+            raise ValueError(f"Predecoded event cache missing 'data' array: {npz_path}")
+        raw = payload["data"]
+    if raw.ndim != 2 or raw.shape[1] != 4:
+        raise ValueError(f"Unsupported predecoded event shape {raw.shape} in {npz_path}")
+
+    # FRED's cache commonly stores columns as [x, y, p, t], while the renderer
+    # expects [x, y, t, p]. Detect the layout from the polarity-like column.
+    col2 = raw[:, 2]
+    col3 = raw[:, 3]
+    col2_is_pol = bool(np.all((col2 == 0) | (col2 == 1)))
+    col3_is_pol = bool(np.all((col3 == 0) | (col3 == 1)))
+    if col2_is_pol and not col3_is_pol:
+        events = np.empty(raw.shape, dtype=np.float32)
+        events[:, 0] = raw[:, 0].astype(np.float32, copy=False)
+        events[:, 1] = raw[:, 1].astype(np.float32, copy=False)
+        events[:, 2] = raw[:, 3].astype(np.float32, copy=False)
+        events[:, 3] = raw[:, 2].astype(np.float32, copy=False)
+    elif col3_is_pol and not col2_is_pol:
+        events = raw.astype(np.float32, copy=True)
+    else:
+        raise ValueError(
+            f"Could not infer polarity/timestamp columns in predecoded event cache: {npz_path}"
+        )
+
+    unit = float(event_unit)
+    if unit != 1.0:
+        events[:, 2] *= unit
+    if ts_shift_us is not None:
+        events[:, 2] -= float(ts_shift_us) * unit
+        keep = events[:, 2] >= 0.0
+        if np.any(keep):
+            events = events[keep]
+        else:
+            events = np.zeros((0, 4), dtype=np.float32)
+    return events
+
+
+def _load_events_from_npz(
+    raw_path: Path,
+    *,
+    event_unit: float,
+    ts_shift_us: float | None,
+) -> tuple[np.ndarray, np.ndarray, dict, dict]:
+    predecoded_path = raw_path.with_name("output_events.npz")
+    if not predecoded_path.exists():
+        raise FileNotFoundError(f"Missing predecoded event cache: {predecoded_path}")
+    print(f"Loading predecoded events {predecoded_path}")
+    events = _load_predecoded_events_npz(
+        predecoded_path,
+        event_unit=float(event_unit),
+        ts_shift_us=ts_shift_us,
+    )
+    t = events[:, 2] if events.size else np.zeros((0,), dtype=np.float32)
+    meta = dict(read_raw_header(raw_path)[2])
+    return events, t, meta, {}
+
+
+def _load_events_from_raw(
+    raw_path: Path,
+    *,
+    endian: str,
+    decode_chunk_mb: float,
+    event_unit: float,
+    ts_shift_us: float | None,
+) -> tuple[np.ndarray, np.ndarray, dict, dict, Path | None]:
+    tmp_events_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="evt3_render_", suffix=".f32", delete=False) as tmp:
+            tmp_events_path = Path(tmp.name)
+        print(f"Streaming decode {raw_path} -> {tmp_events_path}")
+        num_events, counters, meta, _ = decode_evt3_raw_to_arrayfile(
+            raw_path,
+            tmp_events_path,
+            endian=endian,
+            chunk_bytes=int(float(decode_chunk_mb) * 1024 * 1024),
+            event_unit=float(event_unit),
+            ts_shift_us=ts_shift_us,
+        )
+        if num_events > 0:
+            events = np.memmap(tmp_events_path, dtype=np.float32, mode="r").reshape(num_events, 4)
+            t = events[:, 2]
+        else:
+            events = np.zeros((0, 4), dtype=np.float32)
+            t = np.zeros((0,), dtype=np.float32)
+        return events, t, meta, counters, tmp_events_path
+    except Exception:
+        if tmp_events_path is not None:
+            try:
+                tmp_events_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        raise
 
 
 def _read_yolo_boxes(
@@ -727,23 +833,38 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
     counters = {}
     try:
         if event_reps:
-            with tempfile.NamedTemporaryFile(prefix="evt3_render_", suffix=".f32", delete=False) as tmp:
-                tmp_events_path = Path(tmp.name)
-            print(f"Streaming decode {args.raw} -> {tmp_events_path}")
-            num_events, counters, meta, _ = decode_evt3_raw_to_arrayfile(
-                args.raw,
-                tmp_events_path,
-                endian=args.endian,
-                chunk_bytes=int(float(args.decode_chunk_mb) * 1024 * 1024),
-                event_unit=float(args.event_unit),
-                ts_shift_us=ts_shift_us,
-            )
-            if num_events > 0:
-                events = np.memmap(tmp_events_path, dtype=np.float32, mode="r").reshape(num_events, 4)
-                t = events[:, 2]
+            event_source = str(getattr(args, "event_source", "raw")).lower()
+            if event_source == "npz":
+                events, t, meta, counters = _load_events_from_npz(
+                    args.raw,
+                    event_unit=float(args.event_unit),
+                    ts_shift_us=ts_shift_us,
+                )
+            elif event_source == "auto":
+                try:
+                    events, t, meta, counters, tmp_events_path = _load_events_from_raw(
+                        args.raw,
+                        endian=args.endian,
+                        decode_chunk_mb=float(args.decode_chunk_mb),
+                        event_unit=float(args.event_unit),
+                        ts_shift_us=ts_shift_us,
+                    )
+                except Exception as exc:
+                    print(f"Raw streamed decode failed for {args.raw}: {exc}")
+                    print("Falling back to predecoded output_events.npz")
+                    events, t, meta, counters = _load_events_from_npz(
+                        args.raw,
+                        event_unit=float(args.event_unit),
+                        ts_shift_us=ts_shift_us,
+                    )
             else:
-                events = np.zeros((0, 4), dtype=np.float32)
-                t = np.zeros((0,), dtype=np.float32)
+                events, t, meta, counters, tmp_events_path = _load_events_from_raw(
+                    args.raw,
+                    endian=args.endian,
+                    decode_chunk_mb=float(args.decode_chunk_mb),
+                    event_unit=float(args.event_unit),
+                    ts_shift_us=ts_shift_us,
+                )
         else:
             _, _, meta = read_raw_header(args.raw)
             events = np.zeros((0, 4), dtype=np.float32)
@@ -1212,6 +1333,16 @@ def main() -> None:
         type=float,
         default=64.0,
         help="Chunk size in MB for streamed EVT3 decode (default: 64).",
+    )
+    parser.add_argument(
+        "--event-source",
+        type=str,
+        default="raw",
+        choices=["raw", "npz", "auto"],
+        help=(
+            "Event source to use. 'raw' streams from events.raw, 'npz' loads "
+            "output_events.npz, and 'auto' tries raw first then falls back to npz."
+        ),
     )
     parser.add_argument(
         "--overwrite-existing",
