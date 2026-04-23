@@ -22,7 +22,7 @@ from experiments.object_detection.metrics import (
     summarize_metrics,
 )
 from experiments.object_detection.models.factory import build_model
-from experiments.object_detection.utils.config import load_config
+from experiments.object_detection.utils.config import load_config, resolve_representation_image_sizes
 from experiments.object_detection.visualization import save_sample_visualization
 
 
@@ -67,12 +67,13 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
     if split_files:
         folders = _read_split_file(Path(split_files[split]))
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
+    image_sizes = resolve_representation_image_sizes(data_cfg)
     return FredDetectionDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
         representations=list(data_cfg["representations"]),
         heatmap_representations=list(data_cfg.get("heatmap_representations", [])),
-        image_size=tuple(data_cfg["image_size"]),
+        image_sizes=image_sizes,
         frame_size=tuple(data_cfg["frame_size"]),
         folders=folders,
         labels_subdir=data_cfg.get("labels_subdir", "Event_YOLO"),

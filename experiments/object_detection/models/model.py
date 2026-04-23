@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import torch
 from torch import nn
@@ -61,7 +61,7 @@ class MultiRepObjectDetector(nn.Module):
         *,
         representations: List[str],
         heatmap_representations: List[str],
-        image_size: tuple[int, int],
+        image_sizes: Dict[str, Tuple[int, int]],
         backbone_cfg: Dict,
         fusion_hidden_dim: int = 256,
         heatmap_hidden_dim: int = 256,
@@ -73,6 +73,9 @@ class MultiRepObjectDetector(nn.Module):
         self.representations = list(representations)
         self.heatmap_representations = list(heatmap_representations)
         self.num_queries = int(num_queries)
+        self.image_sizes = {
+            str(rep): (int(size[0]), int(size[1])) for rep, size in dict(image_sizes).items()
+        }
         self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
         per_rep_dim = int(backbone_cfg.get("out_dim", 128))
         fused_dim = per_rep_dim * len(self.representations)
@@ -80,7 +83,11 @@ class MultiRepObjectDetector(nn.Module):
         heatmap_in_dim = fusion_hidden_dim + per_rep_dim
         self.heatmap_heads = nn.ModuleDict()
         for rep in self.heatmap_representations:
-            self.heatmap_heads[rep] = HeatmapHead(heatmap_in_dim, image_size, heatmap_hidden_dim)
+            self.heatmap_heads[rep] = HeatmapHead(
+                heatmap_in_dim,
+                self.image_sizes[rep],
+                heatmap_hidden_dim,
+            )
         self.query_embed = nn.Embedding(self.num_queries, query_hidden_dim)
         self.query_proj = nn.Sequential(
             nn.Linear(fusion_hidden_dim + query_hidden_dim, fusion_hidden_dim),

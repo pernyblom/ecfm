@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
@@ -18,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from experiments.object_detection.data.dataset import _parse_frame_time, _read_yolo_boxes
 from experiments.object_detection.models.factory import build_model
-from experiments.object_detection.utils.config import load_config
+from experiments.object_detection.utils.config import load_config, resolve_representation_image_sizes
 
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 
@@ -213,29 +212,29 @@ def _infer_fps(stems: List[str], fallback: float = 30.0) -> float:
     return 1_000_000.0 / median_us
 
 
-def _write_video_ffmpeg(frames_pattern: Path, output_path: Path, fps: float) -> bool:
-    ffmpeg = shutil.which("ffmpeg")
-    if ffmpeg is None:
-        return False
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-framerate",
-        f"{fps:.6f}",
-        "-i",
-        str(frames_pattern),
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        str(output_path),
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(result.stdout)
-        print(result.stderr)
-        return False
-    return True
+def _write_video_cv2(frame_dir: Path, output_path: Path, fps: float) -> None:
+    frame_paths = sorted(frame_dir.glob("*.png"))
+    if not frame_paths:
+        raise FileNotFoundError(f"No PNG frames found in {frame_dir}")
+
+    first = Image.open(frame_paths[0]).convert("RGB")
+    frame_w, frame_h = first.size
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (frame_w, frame_h))
+    if not writer.isOpened():
+        raise RuntimeError(
+            f"Failed to open VideoWriter for output {output_path}. "
+            "Try a different output filename or container if this persists."
+        )
+    try:
+        for frame_path in frame_paths:
+            frame = Image.open(frame_path).convert("RGB")
+            if frame.size != (frame_w, frame_h):
+                frame = frame.resize((frame_w, frame_h), resample=Image.BILINEAR)
+            frame_bgr = cv2.cvtColor(np.asarray(frame, dtype=np.uint8), cv2.COLOR_RGB2BGR)
+            writer.write(frame_bgr)
+    finally:
+        writer.release()
 
 
 def main() -> None:
@@ -286,7 +285,7 @@ def main() -> None:
     model.load_state_dict(state["model"])
     model.eval()
 
-    image_size = tuple(data_cfg["image_size"])
+    image_sizes = resolve_representation_image_sizes(data_cfg)
     output_dir = args.output_dir / folder
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -310,7 +309,10 @@ def main() -> None:
     for idx, stem in enumerate(stems):
         model_inputs: Dict[str, torch.Tensor] = {}
         for model_rep in data_cfg["representations"]:
-            model_inputs[model_rep] = _load_input_tensor(images_dir / f"{stem}_{model_rep}.png", image_size).unsqueeze(0).to(device)
+            model_inputs[model_rep] = _load_input_tensor(
+                images_dir / f"{stem}_{model_rep}.png",
+                image_sizes[model_rep],
+            ).unsqueeze(0).to(device)
 
         with torch.no_grad():
             preds = model(model_inputs)
@@ -350,13 +352,10 @@ def main() -> None:
     for rep in reps:
         rep_frames_dir = rep_frame_dirs[rep]
         video_path = output_dir / f"{folder}_{rep}.mp4"
-        ok = _write_video_ffmpeg(rep_frames_dir / "%06d.png", video_path, fps)
-        if ok:
-            print(f"Wrote {video_path}")
-        else:
-            print(f"ffmpeg unavailable or failed; kept frames in {rep_frames_dir}")
+        _write_video_cv2(rep_frames_dir, video_path, fps)
+        print(f"Wrote {video_path}")
 
-        if not args.keep_frames and ok:
+        if not args.keep_frames:
             for frame_path in rep_frames_dir.glob("*.png"):
                 frame_path.unlink()
             rep_frames_dir.rmdir()

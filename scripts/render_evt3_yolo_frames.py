@@ -338,6 +338,20 @@ def _resize_to(img: np.ndarray, size: tuple[int, int]) -> np.ndarray:
         return img
 
 
+def _default_output_size_for_rep(
+    rep: str,
+    *,
+    sensor_width: int,
+    sensor_height: int,
+    temporal_bins: int,
+) -> tuple[int, int]:
+    if rep.startswith("xt"):
+        return sensor_width, temporal_bins
+    if rep.startswith("yt"):
+        return temporal_bins, sensor_height
+    return sensor_width, sensor_height
+
+
 def _scale_magnitude(mag: np.ndarray, mode: str, eps: float) -> np.ndarray:
     if mode == "linear":
         out = mag
@@ -784,6 +798,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "temporal_bins": int(args.temporal_bins),
                 "spatial_bins": int(args.spatial_bins),
                 "output_size": None if args.output_size is None else [int(v) for v in args.output_size],
+                "retain_spatial_dimensions": bool(getattr(args, "retain_spatial_dimensions", False)),
                 "grid_x": int(args.grid_x),
                 "grid_y": int(args.grid_y),
                 "draw_rectangles": bool(args.draw_rectangles),
@@ -928,8 +943,18 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     scale_mode=args.transform_scale,
                     eps=args.transform_eps,
                 )
-                if args.output_size is not None:
-                    img = _resize_to(img, (args.output_size[0], args.output_size[1]))
+                target_size: tuple[int, int] | None = None
+                if bool(getattr(args, "retain_spatial_dimensions", False)):
+                    target_size = _default_output_size_for_rep(
+                        rep,
+                        sensor_width=width,
+                        sensor_height=height,
+                        temporal_bins=int(args.temporal_bins),
+                    )
+                elif args.output_size is not None:
+                    target_size = (int(args.output_size[0]), int(args.output_size[1]))
+                if target_size is not None:
+                    img = _resize_to(img, target_size)
                 scaled_boxes = _project_boxes(
                     boxes,
                     dst_w=img.shape[1],
@@ -1117,6 +1142,15 @@ def main() -> None:
         nargs=2,
         default=None,
         help="Final output image size as W H (default: None)",
+    )
+    parser.add_argument(
+        "--retain-spatial-dimensions",
+        action="store_true",
+        help=(
+            "Resize outputs to preserve sensor spatial dimensions. Spatial/XY-style reps become "
+            "sensor_width x sensor_height, XT reps become sensor_width x temporal_bins, and "
+            "YT reps become temporal_bins x sensor_height."
+        ),
     )
     parser.add_argument(
         "--grid-x",

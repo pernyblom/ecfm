@@ -144,6 +144,14 @@ def main() -> None:
     parser.add_argument("--temporal-bins", type=int, default=224)
     parser.add_argument("--spatial-bins", type=int, default=224)
     parser.add_argument("--output-size", type=int, nargs=2, default=None)
+    parser.add_argument(
+        "--retain-spatial-dimensions",
+        action="store_true",
+        help=(
+            "Resize outputs to preserve sensor spatial dimensions. XY/RGB/CSTR reps keep sensor "
+            "W x H, XT reps become W x temporal_bins, and YT reps become temporal_bins x H."
+        ),
+    )
     parser.add_argument("--grid-x", type=int, default=1)
     parser.add_argument("--grid-y", type=int, default=1)
     parser.add_argument("--rect-color", type=int, nargs=3, default=(0, 255, 0))

@@ -5,6 +5,7 @@ from typing import Dict
 import torch
 
 from .model import MultiRepObjectDetector
+from ..utils.config import resolve_representation_image_sizes
 
 
 def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
@@ -13,7 +14,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
     return MultiRepObjectDetector(
         representations=list(data_cfg["representations"]),
         heatmap_representations=list(data_cfg.get("heatmap_representations", [])),
-        image_size=tuple(data_cfg["image_size"]),
+        image_sizes=resolve_representation_image_sizes(data_cfg),
         backbone_cfg=dict(model_cfg.get("backbone", {})),
         fusion_hidden_dim=int(model_cfg.get("fusion_hidden_dim", 256)),
         heatmap_hidden_dim=int(model_cfg.get("heatmap_hidden_dim", 256)),

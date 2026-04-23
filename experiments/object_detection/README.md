@@ -5,6 +5,18 @@ using rendered event representations and YOLO labels. The default setup uses
 `xt_my`, `yt_mx`, and `cstr3` as inputs, predicts optional `xt` and `yt`
 heatmaps, and predicts a fixed set of object queries for the anchor frame.
 
+Input sizing
+- The detector now supports per-representation input sizes.
+- The default config uses:
+  - `data.frame_size: [1280, 720]`
+  - `data.temporal_bins: 224`
+  - `data.retain_spatial_dimensions: true`
+- With that convention:
+  - `cstr3`, `xy`, and `rgb` stay at `1280x720`
+  - `xt_*` becomes `1280x224`
+  - `yt_*` becomes `224x720`
+- If you need manual control instead, set `data.image_sizes` per representation.
+
 DETR-lite head
 - The fused representation is broadcast to a fixed set of learned object
   queries.
@@ -89,9 +101,12 @@ Why `33.333 ms` is the right render window
 Render
 
 ```bash
-python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --num-workers 6 --include-empty
-python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --num-workers 4 --include-empty
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --num-workers 6 --include-empty
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --num-workers 4 --include-empty
 ```
+
+The dataset loader checks `render_manifest.json` and will fail fast if the
+rendered per-representation sizes do not match the configured convention.
 
 Train
 
@@ -127,8 +142,8 @@ Render sequence videos
 python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/base.yaml --checkpoint outputs/object_detection_ckpt/best.pt --folder 8 --reps "cstr3;xt_my;yt_mx" --score-threshold 0.5 --draw-ground-truth
 ```
 
-This writes per-frame overlays and, when `ffmpeg` is available, one MP4 per
-requested representation. On `xt_my` and `yt_mx`, the box is drawn as a stripe
+This writes per-frame overlays and one MP4 per requested representation using
+OpenCV's `cv2.VideoWriter`. On `xt_my` and `yt_mx`, the box is drawn as a stripe
 that spans the full time axis.
 
 For `rgb`, the script first uses a rendered `*_rgb.png` if it exists under the

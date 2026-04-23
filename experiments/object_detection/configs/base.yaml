@@ -8,8 +8,15 @@ data:
   representations: ["xt_my", "yt_mx", "cstr3"]
   # heatmap_representations: ["xt_my", "yt_mx"]  # Set to [] to disable heatmap heads and heatmap supervision.
   heatmap_representations: []
-  image_size: [224, 224]
   frame_size: [1280, 720]
+  retain_spatial_dimensions: true
+  temporal_bins: 224
+  # Alternative to retain_spatial_dimensions:
+  # image_size: [224, 224]
+  # image_sizes:
+  #   xt_my: [1280, 224]
+  #   yt_mx: [224, 720]
+  #   cstr3: [1280, 720]
   label_time_unit: 1.0e-6
   image_window_ms: 33.333
   image_window_mode: trailing

@@ -60,7 +60,7 @@ def _read_yolo_boxes(path: Path) -> List[Tuple[float, float, float, float]]:
 
 
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 3
+    CACHE_VERSION = 4
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         images_root: Path,
         labels_root: Path,
         representations: List[str],
-        image_size: Tuple[int, int],
+        image_sizes: Dict[str, Tuple[int, int]],
         frame_size: Tuple[int, int],
         heatmap_representations: Optional[List[str]] = None,
         folders: Optional[List[str]] = None,
@@ -88,7 +88,9 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
         self.representations = list(representations)
-        self.image_size = (int(image_size[0]), int(image_size[1]))
+        self.image_sizes = {
+            str(rep): (int(size[0]), int(size[1])) for rep, size in dict(image_sizes).items()
+        }
         self.frame_size = (int(frame_size[0]), int(frame_size[1]))
         self.heatmap_representations = list(heatmap_representations or ["xt_my", "yt_mx"])
         self.folders = folders
@@ -110,6 +112,9 @@ class FredDetectionDataset(torch.utils.data.Dataset):
 
         if not self.representations:
             raise ValueError("representations must not be empty.")
+        missing_sizes = [rep for rep in self.representations if rep not in self.image_sizes]
+        if missing_sizes:
+            raise ValueError(f"Missing image sizes for representations: {missing_sizes}")
         missing_heatmap_reps = set(self.heatmap_representations) - set(self.representations)
         if missing_heatmap_reps:
             raise ValueError(f"Missing heatmap reps in representations: {sorted(missing_heatmap_reps)}")
@@ -178,6 +183,18 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 f"Window duration mismatch for '{folder}/{stem}': expected {expected_s:.6f}s, "
                 f"found {actual_s:.6f}s."
             )
+        rep_entries = entry.get("representations") or {}
+        for rep in self.representations:
+            rep_entry = rep_entries.get(rep)
+            if rep_entry is None:
+                raise ValueError(f"Manifest representation '{rep}' missing for '{folder}/{stem}'.")
+            expected_size = list(self.image_sizes[rep])
+            actual_size = rep_entry.get("image_size")
+            if actual_size is not None and list(actual_size) != expected_size:
+                raise ValueError(
+                    f"Image size mismatch for '{folder}/{stem}' rep '{rep}': "
+                    f"expected {expected_size}, found {actual_size}."
+                )
 
     def _has_all_reps(self, folder: str, stem: str) -> bool:
         if folder not in self._folder_available_stems:
@@ -240,7 +257,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             "images_root": str(self.images_root),
             "labels_root": str(self.labels_root),
             "representations": self.representations,
-            "image_size": self.image_size,
+            "image_sizes": self.image_sizes,
             "frame_size": self.frame_size,
             "heatmap_representations": self.heatmap_representations,
             "folders": self.folders,
@@ -290,8 +307,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
 
     def _box_to_heatmap(self, rep: str, box: Tuple[float, float, float, float]) -> torch.Tensor:
         cx, cy, bw, bh = box
-        width = self.image_size[0]
-        height = self.image_size[1]
+        width, height = self.image_sizes[rep]
         heat = torch.zeros((1, height, width), dtype=torch.float32)
         x0 = max(0, min(width - 1, int(np.floor((cx - bw / 2.0) * width))))
         x1 = max(x0 + 1, min(width, int(np.ceil((cx + bw / 2.0) * width))))
@@ -307,14 +323,17 @@ class FredDetectionDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> DetectionSample:
         sample = self.samples[idx]
-        inputs = {rep: _load_image(Path(path), self.image_size) for rep, path in sample["input_paths"].items()}
+        inputs = {
+            rep: _load_image(Path(path), self.image_sizes[rep])
+            for rep, path in sample["input_paths"].items()
+        }
         gt_boxes = (
             torch.tensor(sample["boxes"], dtype=torch.float32)
             if sample["boxes"]
             else torch.zeros((0, 4), dtype=torch.float32)
         )
         heatmaps = {
-            rep: torch.zeros((1, self.image_size[1], self.image_size[0]), dtype=torch.float32)
+            rep: torch.zeros((1, self.image_sizes[rep][1], self.image_sizes[rep][0]), dtype=torch.float32)
             for rep in self.heatmap_representations
         }
         for box in gt_boxes:
