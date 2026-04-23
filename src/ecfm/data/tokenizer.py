@@ -175,6 +175,7 @@ def build_patch(
     region: Region,
     patch_size: int,
     time_bins: int,
+    output_size: Tuple[int, int] | None = None,
     patch_divider: float = 0.0,
     norm_mode: str = "region_max",
     norm_eps: float = 1e-6,
@@ -206,7 +207,8 @@ def build_patch(
     total_events = float(hist0.sum() + hist1.sum())
     hist = np.stack([hist0, hist1], axis=0)
     hist_t = torch.from_numpy(hist).unsqueeze(0)
-    patch = F.interpolate(hist_t, size=(patch_size, patch_size), mode="bilinear", align_corners=False)
+    size = output_size if output_size is not None else (patch_size, patch_size)
+    patch = F.interpolate(hist_t, size=size, mode="bilinear", align_corners=False)
     patch = patch.squeeze(0)
 
     if patch_divider > 0:

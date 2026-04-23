@@ -622,6 +622,7 @@ def _cstr_patch(
     region: Region,
     *,
     patch_size: int,
+    output_size: tuple[int, int] | None = None,
     include_count: bool,
 ) -> np.ndarray:
     # events are expected to be [x, y, t, p] with t in the same units as region.t/dt
@@ -638,6 +639,8 @@ def _cstr_patch(
     w = region.dx
     if sub.shape[0] == 0:
         img = np.zeros((h, w, 3), dtype=np.uint8)
+        if output_size is not None:
+            return _resize_to(img, output_size)
         return _resize_rgb(img, patch_size)
 
     t_norm = (sub[:, 2] - region.t) / max(region.dt, 1e-6)
@@ -677,6 +680,8 @@ def _cstr_patch(
             img[:, :, 1] = cnt / maxv
 
     img = np.clip(img * 255.0, 0.0, 255.0).astype(np.uint8)
+    if output_size is not None:
+        return _resize_to(img, output_size)
     return _resize_rgb(img, patch_size)
 
 
@@ -743,12 +748,29 @@ def _render_histogram_grid(
     patch_size: int,
     grid_x: int,
     grid_y: int,
+    retain_spatial_dimensions: bool = False,
 ) -> np.ndarray:
-    out_h = patch_size * grid_y
-    out_w = patch_size * grid_x
-    canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
     x_edges = np.linspace(0, width, grid_x + 1, dtype=np.int64)
     y_edges = np.linspace(0, height, grid_y + 1, dtype=np.int64)
+
+    def _cell_size(gx: int, gy: int) -> tuple[int, int]:
+        dx = max(1, int(x_edges[gx + 1]) - int(x_edges[gx]))
+        dy = max(1, int(y_edges[gy + 1]) - int(y_edges[gy]))
+        if not retain_spatial_dimensions:
+            return patch_size, patch_size
+        if plane in {"xt", "xt_my"}:
+            return dx, time_bins
+        if plane in {"yt", "yt_mx"}:
+            return time_bins, dy
+        return dx, dy
+
+    col_widths = [_cell_size(gx, 0)[0] for gx in range(grid_x)]
+    row_heights = [_cell_size(0, gy)[1] for gy in range(grid_y)]
+    out_h = sum(row_heights)
+    out_w = sum(col_widths)
+    canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    x_offsets = np.cumsum([0] + col_widths[:-1]).tolist()
+    y_offsets = np.cumsum([0] + row_heights[:-1]).tolist()
 
     for gy in range(grid_y):
         for gx in range(grid_x):
@@ -758,6 +780,7 @@ def _render_histogram_grid(
             y1 = int(y_edges[gy + 1])
             dx = max(1, x1 - x0)
             dy = max(1, y1 - y0)
+            cell_w, cell_h = _cell_size(gx, gy)
             region = Region(
                 x=x0,
                 y=y0,
@@ -772,10 +795,15 @@ def _render_histogram_grid(
                     events,
                     region,
                     patch_size=patch_size,
+                    output_size=(cell_w, cell_h),
                     include_count=plane == "cstr3",
                 )
             elif plane in {"xt_my", "yt_mx"}:
                 base_plane = "xt" if plane == "xt_my" else "yt"
+                time_horizontal = plane.startswith("yt")
+                patch_output_size = (
+                    (cell_w, cell_h) if time_horizontal else (cell_h, cell_w)
+                )
                 region_base = Region(
                     x=region.x,
                     y=region.y,
@@ -790,31 +818,36 @@ def _render_histogram_grid(
                     region_base,
                     patch_size=patch_size,
                     time_bins=time_bins,
+                    output_size=patch_output_size,
                 )
                 patch = patch_t.detach().cpu().numpy()
-                time_horizontal = plane.startswith("yt")
                 patch_img = _patch_to_rgb(patch, time_horizontal=time_horizontal)
 
                 axis = "y" if plane == "xt_my" else "x"
                 mean_map = _mean_axis_map(events, region, time_bins=time_bins, axis=axis)
-                mean_map = _resize_gray(mean_map, (patch_size, patch_size))
+                mean_map_size = (cell_h, cell_w) if time_horizontal else (cell_w, cell_h)
+                mean_map = _resize_gray(mean_map, mean_map_size)
                 if time_horizontal:
                     mean_map = mean_map.T
                 patch_img = patch_img.copy()
                 patch_img[:, :, 1] = np.clip(mean_map * 255.0, 0, 255).astype(np.uint8)
             else:
+                time_horizontal = plane.startswith("yt")
+                patch_output_size = (
+                    (cell_w, cell_h) if time_horizontal else (cell_h, cell_w)
+                )
                 patch_t, _ = build_patch(
                     events,
                     region,
                     patch_size=patch_size,
                     time_bins=time_bins,
+                    output_size=patch_output_size,
                 )
                 patch = patch_t.detach().cpu().numpy()
-                time_horizontal = plane.startswith("yt")
                 patch_img = _patch_to_rgb(patch, time_horizontal=time_horizontal)
-            y1 = (gy + 1) * patch_size
-            x1 = (gx + 1) * patch_size
-            canvas[gy * patch_size : y1, gx * patch_size : x1] = patch_img
+            x_start = x_offsets[gx]
+            y_start = y_offsets[gy]
+            canvas[y_start : y_start + cell_h, x_start : x_start + cell_w] = patch_img
     return canvas
 
 
@@ -1041,6 +1074,9 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                             patch_size=args.spatial_bins,
                             grid_x=args.grid_x,
                             grid_y=args.grid_y,
+                            retain_spatial_dimensions=bool(
+                                getattr(args, "retain_spatial_dimensions", False)
+                            ),
                         )
                 else:
                     img = _render_histogram_grid(
@@ -1054,6 +1090,9 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                         patch_size=args.spatial_bins,
                         grid_x=args.grid_x,
                         grid_y=args.grid_y,
+                        retain_spatial_dimensions=bool(
+                            getattr(args, "retain_spatial_dimensions", False)
+                        ),
                     )
                 time_horizontal = rep.startswith("yt")
                 img = _apply_transform(
