@@ -5,7 +5,8 @@ data:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   labels_subdir: Event_YOLO
-  representations: ["xt_my", "yt_mx", "cstr3"]
+  # representations: ["xt_my", "yt_mx", "cstr3"]
+  representations: ["cstr3"]
   # heatmap_representations: ["xt_my", "yt_mx"]  # Set to [] to disable heatmap heads and heatmap supervision.
   heatmap_representations: []
   frame_size: [1280, 720]
@@ -24,7 +25,7 @@ data:
   render_manifest_name: render_manifest.json
   window_tolerance_ms: 2.0
   require_boxes: false
-  exclude_multiple_objects: false
+  exclude_multiple_objects: true
   # max_samples_train: 2000
   max_samples_train:
   # max_samples_val: 400
@@ -48,11 +49,11 @@ model:
 train:
   device: cuda
   epochs: 40
-  batch_size: 64
-  num_workers: 4
+  batch_size: 32
+  num_workers: 2
   persistent_workers: true
   pin_memory: true
-  prefetch_factor: 4
+  prefetch_factor: 2
   lr: 1.0e-3
   weight_decay: 1.0e-4
   heatmap_weight: 1.0  # Ignored if data.heatmap_representations is [].

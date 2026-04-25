@@ -94,7 +94,9 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             str(rep): (int(size[0]), int(size[1])) for rep, size in dict(image_sizes).items()
         }
         self.frame_size = (int(frame_size[0]), int(frame_size[1]))
-        self.heatmap_representations = list(heatmap_representations or ["xt_my", "yt_mx"])
+        self.heatmap_representations = (
+            ["xt_my", "yt_mx"] if heatmap_representations is None else list(heatmap_representations)
+        )
         self.folders = folders
         self.labels_subdir = labels_subdir
         self.label_time_unit = float(label_time_unit)
