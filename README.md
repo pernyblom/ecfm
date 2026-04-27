@@ -40,3 +40,11 @@ If the dataset is placed at `datasets/THU-EACT-50-CHL`, run:
 ```powershell
 python scripts\train.py --config configs\thu_smoke.yaml
 ```
+
+## Image Folder Media
+Convert a name-sorted slice of an image folder to MP4 or GIF:
+
+```powershell
+python scripts\images_to_media.py --image-dir outputs\frames --output outputs\clip.mp4 --start-index 100 --frame-count 300 --fps 30
+python scripts\images_to_media.py --image-dir outputs\frames --output outputs\clip.gif --start-index 100 --frame-count 90 --fps 12
+```
