@@ -50,6 +50,7 @@ train:
   device: cuda
   epochs: 40
   batch_size: 32
+  accumulation_steps: 1  # Effective batch size is batch_size * accumulation_steps.
   num_workers: 2
   persistent_workers: true
   pin_memory: true

@@ -133,11 +133,15 @@ def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) ->
 def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, train: bool) -> Dict[str, float]:
     train_cfg = cfg["train"]
     data_cfg = cfg["data"]
+    accumulation_steps = int(train_cfg.get("accumulation_steps", 1)) if train else 1
+    if accumulation_steps < 1:
+        raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
     model.train(mode=train)
     rows: List[Dict[str, float]] = []
     row_weights: List[int] = []
     detections_all: List[dict] = []
     gt_by_frame_all: Dict[str, torch.Tensor] = {}
+    num_batches = len(loader)
     for step, batch in enumerate(loader):
         inputs = {k: v.to(device) for k, v in batch.inputs.items()}
         target_heatmaps = {k: v.to(device) for k, v in batch.heatmaps.items()}
@@ -158,9 +162,13 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 match_ciou_weight=float(train_cfg.get("match_ciou_weight", 1.0)),
             )
             if train:
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                accumulation_idx = step % accumulation_steps
+                accumulation_window = min(accumulation_steps, num_batches - step + accumulation_idx)
+                if accumulation_idx == 0:
+                    optimizer.zero_grad(set_to_none=True)
+                (loss / accumulation_window).backward()
+                if accumulation_idx == accumulation_window - 1:
+                    optimizer.step()
         metrics = summarize_metrics(
             preds,
             target_boxes_list,
@@ -270,6 +278,14 @@ def main() -> None:
         model.parameters(),
         lr=float(train_cfg["lr"]),
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
+    )
+    accumulation_steps = int(train_cfg.get("accumulation_steps", 1))
+    if accumulation_steps < 1:
+        raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
+    print(
+        f"Batch size: {int(train_cfg['batch_size'])} "
+        f"(effective {int(train_cfg['batch_size']) * accumulation_steps} "
+        f"with accumulation_steps={accumulation_steps})"
     )
 
     train_loader = _make_loader(
