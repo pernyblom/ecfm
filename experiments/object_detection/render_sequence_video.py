@@ -152,15 +152,13 @@ def _draw_pred_overlay(
     img: Image.Image,
     *,
     rep: str,
-    pred_boxes: torch.Tensor,
-    pred_scores: torch.Tensor,
+    pred_boxes: Optional[torch.Tensor],
+    pred_scores: Optional[torch.Tensor],
     score_threshold: float,
     gt_boxes: Iterable[Tuple[float, float, float, float]] | None = None,
     draw_gt: bool = False,
 ) -> Image.Image:
     out = img.convert("RGB").copy()
-    if rep.lower() == "rgb":
-        return out
     draw = ImageDraw.Draw(out)
     w, h = out.size
 
@@ -176,6 +174,9 @@ def _draw_pred_overlay(
                 draw.rectangle([0, y0, w - 1, y1], outline=(0, 255, 0), width=2)
             else:
                 draw.rectangle(_box_to_xyxy(torch.tensor([cx, cy, bw, bh]), (w, h)), outline=(0, 255, 0), width=2)
+
+    if pred_boxes is None or pred_scores is None:
+        return out
 
     for pred_box, pred_score in zip(pred_boxes, pred_scores):
         score_value = float(pred_score)
@@ -240,7 +241,12 @@ def _write_video_cv2(frame_dir: Path, output_path: Path, fps: float) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="Optional model checkpoint. Omit to render backgrounds and optional ground truth only.",
+    )
     parser.add_argument("--folder", type=str, required=True, help="FRED sequence folder, e.g. 8")
     parser.add_argument(
         "--reps",
@@ -272,25 +278,29 @@ def main() -> None:
     if not labels_dir.exists():
         raise FileNotFoundError(f"Missing labels directory: {labels_dir}")
 
-    required_reps = list(data_cfg["representations"])
+    use_model = args.checkpoint is not None
+    required_reps = list(data_cfg["representations"]) if use_model else reps
     stems = _find_frame_stems(images_dir=images_dir, labels_dir=labels_dir, required_reps=required_reps)
     if args.max_frames is not None:
         stems = stems[: max(0, int(args.max_frames))]
     if not stems:
-        raise RuntimeError(f"No frames found for folder {folder} with model reps {required_reps}.")
+        raise RuntimeError(f"No frames found for folder {folder} with required reps {required_reps}.")
 
     device = torch.device(cfg["train"].get("device", "cpu") if torch.cuda.is_available() else "cpu")
-    model = build_model(cfg, device)
-    state = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(state["model"])
-    model.eval()
+    model = None
+    if use_model:
+        model = build_model(cfg, device)
+        state = torch.load(args.checkpoint, map_location=device)
+        model.load_state_dict(state["model"])
+        model.eval()
 
     image_sizes = resolve_representation_image_sizes(data_cfg)
     output_dir = args.output_dir / folder
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fps = float(args.fps) if args.fps is not None else _infer_fps(stems)
-    print(f"Rendering folder {folder} with {len(stems)} frames at {fps:.3f} fps")
+    mode = f"checkpoint {args.checkpoint}" if use_model else "ground truth only" if args.draw_ground_truth else "backgrounds only"
+    print(f"Rendering folder {folder} with {len(stems)} frames at {fps:.3f} fps ({mode})")
 
     rgb_index: Optional[List[Tuple[float, Path]]] = None
     if any(rep.lower() == "rgb" for rep in reps):
@@ -307,17 +317,20 @@ def main() -> None:
         rep_frame_dirs[rep] = rep_frames_dir
 
     for idx, stem in enumerate(stems):
-        model_inputs: Dict[str, torch.Tensor] = {}
-        for model_rep in data_cfg["representations"]:
-            model_inputs[model_rep] = _load_input_tensor(
-                images_dir / f"{stem}_{model_rep}.png",
-                image_sizes[model_rep],
-            ).unsqueeze(0).to(device)
+        pred_boxes: Optional[torch.Tensor] = None
+        pred_scores: Optional[torch.Tensor] = None
+        if model is not None:
+            model_inputs: Dict[str, torch.Tensor] = {}
+            for model_rep in data_cfg["representations"]:
+                model_inputs[model_rep] = _load_input_tensor(
+                    images_dir / f"{stem}_{model_rep}.png",
+                    image_sizes[model_rep],
+                ).unsqueeze(0).to(device)
 
-        with torch.no_grad():
-            preds = model(model_inputs)
-            pred_boxes = preds["boxes"][0].detach().cpu()
-            pred_scores = preds["objectness_logits"][0].sigmoid().detach().cpu()
+            with torch.no_grad():
+                preds = model(model_inputs)
+                pred_boxes = preds["boxes"][0].detach().cpu()
+                pred_scores = preds["objectness_logits"][0].sigmoid().detach().cpu()
 
         label_path = labels_dir / f"{stem}.txt"
         gt_boxes = _read_yolo_boxes(label_path) if label_path.exists() else []

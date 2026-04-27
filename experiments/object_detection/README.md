@@ -145,6 +145,13 @@ Render sequence videos
 python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/base.yaml --checkpoint outputs/object_detection_ckpt/best.pt --folder 8 --reps "cstr3;xt_my;yt_mx" --score-threshold 0.5 --draw-ground-truth
 ```
 
+Omit `--checkpoint` to render backgrounds without model predictions. Combine
+that with `--draw-ground-truth` for ground-truth-only videos:
+
+```bash
+python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/base.yaml --folder 8 --reps "cstr3;xt_my;yt_mx" --draw-ground-truth
+```
+
 This writes per-frame overlays and one MP4 per requested representation using
 OpenCV's `cv2.VideoWriter`. On `xt_my` and `yt_mx`, the box is drawn as a stripe
 that spans the full time axis.
