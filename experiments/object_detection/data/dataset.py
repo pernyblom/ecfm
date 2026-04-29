@@ -17,6 +17,8 @@ from PIL import Image
 class DetectionSample:
     inputs: Dict[str, torch.Tensor]
     gt_boxes_xywh: torch.Tensor
+    gt_velocities_xy: torch.Tensor
+    gt_velocity_mask: torch.Tensor
     heatmaps: Dict[str, torch.Tensor]
     frame_key: str
     frame_time_s: float
@@ -61,8 +63,48 @@ def _read_yolo_boxes(path: Path) -> List[Tuple[float, float, float, float]]:
     return out
 
 
+def _box_xyxy_to_xywh_norm(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    frame_size: Tuple[int, int],
+) -> Tuple[float, float, float, float]:
+    frame_w, frame_h = frame_size
+    w = max(0.0, x1 - x0)
+    h = max(0.0, y1 - y0)
+    return (
+        (x0 + w / 2.0) / frame_w,
+        (y0 + h / 2.0) / frame_h,
+        w / frame_w,
+        h / frame_h,
+    )
+
+
+def _box_iou_xywh_norm(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    ax0 = a[0] - a[2] / 2.0
+    ay0 = a[1] - a[3] / 2.0
+    ax1 = a[0] + a[2] / 2.0
+    ay1 = a[1] + a[3] / 2.0
+    bx0 = b[0] - b[2] / 2.0
+    by0 = b[1] - b[3] / 2.0
+    bx1 = b[0] + b[2] / 2.0
+    by1 = b[1] + b[3] / 2.0
+    ix0 = max(ax0, bx0)
+    iy0 = max(ay0, by0)
+    ix1 = min(ax1, bx1)
+    iy1 = min(ay1, by1)
+    iw = max(0.0, ix1 - ix0)
+    ih = max(0.0, iy1 - iy0)
+    inter = iw * ih
+    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
+    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 4
+    CACHE_VERSION = 5
 
     def __init__(
         self,
@@ -86,6 +128,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         max_samples: Optional[int] = None,
         seed: int = 123,
         cache_dir: Optional[Path] = None,
+        velocity_tracks_file: Optional[str] = "cleaned_tracks.txt",
+        velocity_match_iou: float = 0.3,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -110,9 +154,12 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self.max_samples = max_samples
         self.seed = int(seed)
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.velocity_tracks_file = velocity_tracks_file
+        self.velocity_match_iou = float(velocity_match_iou)
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_available_stems: Dict[str, set[str]] = {}
+        self._folder_tracks: Dict[str, Optional[dict]] = {}
 
         if not self.representations:
             raise ValueError("representations must not be empty.")
@@ -249,6 +296,95 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 )
         return samples
 
+    def _load_tracks(self, folder: str) -> Optional[dict]:
+        if folder in self._folder_tracks:
+            return self._folder_tracks[folder]
+        if not self.velocity_tracks_file:
+            self._folder_tracks[folder] = None
+            return None
+        path = self.labels_root / folder / self.velocity_tracks_file if folder else self.labels_root / self.velocity_tracks_file
+        if not path.exists():
+            self._folder_tracks[folder] = None
+            return None
+        by_time: Dict[float, List[dict]] = {}
+        by_id: Dict[int, List[dict]] = {}
+        for line in path.read_text(encoding="utf-8").splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 6:
+                continue
+            try:
+                time_s = float(parts[0])
+                track_id = int(float(parts[1]))
+                x = float(parts[2])
+                y = float(parts[3])
+                w = float(parts[4])
+                h = float(parts[5])
+            except ValueError:
+                continue
+            box = _box_xyxy_to_xywh_norm(x, y, x + w, y + h, self.frame_size)
+            row = {"time_s": time_s, "track_id": track_id, "box": box}
+            by_time.setdefault(round(time_s, 6), []).append(row)
+            by_id.setdefault(track_id, []).append(row)
+        for rows in by_id.values():
+            rows.sort(key=lambda item: item["time_s"])
+        tracks = {"by_time": by_time, "by_id": by_id}
+        self._folder_tracks[folder] = tracks
+        return tracks
+
+    def _estimate_velocity_for_track(self, tracks: dict, row: dict) -> Optional[Tuple[float, float]]:
+        rows = tracks["by_id"].get(row["track_id"], [])
+        idx = next((i for i, item in enumerate(rows) if item["time_s"] == row["time_s"]), None)
+        if idx is None:
+            return None
+        prev_row = rows[idx - 1] if idx > 0 else None
+        next_row = rows[idx + 1] if idx + 1 < len(rows) else None
+        if prev_row is not None and next_row is not None:
+            dt = next_row["time_s"] - prev_row["time_s"]
+            dx = next_row["box"][0] - prev_row["box"][0]
+            dy = next_row["box"][1] - prev_row["box"][1]
+        elif prev_row is not None:
+            dt = row["time_s"] - prev_row["time_s"]
+            dx = row["box"][0] - prev_row["box"][0]
+            dy = row["box"][1] - prev_row["box"][1]
+        elif next_row is not None:
+            dt = next_row["time_s"] - row["time_s"]
+            dx = next_row["box"][0] - row["box"][0]
+            dy = next_row["box"][1] - row["box"][1]
+        else:
+            return None
+        if abs(dt) <= 1.0e-8:
+            return None
+        return dx / dt, dy / dt
+
+    def _estimate_velocities(
+        self,
+        folder: str,
+        time_s: float,
+        boxes: List[Tuple[float, float, float, float]],
+    ) -> List[Optional[Tuple[float, float]]]:
+        tracks = self._load_tracks(folder)
+        if tracks is None or not boxes:
+            return [None for _ in boxes]
+        rows = tracks["by_time"].get(round(time_s, 6), [])
+        out: List[Optional[Tuple[float, float]]] = []
+        used: set[int] = set()
+        for box in boxes:
+            best_idx = None
+            best_iou = 0.0
+            for idx, row in enumerate(rows):
+                if idx in used:
+                    continue
+                iou = _box_iou_xywh_norm(box, row["box"])
+                if iou > best_iou:
+                    best_iou = iou
+                    best_idx = idx
+            if best_idx is None or best_iou < self.velocity_match_iou:
+                out.append(None)
+                continue
+            used.add(best_idx)
+            out.append(self._estimate_velocity_for_track(tracks, rows[best_idx]))
+        return out
+
     def _apply_sample_limit(self) -> None:
         if self.max_samples is None or self.max_samples <= 0 or len(self.samples) <= self.max_samples:
             return
@@ -277,6 +413,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             "max_samples": self.max_samples,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,
+            "velocity_tracks_file": self.velocity_tracks_file,
+            "velocity_match_iou": self.velocity_match_iou,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -336,6 +474,32 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             if sample["boxes"]
             else torch.zeros((0, 4), dtype=torch.float32)
         )
+        velocities_raw = sample.get("velocities")
+        if velocities_raw is None:
+            velocities_raw = self._estimate_velocities(
+                sample["folder"],
+                float(sample["time_s"]),
+                [tuple(float(v) for v in box.tolist()) for box in gt_boxes],
+            )
+        velocities: List[Tuple[float, float]] = []
+        velocity_mask: List[bool] = []
+        for velocity in velocities_raw:
+            if velocity is None:
+                velocities.append((0.0, 0.0))
+                velocity_mask.append(False)
+            else:
+                velocities.append((float(velocity[0]), float(velocity[1])))
+                velocity_mask.append(True)
+        gt_velocities = (
+            torch.tensor(velocities, dtype=torch.float32)
+            if velocities
+            else torch.zeros((0, 2), dtype=torch.float32)
+        )
+        gt_velocity_mask = (
+            torch.tensor(velocity_mask, dtype=torch.bool)
+            if velocity_mask
+            else torch.zeros((0,), dtype=torch.bool)
+        )
         heatmaps = {
             rep: torch.zeros((1, self.image_sizes[rep][1], self.image_sizes[rep][0]), dtype=torch.float32)
             for rep in self.heatmap_representations
@@ -351,6 +515,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         return DetectionSample(
             inputs=inputs,
             gt_boxes_xywh=gt_boxes,
+            gt_velocities_xy=gt_velocities,
+            gt_velocity_mask=gt_velocity_mask,
             heatmaps=heatmaps,
             frame_key=frame_key,
             frame_time_s=float(sample["time_s"]),

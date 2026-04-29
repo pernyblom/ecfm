@@ -94,6 +94,12 @@ def main() -> None:
                 match_score_weight=float(cfg["train"].get("match_score_weight", 1.0)),
                 match_l1_weight=float(cfg["train"].get("match_l1_weight", 1.0)),
                 match_ciou_weight=float(cfg["train"].get("match_ciou_weight", 1.0)),
+                target_velocities_list=batch.gt_velocities_xy,
+                target_velocity_masks=batch.gt_velocity_mask,
+                centernet_size_weight=float(cfg["train"].get("centernet_size_weight", cfg["train"].get("box_weight", 1.0))),
+                centernet_offset_weight=float(cfg["train"].get("centernet_offset_weight", 1.0)),
+                velocity_weight=float(cfg["train"].get("velocity_weight", 0.0)),
+                gaussian_radius=int(cfg["train"].get("centernet_gaussian_radius", 2)),
             )
             pred_scores = detection_scores(preds)
             rows.append(
@@ -101,8 +107,8 @@ def main() -> None:
                     preds,
                     batch.gt_boxes_xywh,
                     target_heatmaps,
-                    aux["target_objectness"],
-                    aux["frame_matches"],
+                    aux.get("target_objectness"),
+                    aux.get("frame_matches"),
                     batch.frame_keys,
                     tuple(cfg["data"]["frame_size"]),
                 )
@@ -127,7 +133,7 @@ def main() -> None:
                     stem=stem,
                     inputs={rep: batch.inputs[rep][i] for rep in batch.inputs},
                     pred_boxes=preds["boxes"][i].cpu(),
-                    pred_scores=preds["objectness_logits"][i].sigmoid().cpu(),
+                    pred_scores=pred_scores[i].cpu(),
                     target_boxes=batch.gt_boxes_xywh[i].cpu(),
                     pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
                     target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},

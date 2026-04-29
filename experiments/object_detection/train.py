@@ -30,6 +30,8 @@ from experiments.object_detection.visualization import save_sample_visualization
 class Batch:
     inputs: Dict[str, torch.Tensor]
     gt_boxes_xywh: List[torch.Tensor]
+    gt_velocities_xy: List[torch.Tensor]
+    gt_velocity_mask: List[torch.Tensor]
     heatmaps: Dict[str, torch.Tensor]
     frame_keys: List[str]
     frame_times_s: List[float]
@@ -51,6 +53,8 @@ def _collate(batch: List[DetectionSample]):
     return Batch(
         inputs={rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps},
         gt_boxes_xywh=[b.gt_boxes_xywh for b in batch],
+        gt_velocities_xy=[b.gt_velocities_xy for b in batch],
+        gt_velocity_mask=[b.gt_velocity_mask for b in batch],
         heatmaps={
             rep: torch.stack([b.heatmaps[rep] for b in batch], dim=0) for rep in heatmap_reps
         },
@@ -88,6 +92,8 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
         max_samples=max_samples,
         seed=int(data_cfg.get("seed", 123)),
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
+        velocity_tracks_file=data_cfg.get("velocity_tracks_file", "cleaned_tracks.txt"),
+        velocity_match_iou=float(data_cfg.get("velocity_match_iou", 0.3)),
     )
 
 
@@ -160,6 +166,12 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 match_score_weight=float(train_cfg.get("match_score_weight", 1.0)),
                 match_l1_weight=float(train_cfg.get("match_l1_weight", 1.0)),
                 match_ciou_weight=float(train_cfg.get("match_ciou_weight", 1.0)),
+                target_velocities_list=batch.gt_velocities_xy,
+                target_velocity_masks=batch.gt_velocity_mask,
+                centernet_size_weight=float(train_cfg.get("centernet_size_weight", train_cfg.get("box_weight", 1.0))),
+                centernet_offset_weight=float(train_cfg.get("centernet_offset_weight", 1.0)),
+                velocity_weight=float(train_cfg.get("velocity_weight", 0.0)),
+                gaussian_radius=int(train_cfg.get("centernet_gaussian_radius", 2)),
             )
             if train:
                 accumulation_idx = step % accumulation_steps
@@ -173,8 +185,8 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             preds,
             target_boxes_list,
             target_heatmaps,
-            aux["target_objectness"],
-            aux["frame_matches"],
+            aux.get("target_objectness"),
+            aux.get("frame_matches"),
             batch.frame_keys,
             tuple(data_cfg["frame_size"]),
             include_map=False,
@@ -198,17 +210,28 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             phase = "train" if train else "val"
             map_50 = metrics.get("mAP_50")
             map_50_95 = metrics.get("mAP_50_95")
-            print(
-                f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
-                f"box_reg {loss_metrics['box_regression']:.4f} "
-                f"box_l1 {loss_metrics['box_l1']:.4f} "
-                f"box_ciou {loss_metrics['box_ciou']:.4f} "
-                f"obj_bce {loss_metrics['objectness_bce']:.4f} "
-                f"match_l1_px {metrics.get('matched_center_l1_px', float('nan')):.2f} "
-                f"match_iou {metrics.get('matched_box_iou', float('nan')):.4f} "
-                f"mAP_50 {(f'{map_50:.4f}' if map_50 is not None else 'n/a')} "
-                f"mAP_50:95 {(f'{map_50_95:.4f}' if map_50_95 is not None else 'n/a')}"
-            )
+            if preds.get("detector_type") == "centernet":
+                print(
+                    f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
+                    f"hm {loss_metrics['centernet_heatmap']:.4f} "
+                    f"size {loss_metrics['centernet_size']:.4f} "
+                    f"offset {loss_metrics['centernet_offset']:.4f} "
+                    f"vel {loss_metrics['centernet_velocity']:.4f} "
+                    f"mAP_50 {(f'{map_50:.4f}' if map_50 is not None else 'n/a')} "
+                    f"mAP_50:95 {(f'{map_50_95:.4f}' if map_50_95 is not None else 'n/a')}"
+                )
+            else:
+                print(
+                    f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
+                    f"box_reg {loss_metrics['box_regression']:.4f} "
+                    f"box_l1 {loss_metrics['box_l1']:.4f} "
+                    f"box_ciou {loss_metrics['box_ciou']:.4f} "
+                    f"obj_bce {loss_metrics['objectness_bce']:.4f} "
+                    f"match_l1_px {metrics.get('matched_center_l1_px', float('nan')):.2f} "
+                    f"match_iou {metrics.get('matched_box_iou', float('nan')):.4f} "
+                    f"mAP_50 {(f'{map_50:.4f}' if map_50 is not None else 'n/a')} "
+                    f"mAP_50:95 {(f'{map_50_95:.4f}' if map_50_95 is not None else 'n/a')}"
+                )
     out = _weighted_mean_dict(rows, row_weights)
     compute_epoch_map = bool(
         train_cfg.get(
@@ -249,7 +272,7 @@ def _export_visualizations(model, loader, device: torch.device, cfg: Dict, epoch
             stem=stem,
             inputs={rep: batch.inputs[rep][i] for rep in batch.inputs},
             pred_boxes=preds["boxes"][i].cpu(),
-            pred_scores=preds["objectness_logits"][i].sigmoid().cpu(),
+            pred_scores=detection_scores(preds)[i].cpu(),
             target_boxes=batch.gt_boxes_xywh[i].cpu(),
             pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
             target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},

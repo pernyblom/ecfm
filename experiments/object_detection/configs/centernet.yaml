@@ -1,0 +1,73 @@
+data:
+  images_root: outputs/fred_reps
+  labels_root: datasets/FRED
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    val: datasets/FRED/dataset_splits/canonical/test_split.txt
+  labels_subdir: Event_YOLO
+  representations: ["xt_my", "yt_mx", "cstr3"]
+  heatmap_representations: []
+  frame_size: [1280, 720]
+  image_size: [224, 224]
+  retain_spatial_dimensions: false
+  temporal_bins: 224
+  label_time_unit: 1.0e-6
+  image_window_ms: 33.333
+  image_window_mode: trailing
+  verify_render_manifest: false
+  render_manifest_name: render_manifest.json
+  window_tolerance_ms: 2.0
+  require_boxes: false
+  exclude_multiple_objects: false
+  velocity_tracks_file: cleaned_tracks.txt
+  velocity_match_iou: 0.3
+  max_samples_train:
+  max_samples_val:
+  seed: 123
+  cache_dir: outputs/object_detection_cache
+
+model:
+  detector: centernet
+  backbone:
+    type: resnet18
+    in_channels: 3
+    out_dim: 128
+  centernet_hidden_dim: 128
+  output_stride: 4
+  topk: 100
+  predict_velocity: false
+
+train:
+  device: cuda
+  epochs: 40
+  batch_size: 8
+  accumulation_steps: 1
+  num_workers: 2
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  heatmap_weight: 1.0
+  centernet_size_weight: 2.0
+  centernet_offset_weight: 1.0
+  velocity_weight: 0.1
+  centernet_gaussian_radius: 2
+  compute_train_epoch_map: false
+  compute_val_epoch_map: true
+  log_every: 20
+  checkpoint_every: 1
+  checkpoint_dir: outputs/object_detection_centernet_ckpt
+  metrics_jsonl: outputs/object_detection_centernet_ckpt/metrics.jsonl
+  vis_every: 1
+  vis_samples: 8
+  vis_backdrop_rep: cstr3
+  vis_score_threshold: 0.3
+  vis_output_dir: outputs/object_detection_centernet_vis
+
+eval:
+  vis_backdrop_rep: cstr3
+  max_visualizations: 256
+  vis_score_threshold: 0.3
+  vis_output_dir: outputs/object_detection_centernet_eval_vis
+  metrics_output: outputs/object_detection_centernet_eval/metrics.json

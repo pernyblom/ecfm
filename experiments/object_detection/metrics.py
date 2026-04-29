@@ -57,6 +57,8 @@ def pairwise_box_iou(pred: torch.Tensor, target: torch.Tensor, frame_size: tuple
 
 
 def detection_scores(preds: Dict[str, torch.Tensor]) -> torch.Tensor:
+    if "scores" in preds:
+        return preds["scores"]
     return preds["objectness_logits"].sigmoid()
 
 
@@ -191,6 +193,15 @@ def summarize_metrics(
     out: Dict[str, float] = {}
     pred_scores = detection_scores(preds)
     pred_boxes = preds["boxes"]
+
+    if target_objectness is None or frame_matches is None:
+        for rep, target in target_heatmaps.items():
+            if rep in preds["heatmaps"]:
+                out[f"heatmap_iou_{rep}"] = float(heatmap_iou(preds["heatmaps"][rep], target).item())
+        if include_map:
+            detections, gt_by_frame = build_detections(pred_boxes.detach(), pred_scores.detach(), target_boxes_list, frame_keys)
+            out.update(map_metrics(detections, gt_by_frame, frame_size))
+        return out
 
     matched_pred_boxes: List[torch.Tensor] = []
     matched_gt_boxes: List[torch.Tensor] = []

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -112,7 +112,147 @@ def _match_queries(cost: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     )
 
 
-def compute_losses(
+def _draw_gaussian(heatmap: torch.Tensor, cx: int, cy: int, radius: int) -> None:
+    height, width = heatmap.shape
+    diameter = 2 * radius + 1
+    x = torch.arange(diameter, device=heatmap.device, dtype=heatmap.dtype) - radius
+    y = x[:, None]
+    sigma = max(diameter / 6.0, 1.0e-6)
+    gaussian = torch.exp(-(x[None, :].pow(2) + y.pow(2)) / (2.0 * sigma * sigma))
+    left = min(cx, radius)
+    right = min(width - cx - 1, radius)
+    top = min(cy, radius)
+    bottom = min(height - cy - 1, radius)
+    if right < 0 or bottom < 0:
+        return
+    patch = heatmap[cy - top : cy + bottom + 1, cx - left : cx + right + 1]
+    gpatch = gaussian[radius - top : radius + bottom + 1, radius - left : radius + right + 1]
+    torch.maximum(patch, gpatch, out=patch)
+
+
+def _build_centernet_targets(
+    target_boxes_list: Sequence[torch.Tensor],
+    target_velocities_list: Sequence[torch.Tensor] | None,
+    target_velocity_masks: Sequence[torch.Tensor] | None,
+    *,
+    out_h: int,
+    out_w: int,
+    device: torch.device,
+    dtype: torch.dtype,
+    gaussian_radius: int,
+) -> Dict[str, torch.Tensor]:
+    batch_size = len(target_boxes_list)
+    heatmap = torch.zeros((batch_size, 1, out_h, out_w), device=device, dtype=dtype)
+    size = torch.zeros((batch_size, 2, out_h, out_w), device=device, dtype=dtype)
+    offset = torch.zeros((batch_size, 2, out_h, out_w), device=device, dtype=dtype)
+    mask = torch.zeros((batch_size, 1, out_h, out_w), device=device, dtype=dtype)
+    velocity = torch.zeros((batch_size, 2, out_h, out_w), device=device, dtype=dtype)
+    velocity_mask = torch.zeros((batch_size, 1, out_h, out_w), device=device, dtype=dtype)
+    grid_scale = torch.tensor([out_w, out_h], device=device, dtype=dtype)
+    for batch_idx, boxes_raw in enumerate(target_boxes_list):
+        boxes = boxes_raw.to(device=device, dtype=dtype)
+        velocities = (
+            target_velocities_list[batch_idx].to(device=device, dtype=dtype)
+            if target_velocities_list is not None
+            else torch.zeros((boxes.shape[0], 2), device=device, dtype=dtype)
+        )
+        velocity_valid = (
+            target_velocity_masks[batch_idx].to(device=device)
+            if target_velocity_masks is not None
+            else torch.zeros((boxes.shape[0],), device=device, dtype=torch.bool)
+        )
+        for obj_idx, box in enumerate(boxes):
+            center_grid = box[:2] * grid_scale
+            xy_int = torch.floor(center_grid).long()
+            cx = int(xy_int[0].clamp(0, out_w - 1).item())
+            cy = int(xy_int[1].clamp(0, out_h - 1).item())
+            _draw_gaussian(heatmap[batch_idx, 0], cx, cy, gaussian_radius)
+            size[batch_idx, :, cy, cx] = box[2:].clamp(0.0, 1.0)
+            offset[batch_idx, :, cy, cx] = center_grid - xy_int.to(dtype)
+            mask[batch_idx, :, cy, cx] = 1.0
+            if obj_idx < velocities.shape[0] and bool(velocity_valid[obj_idx].item()):
+                velocity[batch_idx, :, cy, cx] = velocities[obj_idx]
+                velocity_mask[batch_idx, :, cy, cx] = 1.0
+    return {
+        "heatmap": heatmap,
+        "size": size,
+        "offset": offset,
+        "mask": mask,
+        "velocity": velocity,
+        "velocity_mask": velocity_mask,
+    }
+
+
+def _centernet_focal_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    pred = logits.sigmoid().clamp(1.0e-4, 1.0 - 1.0e-4)
+    pos = target.eq(1.0)
+    neg = target.lt(1.0)
+    neg_weights = (1.0 - target).pow(4)
+    pos_loss = torch.log(pred) * (1.0 - pred).pow(2) * pos
+    neg_loss = torch.log(1.0 - pred) * pred.pow(2) * neg_weights * neg
+    num_pos = pos.float().sum().clamp(min=1.0)
+    return -(pos_loss.sum() + neg_loss.sum()) / num_pos
+
+
+def _masked_l1(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    denom = mask.sum().clamp(min=1.0)
+    return (pred - target).abs().mul(mask).sum() / denom
+
+
+def compute_centernet_losses(
+    preds: Dict[str, torch.Tensor],
+    target_boxes_list: Sequence[torch.Tensor],
+    target_velocities_list: Sequence[torch.Tensor] | None = None,
+    target_velocity_masks: Sequence[torch.Tensor] | None = None,
+    *,
+    heatmap_weight: float = 1.0,
+    size_weight: float = 1.0,
+    offset_weight: float = 1.0,
+    velocity_weight: float = 0.0,
+    gaussian_radius: int = 2,
+) -> tuple[torch.Tensor, Dict[str, float], Dict[str, object]]:
+    logits = preds["centernet_heatmap_logits"]
+    device = logits.device
+    dtype = logits.dtype
+    _, _, out_h, out_w = logits.shape
+    targets = _build_centernet_targets(
+        target_boxes_list,
+        target_velocities_list,
+        target_velocity_masks,
+        out_h=out_h,
+        out_w=out_w,
+        device=device,
+        dtype=dtype,
+        gaussian_radius=int(gaussian_radius),
+    )
+    size_pred = preds["centernet_size_raw"].sigmoid()
+    offset_pred = preds["centernet_offset_raw"].sigmoid()
+    heatmap_loss = _centernet_focal_loss(logits, targets["heatmap"])
+    size_loss = _masked_l1(size_pred, targets["size"], targets["mask"])
+    offset_loss = _masked_l1(offset_pred, targets["offset"], targets["mask"])
+    velocity_loss = torch.tensor(0.0, device=device)
+    if velocity_weight > 0 and "centernet_velocity" in preds:
+        velocity_loss = _masked_l1(preds["centernet_velocity"], targets["velocity"], targets["velocity_mask"])
+    total = (
+        heatmap_weight * heatmap_loss
+        + size_weight * size_loss
+        + offset_weight * offset_loss
+        + velocity_weight * velocity_loss
+    )
+    metrics = {
+        "loss": float(total.item()),
+        "centernet_heatmap": float(heatmap_loss.item()),
+        "centernet_size": float(size_loss.item()),
+        "centernet_offset": float(offset_loss.item()),
+        "centernet_velocity": float(velocity_loss.item()),
+        "centernet_num_objects": float(targets["mask"].sum().item()),
+        "centernet_num_velocity": float(targets["velocity_mask"].sum().item()),
+    }
+    aux: Dict[str, object] = {"centernet_targets": targets}
+    return total, metrics, aux
+
+
+def compute_detr_lite_losses(
     preds: Dict[str, torch.Tensor],
     target_boxes_list: List[torch.Tensor],
     target_heatmaps: Dict[str, torch.Tensor],
@@ -207,3 +347,50 @@ def compute_losses(
         "matched_gt_boxes": matched_gt_boxes,
     }
     return total, metrics, aux
+
+
+def compute_losses(
+    preds: Dict[str, torch.Tensor],
+    target_boxes_list: List[torch.Tensor],
+    target_heatmaps: Dict[str, torch.Tensor],
+    *,
+    target_velocities_list: Sequence[torch.Tensor] | None = None,
+    target_velocity_masks: Sequence[torch.Tensor] | None = None,
+    heatmap_weight: float = 1.0,
+    box_weight: float = 1.0,
+    objectness_weight: float = 1.0,
+    box_l1_weight: float = 1.0,
+    box_ciou_weight: float = 1.0,
+    match_score_weight: float = 1.0,
+    match_l1_weight: float = 1.0,
+    match_ciou_weight: float = 1.0,
+    centernet_size_weight: float = 1.0,
+    centernet_offset_weight: float = 1.0,
+    velocity_weight: float = 0.0,
+    gaussian_radius: int = 2,
+) -> tuple[torch.Tensor, Dict[str, float], Dict[str, object]]:
+    if preds.get("detector_type") == "centernet":
+        return compute_centernet_losses(
+            preds,
+            target_boxes_list,
+            target_velocities_list,
+            target_velocity_masks,
+            heatmap_weight=heatmap_weight,
+            size_weight=centernet_size_weight,
+            offset_weight=centernet_offset_weight,
+            velocity_weight=velocity_weight,
+            gaussian_radius=gaussian_radius,
+        )
+    return compute_detr_lite_losses(
+        preds,
+        target_boxes_list,
+        target_heatmaps,
+        heatmap_weight=heatmap_weight,
+        box_weight=box_weight,
+        objectness_weight=objectness_weight,
+        box_l1_weight=box_l1_weight,
+        box_ciou_weight=box_ciou_weight,
+        match_score_weight=match_score_weight,
+        match_l1_weight=match_l1_weight,
+        match_ciou_weight=match_ciou_weight,
+    )

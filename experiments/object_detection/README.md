@@ -4,6 +4,8 @@ This experiment trains a simple single-frame multi-object detector on FRED
 using rendered event representations and YOLO labels. The default setup uses
 `xt_my`, `yt_mx`, and `cstr3` as inputs, predicts optional `xt` and `yt`
 heatmaps, and predicts a fixed set of object queries for the anchor frame.
+The experiment now supports two detector heads selected with `model.detector`:
+`detr_lite` and `centernet`.
 
 Input sizing
 - The detector now supports per-representation input sizes.
@@ -26,12 +28,26 @@ DETR-lite head
   the model can handle `0..K` objects per frame without anchors or NMS in the
   training loss.
 
+CenterNet head
+- Set `model.detector: centernet` or use `configs/centernet.yaml`.
+- The same rendered representations are encoded independently and fused on an
+  XY output grid.
+- The model predicts a single-class center heatmap, box size, center offset,
+  and optional velocity.
+- Training uses focal-style center heatmap loss plus masked L1 losses at object
+  center cells for size, offset, and velocity.
+- The dense outputs are decoded to top-K boxes and scores so mAP, evaluation,
+  and visualization can share the same detector-style output format as
+  DETR-lite.
+
 Current loss
-- box regression uses `L1 + CIoU` on matched queries
-- objectness uses binary cross-entropy over all queries
-- heatmap heads, when enabled, use binary cross-entropy
-- matching between predicted queries and GT boxes uses an internal exact matcher
-  suited for the small number of objects per FRED frame
+- DETR-lite box regression uses `L1 + CIoU` on matched queries
+- DETR-lite objectness uses binary cross-entropy over all queries
+- DETR-lite heatmap heads, when enabled, use binary cross-entropy
+- DETR-lite matching between predicted queries and GT boxes uses an internal
+  exact matcher suited for the small number of objects per FRED frame
+- CenterNet uses heatmap focal loss and masked L1 losses for size, offset, and
+  optional velocity
 - if heatmaps are disabled, heatmap-only losses and metrics are omitted from
   the summaries instead of being reported as dummy zeros
 
@@ -117,6 +133,12 @@ Train
 python experiments/object_detection/train.py --config experiments/object_detection/configs/base.yaml
 ```
 
+Train CenterNet:
+
+```bash
+python experiments/object_detection/train.py --config experiments/object_detection/configs/centernet.yaml
+```
+
 Training throughput notes
 - The dataset sample index is cached under `data.cache_dir`, so the first run
   after changing dataset-related config is the slow one.
@@ -138,6 +160,23 @@ Evaluate
 ```bash
 python experiments/object_detection/eval.py --config experiments/object_detection/configs/base.yaml --checkpoint outputs/object_detection_ckpt/best.pt
 ```
+
+Evaluate CenterNet:
+
+```bash
+python experiments/object_detection/eval.py --config experiments/object_detection/configs/centernet.yaml --checkpoint outputs/object_detection_centernet_ckpt/best.pt
+```
+
+Velocity supervision
+- `configs/centernet.yaml` enables `model.predict_velocity: true`.
+- The dataset reads `data.velocity_tracks_file`, defaulting to
+  `cleaned_tracks.txt` in each FRED sequence folder.
+- Each YOLO box is matched to the same-timestamp track box by IoU, then
+  velocity is estimated from neighboring rows of the same track.
+- Velocities are normalized-frame-units per second, so `(1.0, 0.0)` means one
+  full image width per second in the positive X direction.
+- Set `train.velocity_weight: 0.0` to disable velocity loss while keeping the
+  head available.
 
 Render sequence videos
 
@@ -182,6 +221,9 @@ Extension points
 - Add more plane-supervision targets via `data.heatmap_representations`.
 - Swap the encoder via `model.backbone.type`, for example `resnet18`.
 - Increase or decrease `model.num_queries` based on scene complexity.
+- Switch detector variants with `model.detector`.
+- Tune CenterNet output resolution with `model.output_stride` and decoded
+  candidate count with `model.topk`.
 
 Current scope
 - The detector predicts a fixed number of query boxes per frame and learns which

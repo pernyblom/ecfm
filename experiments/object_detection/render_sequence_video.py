@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.object_detection.data.dataset import _parse_frame_time, _read_yolo_boxes
+from experiments.object_detection.metrics import detection_scores
 from experiments.object_detection.models.factory import build_model
 from experiments.object_detection.utils.config import load_config, resolve_representation_image_sizes
 
@@ -330,7 +331,7 @@ def main() -> None:
             with torch.no_grad():
                 preds = model(model_inputs)
                 pred_boxes = preds["boxes"][0].detach().cpu()
-                pred_scores = preds["objectness_logits"][0].sigmoid().detach().cpu()
+                pred_scores = detection_scores(preds)[0].detach().cpu()
 
         label_path = labels_dir / f"{stem}.txt"
         gt_boxes = _read_yolo_boxes(label_path) if label_path.exists() else []
