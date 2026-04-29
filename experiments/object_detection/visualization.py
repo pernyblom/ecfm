@@ -5,6 +5,7 @@ from typing import Dict
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
 
@@ -15,7 +16,13 @@ def _tensor_to_pil(img: torch.Tensor) -> Image.Image:
 
 def _overlay_heatmap(background: Image.Image, heatmap: torch.Tensor, color: tuple[int, int, int]) -> Image.Image:
     base = background.convert("RGB")
-    hm = heatmap.detach().cpu().squeeze().float().clamp(0, 1).numpy()[:, :, None]
+    hm_t = heatmap.detach().cpu().float()
+    if hm_t.ndim == 2:
+        hm_t = hm_t.unsqueeze(0).unsqueeze(0)
+    elif hm_t.ndim == 3:
+        hm_t = hm_t.unsqueeze(0)
+    hm_t = F.interpolate(hm_t, size=(base.size[1], base.size[0]), mode="bilinear", align_corners=False)
+    hm = hm_t.squeeze().clamp(0, 1).numpy()[:, :, None]
     overlay = np.asarray(base, dtype=np.float32).copy()
     tint = np.zeros_like(overlay)
     tint[:, :, 0] = color[0]
@@ -54,7 +61,8 @@ def save_sample_visualization(
         _tensor_to_pil(img_t).save(output_dir / f"{stem}_{rep}.png")
 
     for rep, target in target_heatmaps.items():
-        base = _tensor_to_pil(inputs[rep])
+        backdrop_rep = rep if rep in inputs else xy_backdrop_rep if xy_backdrop_rep in inputs else next(iter(inputs.keys()))
+        base = _tensor_to_pil(inputs[backdrop_rep])
         _overlay_heatmap(base, target, (0, 255, 0)).save(output_dir / f"{stem}_{rep}_gt_heatmap.png")
         _overlay_heatmap(base, pred_heatmaps[rep].sigmoid(), (255, 196, 0)).save(
             output_dir / f"{stem}_{rep}_pred_heatmap.png"

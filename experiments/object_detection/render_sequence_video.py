@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,10 @@ _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 
 def _parse_rep_list(raw: str) -> List[str]:
     return [item.strip() for item in raw.replace(",", ";").split(";") if item.strip()]
+
+
+def _parse_mode_list(raw: str) -> List[str]:
+    return [item.strip().lower() for item in raw.replace(",", ";").split(";") if item.strip()]
 
 
 def _load_input_tensor(path: Path, image_size: Tuple[int, int]) -> torch.Tensor:
@@ -201,6 +206,93 @@ def _draw_pred_overlay(
     return out
 
 
+def _resize_heatmap(heatmap: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+    hm = heatmap.detach().float().cpu()
+    if hm.ndim == 3:
+        hm = hm.unsqueeze(0)
+    if hm.ndim == 2:
+        hm = hm.unsqueeze(0).unsqueeze(0)
+    resized = F.interpolate(hm, size=(size[1], size[0]), mode="bilinear", align_corners=False)
+    return resized.squeeze(0)
+
+
+def _overlay_heatmap(
+    img: Image.Image,
+    heatmap: torch.Tensor,
+    *,
+    color: Tuple[int, int, int],
+    alpha: float,
+) -> Image.Image:
+    base = img.convert("RGB")
+    hm = _resize_heatmap(heatmap, base.size).squeeze().clamp(0, 1).numpy()[:, :, None]
+    overlay = np.asarray(base, dtype=np.float32).copy()
+    tint = np.zeros_like(overlay)
+    tint[:, :, 0] = color[0]
+    tint[:, :, 1] = color[1]
+    tint[:, :, 2] = color[2]
+    overlay = overlay * (1.0 - alpha * hm) + tint * (alpha * hm)
+    return Image.fromarray(np.clip(overlay, 0, 255).astype(np.uint8))
+
+
+def _draw_gaussian_np(heatmap: np.ndarray, cx: int, cy: int, radius: int) -> None:
+    height, width = heatmap.shape
+    diameter = 2 * radius + 1
+    coords = np.arange(diameter, dtype=np.float32) - radius
+    yy, xx = np.meshgrid(coords, coords, indexing="ij")
+    sigma = max(diameter / 6.0, 1.0e-6)
+    gaussian = np.exp(-(xx * xx + yy * yy) / (2.0 * sigma * sigma))
+    left = min(cx, radius)
+    right = min(width - cx - 1, radius)
+    top = min(cy, radius)
+    bottom = min(height - cy - 1, radius)
+    if right < 0 or bottom < 0:
+        return
+    patch = heatmap[cy - top : cy + bottom + 1, cx - left : cx + right + 1]
+    gpatch = gaussian[radius - top : radius + bottom + 1, radius - left : radius + right + 1]
+    np.maximum(patch, gpatch, out=patch)
+
+
+def _gt_heatmap_for_rep(
+    *,
+    rep: str,
+    gt_boxes: Iterable[Tuple[float, float, float, float]],
+    size: Tuple[int, int],
+    gaussian_radius: int,
+) -> torch.Tensor:
+    width, height = size
+    heat = np.zeros((height, width), dtype=np.float32)
+    for cx, cy, bw, bh in gt_boxes:
+        if rep == "xt_my":
+            x0 = max(0, min(width - 1, int(np.floor((cx - bw / 2.0) * width))))
+            x1 = max(x0 + 1, min(width, int(np.ceil((cx + bw / 2.0) * width))))
+            heat[:, x0:x1] = 1.0
+        elif rep == "yt_mx":
+            y0 = max(0, min(height - 1, int(np.floor((cy - bh / 2.0) * height))))
+            y1 = max(y0 + 1, min(height, int(np.ceil((cy + bh / 2.0) * height))))
+            heat[y0:y1, :] = 1.0
+        else:
+            px = int(np.floor(cx * width))
+            py = int(np.floor(cy * height))
+            _draw_gaussian_np(
+                heat,
+                max(0, min(width - 1, px)),
+                max(0, min(height - 1, py)),
+                gaussian_radius,
+            )
+    return torch.from_numpy(heat).unsqueeze(0)
+
+
+def _pred_heatmap_for_rep(preds: Optional[Dict[str, torch.Tensor]], rep: str) -> Optional[torch.Tensor]:
+    if preds is None:
+        return None
+    heatmaps = preds.get("heatmaps", {})
+    if rep in heatmaps:
+        return heatmaps[rep][0].detach().cpu().sigmoid()
+    if "xy" in heatmaps and rep not in {"xt_my", "yt_mx"}:
+        return heatmaps["xy"][0].detach().cpu().sigmoid()
+    return None
+
+
 def _infer_fps(stems: List[str], fallback: float = 30.0) -> float:
     times = [t for t in (_parse_frame_time(stem) for stem in stems) if t is not None]
     if len(times) < 2:
@@ -258,6 +350,14 @@ def main() -> None:
     parser.add_argument("--score-threshold", type=float, default=0.5)
     parser.add_argument("--fps", type=float, default=None, help="Override output video fps.")
     parser.add_argument("--draw-ground-truth", action="store_true", default=False)
+    parser.add_argument(
+        "--heatmaps",
+        type=str,
+        default="",
+        help="Optional heatmap videos to render: pred, gt, or pred;gt.",
+    )
+    parser.add_argument("--heatmap-alpha", type=float, default=0.55)
+    parser.add_argument("--heatmap-radius", type=int, default=8, help="GT XY heatmap radius in rendered pixels.")
     parser.add_argument("--max-frames", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/object_detection_sequence_videos"))
     parser.add_argument("--keep-frames", action="store_true", default=True)
@@ -268,6 +368,10 @@ def main() -> None:
     data_cfg = cfg["data"]
     folder = args.folder.strip("/\\")
     reps = _parse_rep_list(args.reps)
+    heatmap_modes = _parse_mode_list(args.heatmaps)
+    invalid_heatmap_modes = sorted(set(heatmap_modes) - {"pred", "gt"})
+    if invalid_heatmap_modes:
+        raise ValueError(f"Unknown heatmap modes: {invalid_heatmap_modes}. Use pred, gt, or pred;gt.")
     if not reps:
         raise ValueError("At least one representation must be requested.")
 
@@ -280,6 +384,8 @@ def main() -> None:
         raise FileNotFoundError(f"Missing labels directory: {labels_dir}")
 
     use_model = args.checkpoint is not None
+    if "pred" in heatmap_modes and not use_model:
+        raise ValueError("--heatmaps includes pred, so --checkpoint is required.")
     required_reps = list(data_cfg["representations"]) if use_model else reps
     stems = _find_frame_stems(images_dir=images_dir, labels_dir=labels_dir, required_reps=required_reps)
     if args.max_frames is not None:
@@ -312,14 +418,20 @@ def main() -> None:
                 break
 
     rep_frame_dirs = {}
+    heatmap_frame_dirs = {}
     for rep in reps:
         rep_frames_dir = output_dir / f"frames_{rep}"
         rep_frames_dir.mkdir(parents=True, exist_ok=True)
         rep_frame_dirs[rep] = rep_frames_dir
+        for mode_name in heatmap_modes:
+            heatmap_dir = output_dir / f"frames_{rep}_{mode_name}_heatmap"
+            heatmap_dir.mkdir(parents=True, exist_ok=True)
+            heatmap_frame_dirs[(rep, mode_name)] = heatmap_dir
 
     for idx, stem in enumerate(stems):
         pred_boxes: Optional[torch.Tensor] = None
         pred_scores: Optional[torch.Tensor] = None
+        preds: Optional[Dict[str, torch.Tensor]] = None
         if model is not None:
             model_inputs: Dict[str, torch.Tensor] = {}
             for model_rep in data_cfg["representations"]:
@@ -360,6 +472,31 @@ def main() -> None:
             out_frame = rep_frame_dirs[rep] / f"{idx:06d}.png"
             vis.save(out_frame)
 
+            if "gt" in heatmap_modes:
+                gt_heat = _gt_heatmap_for_rep(
+                    rep=rep,
+                    gt_boxes=gt_boxes,
+                    size=bg_img.size,
+                    gaussian_radius=int(args.heatmap_radius),
+                )
+                _overlay_heatmap(
+                    bg_img,
+                    gt_heat,
+                    color=(0, 255, 0),
+                    alpha=float(args.heatmap_alpha),
+                ).save(heatmap_frame_dirs[(rep, "gt")] / f"{idx:06d}.png")
+            if "pred" in heatmap_modes:
+                pred_heat = _pred_heatmap_for_rep(preds, rep)
+                if pred_heat is not None:
+                    _overlay_heatmap(
+                        bg_img,
+                        pred_heat,
+                        color=(255, 196, 0),
+                        alpha=float(args.heatmap_alpha),
+                    ).save(heatmap_frame_dirs[(rep, "pred")] / f"{idx:06d}.png")
+                else:
+                    bg_img.save(heatmap_frame_dirs[(rep, "pred")] / f"{idx:06d}.png")
+
         if (idx + 1) % 100 == 0:
             print(f"rendered {idx + 1}/{len(stems)} frames")
 
@@ -373,6 +510,15 @@ def main() -> None:
             for frame_path in rep_frames_dir.glob("*.png"):
                 frame_path.unlink()
             rep_frames_dir.rmdir()
+        for mode_name in heatmap_modes:
+            heatmap_dir = heatmap_frame_dirs[(rep, mode_name)]
+            video_path = output_dir / f"{folder}_{rep}_{mode_name}_heatmap.mp4"
+            _write_video_cv2(heatmap_dir, video_path, fps)
+            print(f"Wrote {video_path}")
+            if not args.keep_frames:
+                for frame_path in heatmap_dir.glob("*.png"):
+                    frame_path.unlink()
+                heatmap_dir.rmdir()
 
 
 if __name__ == "__main__":

@@ -184,6 +184,19 @@ Render sequence videos
 python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/base.yaml --checkpoint outputs/object_detection_ckpt/best.pt --folder 8 --reps "cstr3;xt_my;yt_mx" --score-threshold 0.5 --draw-ground-truth
 ```
 
+Render CenterNet prediction and GT heatmap videos from a checkpoint:
+
+```bash
+python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/centernet.yaml --checkpoint outputs/object_detection_centernet_ckpt/best.pt --folder 8 --reps "cstr3;rgb" --score-threshold 0.3 --draw-ground-truth --heatmaps "pred;gt"
+```
+
+This writes the regular box overlay videos plus separate heatmap videos such as
+`8_cstr3_pred_heatmap.mp4` and `8_cstr3_gt_heatmap.mp4`. For CenterNet, the
+predicted `xy` heatmap is resized onto each non-XT/YT backdrop. Ground-truth
+XY heatmaps are generated from object centers for `cstr3`/`rgb`; `xt_my` and
+`yt_mx` ground-truth heatmaps keep the stripe geometry used elsewhere in this
+experiment.
+
 Omit `--checkpoint` to render backgrounds without model predictions. Combine
 that with `--draw-ground-truth` for ground-truth-only videos:
 

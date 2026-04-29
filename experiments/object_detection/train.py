@@ -261,6 +261,28 @@ def _export_visualizations(model, loader, device: torch.device, cfg: Dict, epoch
         return
     inputs = {k: v.to(device) for k, v in batch.inputs.items()}
     preds = model(inputs)
+    pred_heatmaps = {rep: preds["heatmaps"][rep].cpu() for rep in preds.get("heatmaps", {})}
+    target_heatmaps = {
+        rep: batch.heatmaps[rep].cpu()
+        for rep in batch.heatmaps
+        if rep in preds.get("heatmaps", {})
+    }
+    if preds.get("detector_type") == "centernet":
+        _, _, aux = compute_losses(
+            preds,
+            batch.gt_boxes_xywh,
+            batch.heatmaps,
+            target_velocities_list=batch.gt_velocities_xy,
+            target_velocity_masks=batch.gt_velocity_mask,
+            heatmap_weight=float(train_cfg.get("heatmap_weight", 1.0)),
+            centernet_size_weight=float(train_cfg.get("centernet_size_weight", train_cfg.get("box_weight", 1.0))),
+            centernet_offset_weight=float(train_cfg.get("centernet_offset_weight", 1.0)),
+            velocity_weight=float(train_cfg.get("velocity_weight", 0.0)),
+            gaussian_radius=int(train_cfg.get("centernet_gaussian_radius", 2)),
+        )
+        centernet_targets = aux.get("centernet_targets", {})
+        if "heatmap" in centernet_targets:
+            target_heatmaps["xy"] = centernet_targets["heatmap"].cpu()
     output_dir = Path(train_cfg.get("vis_output_dir", "outputs/object_detection_vis")) / f"epoch_{epoch:03d}"
     max_samples = min(int(train_cfg.get("vis_samples", 8)), len(batch.frame_keys))
     backdrop_rep = str(train_cfg.get("vis_backdrop_rep", "cstr3"))
@@ -274,8 +296,8 @@ def _export_visualizations(model, loader, device: torch.device, cfg: Dict, epoch
             pred_boxes=preds["boxes"][i].cpu(),
             pred_scores=detection_scores(preds)[i].cpu(),
             target_boxes=batch.gt_boxes_xywh[i].cpu(),
-            pred_heatmaps={rep: preds["heatmaps"][rep][i].cpu() for rep in preds.get("heatmaps", {})},
-            target_heatmaps={rep: batch.heatmaps[rep][i].cpu() for rep in batch.heatmaps if rep in preds.get("heatmaps", {})},
+            pred_heatmaps={rep: pred_heatmaps[rep][i] for rep in pred_heatmaps},
+            target_heatmaps={rep: target_heatmaps[rep][i] for rep in target_heatmaps if rep in pred_heatmaps},
             xy_backdrop_rep=backdrop_rep,
             score_threshold=score_threshold,
         )
