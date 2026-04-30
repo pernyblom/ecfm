@@ -302,14 +302,15 @@ def compute_detr_lite_losses(
                 )
             )
             continue
-        box_l1_cost = (pred_boxes[batch_idx].unsqueeze(1) - gt_boxes.unsqueeze(0)).abs().mean(dim=-1)
-        box_ciou_cost = _pairwise_ciou_loss(pred_boxes[batch_idx], gt_boxes)
-        score_cost = -pred_logits[batch_idx].sigmoid().unsqueeze(1).expand(-1, gt_boxes.shape[0])
-        cost = (
-            match_l1_weight * box_l1_cost
-            + match_ciou_weight * box_ciou_cost
-            + match_score_weight * score_cost
-        )
+        with torch.no_grad():
+            box_l1_cost = (pred_boxes[batch_idx].unsqueeze(1) - gt_boxes.unsqueeze(0)).abs().mean(dim=-1)
+            box_ciou_cost = _pairwise_ciou_loss(pred_boxes[batch_idx], gt_boxes)
+            score_cost = -pred_logits[batch_idx].sigmoid().unsqueeze(1).expand(-1, gt_boxes.shape[0])
+            cost = (
+                match_l1_weight * box_l1_cost
+                + match_ciou_weight * box_ciou_cost
+                + match_score_weight * score_cost
+            )
         pred_idx, gt_idx = _match_queries(cost)
         frame_matches.append((pred_idx, gt_idx))
         if pred_idx.numel() > 0:

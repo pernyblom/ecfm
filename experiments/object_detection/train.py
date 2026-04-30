@@ -181,31 +181,32 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 (loss / accumulation_window).backward()
                 if accumulation_idx == accumulation_window - 1:
                     optimizer.step()
-        metrics = summarize_metrics(
-            preds,
-            target_boxes_list,
-            target_heatmaps,
-            aux.get("target_objectness"),
-            aux.get("frame_matches"),
-            batch.frame_keys,
-            tuple(data_cfg["frame_size"]),
-            include_map=False,
-        )
-        rows.append({**loss_metrics, **metrics})
-        row_weights.append(len(batch.frame_keys))
-        pred_boxes_cpu = preds["boxes"].detach().cpu()
-        pred_scores_cpu = detection_scores(preds).detach().cpu()
-        for frame_idx, frame_key in enumerate(batch.frame_keys):
-            for query_idx in range(pred_boxes_cpu.shape[1]):
-                detections_all.append(
-                    {
-                        "frame_key": frame_key,
-                        "score": float(pred_scores_cpu[frame_idx, query_idx].item()),
-                        "box": pred_boxes_cpu[frame_idx, query_idx],
-                    }
-                )
-        for frame_key, gt_boxes in zip(batch.frame_keys, target_boxes_list):
-            gt_by_frame_all[frame_key] = gt_boxes.detach().cpu()
+        with torch.no_grad():
+            metrics = summarize_metrics(
+                preds,
+                target_boxes_list,
+                target_heatmaps,
+                aux.get("target_objectness"),
+                aux.get("frame_matches"),
+                batch.frame_keys,
+                tuple(data_cfg["frame_size"]),
+                include_map=False,
+            )
+            rows.append({**loss_metrics, **metrics})
+            row_weights.append(len(batch.frame_keys))
+            pred_boxes_cpu = preds["boxes"].detach().cpu()
+            pred_scores_cpu = detection_scores(preds).detach().cpu()
+            for frame_idx, frame_key in enumerate(batch.frame_keys):
+                for query_idx in range(pred_boxes_cpu.shape[1]):
+                    detections_all.append(
+                        {
+                            "frame_key": frame_key,
+                            "score": float(pred_scores_cpu[frame_idx, query_idx].item()),
+                            "box": pred_boxes_cpu[frame_idx, query_idx],
+                        }
+                    )
+            for frame_key, gt_boxes in zip(batch.frame_keys, target_boxes_list):
+                gt_by_frame_all[frame_key] = gt_boxes.detach().cpu()
         if step % int(train_cfg.get("log_every", 20)) == 0:
             phase = "train" if train else "val"
             map_50 = metrics.get("mAP_50")

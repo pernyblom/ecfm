@@ -19,6 +19,11 @@ def _encoder_fmap_dim(backbone_cfg: Dict) -> int:
     raise ValueError(f"Unknown backbone type: {backbone_type}")
 
 
+def _is_temporal_plane(rep: str) -> bool:
+    rep_l = rep.lower()
+    return rep_l.startswith("xt") or rep_l.startswith("yt")
+
+
 class CenterNetDetector(nn.Module):
     def __init__(
         self,
@@ -46,8 +51,13 @@ class CenterNetDetector(nn.Module):
         if not self.representations:
             raise ValueError("representations must not be empty.")
 
-        out_w = max(1, self.frame_size[0] // self.output_stride)
-        out_h = max(1, self.frame_size[1] // self.output_stride)
+        output_source_reps = [rep for rep in self.representations if not _is_temporal_plane(rep)]
+        if not output_source_reps:
+            output_source_reps = list(self.representations)
+        source_w = max(self.image_sizes[rep][0] for rep in output_source_reps)
+        source_h = max(self.image_sizes[rep][1] for rep in output_source_reps)
+        out_w = max(1, source_w // self.output_stride)
+        out_h = max(1, source_h // self.output_stride)
         self.output_size = (out_w, out_h)
         self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
         in_dim = _encoder_fmap_dim(backbone_cfg) * len(self.representations)
@@ -121,10 +131,11 @@ class CenterNetDetector(nn.Module):
         heatmap_logits = self.heatmap_head(fused_map)
         size_raw = self.size_head(fused_map)
         offset_raw = self.offset_head(fused_map)
-        boxes, scores = self._decode(heatmap_logits, size_raw, offset_raw)
+        with torch.no_grad():
+            boxes, scores = self._decode(heatmap_logits.detach(), size_raw.detach(), offset_raw.detach())
         out = {
             "detector_type": "centernet",
-            "fused_features": torch.cat(pooled, dim=-1),
+            "fused_features": torch.cat(pooled, dim=-1).detach(),
             "centernet_heatmap_logits": heatmap_logits,
             "centernet_size_raw": size_raw,
             "centernet_offset_raw": offset_raw,
