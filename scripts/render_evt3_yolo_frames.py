@@ -782,6 +782,7 @@ def _render_histogram_grid(
     grid_x: int,
     grid_y: int,
     retain_spatial_dimensions: bool = False,
+    output_size: tuple[int, int] | None = None,
 ) -> np.ndarray:
     x_edges = np.linspace(0, width, grid_x + 1, dtype=np.int64)
     y_edges = np.linspace(0, height, grid_y + 1, dtype=np.int64)
@@ -789,6 +790,14 @@ def _render_histogram_grid(
     def _cell_size(gx: int, gy: int) -> tuple[int, int]:
         dx = max(1, int(x_edges[gx + 1]) - int(x_edges[gx]))
         dy = max(1, int(y_edges[gy + 1]) - int(y_edges[gy]))
+        if output_size is not None:
+            out_w, out_h = output_size
+            x_out_edges = np.linspace(0, out_w, grid_x + 1, dtype=np.int64)
+            y_out_edges = np.linspace(0, out_h, grid_y + 1, dtype=np.int64)
+            return (
+                max(1, int(x_out_edges[gx + 1]) - int(x_out_edges[gx])),
+                max(1, int(y_out_edges[gy + 1]) - int(y_out_edges[gy])),
+            )
         if not retain_spatial_dimensions:
             return patch_size, patch_size
         if plane in {"xt", "xt_my"}:
@@ -1093,6 +1102,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     if rep in {"grayscale", "gray"}:
                         img = _to_grayscale(img)
                 elif rep == "events":
+                    native_output_size = image_sizes.get(rep)
                     if args.grid_x == 1 and args.grid_y == 1:
                         img = events_to_image(
                             ev,
@@ -1115,8 +1125,10 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                             retain_spatial_dimensions=bool(
                                 getattr(args, "retain_spatial_dimensions", False)
                             ),
+                            output_size=native_output_size,
                         )
                 else:
+                    native_output_size = image_sizes.get(rep)
                     img = _render_histogram_grid(
                         ev_time,
                         width=width,
@@ -1131,6 +1143,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                         retain_spatial_dimensions=bool(
                             getattr(args, "retain_spatial_dimensions", False)
                         ),
+                        output_size=native_output_size,
                     )
                 time_horizontal = rep.startswith("yt")
                 img = _apply_transform(
@@ -1142,7 +1155,9 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     eps=args.transform_eps,
                 )
                 target_size: tuple[int, int] | None = None
-                if rep in image_sizes:
+                if rep in image_sizes and img.shape[1] == image_sizes[rep][0] and img.shape[0] == image_sizes[rep][1]:
+                    target_size = None
+                elif rep in image_sizes:
                     target_size = image_sizes[rep]
                 elif bool(getattr(args, "retain_spatial_dimensions", False)):
                     target_size = _default_output_size_for_rep(
