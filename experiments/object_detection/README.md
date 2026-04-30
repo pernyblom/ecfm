@@ -210,8 +210,11 @@ that spans the full time axis.
 
 For `rgb`, the script first uses a rendered `*_rgb.png` if it exists under the
 representation output folder. If not, it falls back to the original dataset
-`RGB` or `PADDED_RGB` frames for visualization only. This does not change the
-representations used by the model itself.
+`RGB` or `PADDED_RGB` frames for visualization only. Use `--rgb-source rgb` or
+`--rgb-source padded_rgb` to force one of those dataset folders for the `rgb`
+panel. You can also request `padded_rgb` directly in `--reps`, for example
+`--reps "cstr3;padded_rgb"`. This does not change the representations used by
+the model itself.
 
 Compose a 2x2 grid video
 

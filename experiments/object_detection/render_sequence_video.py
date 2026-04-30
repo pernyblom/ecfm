@@ -22,6 +22,10 @@ from experiments.object_detection.models.factory import build_model
 from experiments.object_detection.utils.config import load_config, resolve_representation_image_sizes
 
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
+_RGB_SOURCE_DIRS = {
+    "rgb": "RGB",
+    "padded_rgb": "PADDED_RGB",
+}
 
 
 def _parse_rep_list(raw: str) -> List[str]:
@@ -30,6 +34,10 @@ def _parse_rep_list(raw: str) -> List[str]:
 
 def _parse_mode_list(raw: str) -> List[str]:
     return [item.strip().lower() for item in raw.replace(",", ";").split(";") if item.strip()]
+
+
+def _is_dataset_rgb_rep(rep: str) -> bool:
+    return rep.lower() in _RGB_SOURCE_DIRS
 
 
 def _load_input_tensor(path: Path, image_size: Tuple[int, int]) -> torch.Tensor:
@@ -49,7 +57,7 @@ def _find_frame_stems(
     stems: List[str] = []
     for label_path in sorted(labels_dir.glob("*.txt"), key=lambda p: (_parse_frame_time(p.stem) or -1, p.name)):
         stem = label_path.stem
-        if all(rep.lower() == "rgb" or (images_dir / f"{stem}_{rep}.png").exists() for rep in required_reps):
+        if all(_is_dataset_rgb_rep(rep) or (images_dir / f"{stem}_{rep}.png").exists() for rep in required_reps):
             stems.append(stem)
     return stems
 
@@ -113,25 +121,37 @@ def _load_background_image(
     images_dir: Path,
     dataset_folder_dir: Path,
     label_time_unit: float,
-    rgb_index: Optional[List[Tuple[float, Path]]],
+    rgb_indices: Dict[str, List[Tuple[float, Path]]],
+    rgb_source: str,
 ) -> Image.Image:
+    rep_l = rep.lower()
     rendered_path = images_dir / f"{stem}_{rep}.png"
-    if rendered_path.exists():
+    use_rendered_rgb = rep_l == "rgb" and rgb_source == "auto"
+    if (not _is_dataset_rgb_rep(rep) or use_rendered_rgb) and rendered_path.exists():
         return Image.open(rendered_path).convert("RGB")
-    if rep.lower() != "rgb":
+    if not _is_dataset_rgb_rep(rep):
         raise FileNotFoundError(f"Missing rendered background image: {rendered_path}")
-    if rgb_index:
+
+    if rep_l == "padded_rgb":
+        source_names = ["padded_rgb"]
+    elif rgb_source == "auto":
+        source_names = ["rgb", "padded_rgb"]
+    else:
+        source_names = [rgb_source]
+
+    for source_name in source_names:
+        rgb_dir_name = _RGB_SOURCE_DIRS[source_name]
+        rgb_index = rgb_indices.get(source_name)
+        if rgb_index is None:
+            candidate_dir = dataset_folder_dir / rgb_dir_name
+            rgb_index = _build_rgb_index(candidate_dir, label_time_unit=label_time_unit)
+            rgb_indices[source_name] = rgb_index
         rgb_path = _find_rgb_frame(rgb_index, label_time_s)
         if rgb_path is not None and rgb_path.exists():
             return Image.open(rgb_path).convert("RGB")
-    for rgb_dir_name in ("RGB", "PADDED_RGB"):
-        candidate_dir = dataset_folder_dir / rgb_dir_name
-        local_index = _build_rgb_index(candidate_dir, label_time_unit=label_time_unit)
-        rgb_path = _find_rgb_frame(local_index, label_time_s)
-        if rgb_path is not None and rgb_path.exists():
-            return Image.open(rgb_path).convert("RGB")
+    checked = ", ".join(_RGB_SOURCE_DIRS[name] for name in source_names)
     raise FileNotFoundError(
-        f"Could not resolve rgb background for stem {stem}. Checked rendered output and dataset RGB directories."
+        f"Could not resolve rgb background for stem {stem}. Checked rendered output and dataset directories: {checked}."
     )
 
 
@@ -345,7 +365,14 @@ def main() -> None:
         "--reps",
         type=str,
         default="cstr3",
-        help="Representations to render as backgrounds, separated by ';' (e.g. cstr3;xt_my;yt_mx).",
+        help="Representations to render as backgrounds, separated by ';' (e.g. cstr3;xt_my;yt_mx;rgb;padded_rgb).",
+    )
+    parser.add_argument(
+        "--rgb-source",
+        type=str,
+        default="auto",
+        choices=["auto", "rgb", "padded_rgb"],
+        help="RGB source for the rgb panel. auto prefers rendered *_rgb.png, then RGB, then PADDED_RGB.",
     )
     parser.add_argument("--score-threshold", type=float, default=0.5)
     parser.add_argument("--fps", type=float, default=None, help="Override output video fps.")
@@ -409,13 +436,20 @@ def main() -> None:
     mode = f"checkpoint {args.checkpoint}" if use_model else "ground truth only" if args.draw_ground_truth else "backgrounds only"
     print(f"Rendering folder {folder} with {len(stems)} frames at {fps:.3f} fps ({mode})")
 
-    rgb_index: Optional[List[Tuple[float, Path]]] = None
-    if any(rep.lower() == "rgb" for rep in reps):
-        for rgb_dir_name in ("RGB", "PADDED_RGB"):
-            candidate = dataset_folder_dir / rgb_dir_name
-            rgb_index = _build_rgb_index(candidate, label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)))
-            if rgb_index:
-                break
+    rgb_indices: Dict[str, List[Tuple[float, Path]]] = {}
+    if any(_is_dataset_rgb_rep(rep) for rep in reps):
+        requested_sources = {"padded_rgb"} if any(rep.lower() == "padded_rgb" for rep in reps) else set()
+        if any(rep.lower() == "rgb" for rep in reps):
+            if args.rgb_source == "auto":
+                requested_sources.update(["rgb", "padded_rgb"])
+            else:
+                requested_sources.add(args.rgb_source)
+        for source_name in requested_sources:
+            candidate = dataset_folder_dir / _RGB_SOURCE_DIRS[source_name]
+            rgb_indices[source_name] = _build_rgb_index(
+                candidate,
+                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
+            )
 
     rep_frame_dirs = {}
     heatmap_frame_dirs = {}
@@ -458,7 +492,8 @@ def main() -> None:
                 images_dir=images_dir,
                 dataset_folder_dir=dataset_folder_dir,
                 label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
-                rgb_index=rgb_index,
+                rgb_indices=rgb_indices,
+                rgb_source=str(args.rgb_source),
             )
             vis = _draw_pred_overlay(
                 bg_img,
