@@ -146,6 +146,16 @@ def main() -> None:
     parser.add_argument("--spatial-bins", type=int, default=224)
     parser.add_argument("--output-size", type=int, nargs=2, default=None)
     parser.add_argument(
+        "--image-sizes",
+        type=str,
+        default="",
+        help=(
+            "Per-representation final output sizes, separated by ';', as "
+            "rep=WIDTHxHEIGHT (for example: xt_my=398x224;yt_mx=224x224;cstr3=398x224). "
+            "Overrides --output-size and --retain-spatial-dimensions for listed reps."
+        ),
+    )
+    parser.add_argument(
         "--retain-spatial-dimensions",
         action="store_true",
         help=(

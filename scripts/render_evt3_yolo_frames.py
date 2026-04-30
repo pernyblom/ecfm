@@ -150,6 +150,8 @@ def _merge_manifest(existing: Optional[dict], current: dict) -> dict:
     new_params.pop("representation", None)
     new_params.pop("crop_representations", None)
     new_params.pop("max_label_files", None)
+    old_params.setdefault("image_sizes", {})
+    new_params.setdefault("image_sizes", {})
     if old_params != new_params:
         raise ValueError(
             "Existing render_manifest.json was created with different render parameters. "
@@ -159,6 +161,7 @@ def _merge_manifest(existing: Optional[dict], current: dict) -> dict:
     merged["render_params"]["representation"] = _canonical_rep_list(old_reps + new_reps)
     merged["render_params"]["crop_representations"] = _canonical_rep_list(old_crop + new_crop)
     merged["render_params"]["max_label_files"] = current["render_params"]["max_label_files"]
+    merged["render_params"]["image_sizes"] = current["render_params"].get("image_sizes", {})
 
     files_by_stem = {
         entry.get("label_stem"): dict(entry)
@@ -456,6 +459,36 @@ def _default_output_size_for_rep(
     if rep.startswith("yt"):
         return temporal_bins, sensor_height
     return sensor_width, sensor_height
+
+
+def _parse_image_sizes(raw_value: str | None) -> dict[str, tuple[int, int]]:
+    if raw_value is None:
+        return {}
+    raw_value = str(raw_value).strip()
+    if not raw_value:
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for item in raw_value.replace(",", ";").split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid image size entry '{item}'. Expected rep=WIDTHxHEIGHT.")
+        rep, size_raw = item.split("=", 1)
+        rep = rep.strip()
+        parts = [part.strip() for part in size_raw.lower().replace("x", " ").split()]
+        if len(parts) != 2:
+            raise ValueError(f"Invalid image size for '{rep}': '{size_raw}'. Expected WIDTHxHEIGHT.")
+        try:
+            width, height = int(parts[0]), int(parts[1])
+        except ValueError as exc:
+            raise ValueError(f"Invalid image size for '{rep}': '{size_raw}'. Expected integers.") from exc
+        if not rep:
+            raise ValueError("Image size representation name must not be empty.")
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Image size for '{rep}' must be positive, got {width}x{height}.")
+        out[rep] = (width, height)
+    return out
 
 
 def _scale_magnitude(mag: np.ndarray, mode: str, eps: float) -> np.ndarray:
@@ -854,6 +887,10 @@ def _render_histogram_grid(
 def render_yolo_frames(args: argparse.Namespace) -> None:
     representations = _representation_list(args.representation)
     crop_reps = set(_representation_list(args.crop_representations))
+    image_sizes = _parse_image_sizes(getattr(args, "image_sizes", None))
+    unknown_size_reps = sorted(set(image_sizes) - set(representations))
+    if unknown_size_reps:
+        raise ValueError(f"--image-sizes contains representations not requested by --representation: {unknown_size_reps}")
     event_reps = [rep for rep in representations if rep not in {"rgb", "grayscale", "gray"}]
 
     ts_shift_us = args.ts_shift_us
@@ -952,6 +989,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "temporal_bins": int(args.temporal_bins),
                 "spatial_bins": int(args.spatial_bins),
                 "output_size": None if args.output_size is None else [int(v) for v in args.output_size],
+                "image_sizes": {rep: [int(w), int(h)] for rep, (w, h) in sorted(image_sizes.items())},
                 "retain_spatial_dimensions": bool(getattr(args, "retain_spatial_dimensions", False)),
                 "grid_x": int(args.grid_x),
                 "grid_y": int(args.grid_y),
@@ -1104,7 +1142,9 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     eps=args.transform_eps,
                 )
                 target_size: tuple[int, int] | None = None
-                if bool(getattr(args, "retain_spatial_dimensions", False)):
+                if rep in image_sizes:
+                    target_size = image_sizes[rep]
+                elif bool(getattr(args, "retain_spatial_dimensions", False)):
                     target_size = _default_output_size_for_rep(
                         rep,
                         sensor_width=width,
@@ -1302,6 +1342,16 @@ def main() -> None:
         nargs=2,
         default=None,
         help="Final output image size as W H (default: None)",
+    )
+    parser.add_argument(
+        "--image-sizes",
+        type=str,
+        default="",
+        help=(
+            "Per-representation final output sizes, separated by ';', as "
+            "rep=WIDTHxHEIGHT (for example: xt_my=398x224;yt_mx=224x224;cstr3=398x224). "
+            "Overrides --output-size and --retain-spatial-dimensions for listed reps."
+        ),
     )
     parser.add_argument(
         "--retain-spatial-dimensions",

@@ -9,7 +9,15 @@ data:
   # representations: ["cstr3", "xt_my"]
   heatmap_representations: []
   frame_size: [1280, 720]
-  image_size: [224, 224]
+  # image_size: [224, 224]
+  image_sizes:
+    xt: [398, 224]
+    xt_my: [398, 224]
+    yt_mx: [224, 224]
+    yt: [224, 224]
+    cstr3: [398, 224]
+    cstr2: [398, 224]
+
   retain_spatial_dimensions: false
   temporal_bins: 224
   label_time_unit: 1.0e-6

@@ -121,6 +121,13 @@ python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/c
 python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --event-source raw --num-workers 4 --include-empty
 ```
 
+To render explicit per-representation sizes instead of using the retained
+sensor dimensions, pass `--image-sizes`, for example:
+
+```bash
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --image-sizes "xt_my=398x224;yt_mx=224x224;cstr3=398x224" --event-source raw --num-workers 6 --include-empty
+```
+
 The dataset loader checks `render_manifest.json` and will fail fast if the
 rendered per-representation sizes do not match the configured convention.
 
