@@ -921,21 +921,23 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 )
             elif event_source == "auto":
                 try:
-                    events, t, meta, counters, tmp_events_path = _load_events_from_raw(
-                        args.raw,
-                        endian=args.endian,
-                        decode_chunk_mb=float(args.decode_chunk_mb),
-                        event_unit=float(args.event_unit),
-                        ts_shift_us=ts_shift_us,
-                    )
+                    if args.raw.with_name("output_events.npz").exists():
+                        events, t, meta, counters = _load_events_from_npz(
+                            args.raw,
+                            event_unit=float(args.event_unit),
+                            ts_shift_us=ts_shift_us,
+                        )
+                    else:
+                        events, t, meta, counters, tmp_events_path = _load_events_from_raw(
+                            args.raw,
+                            endian=args.endian,
+                            decode_chunk_mb=float(args.decode_chunk_mb),
+                            event_unit=float(args.event_unit),
+                            ts_shift_us=ts_shift_us,
+                        )
                 except Exception as exc:
-                    print(f"Raw streamed decode failed for {args.raw}: {exc}")
-                    print("Falling back to predecoded output_events.npz")
-                    events, t, meta, counters = _load_events_from_npz(
-                        args.raw,
-                        event_unit=float(args.event_unit),
-                        ts_shift_us=ts_shift_us,
-                    )
+                    print(f"Auto event loading failed for {args.raw}: {exc}")
+                    raise
             else:
                 events, t, meta, counters, tmp_events_path = _load_events_from_raw(
                     args.raw,
@@ -958,7 +960,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         if width is None or height is None:
             raise ValueError("Could not determine geometry; pass --width/--height.")
         if ts_shift_us is not None and event_reps:
-            print(f"Applied ts_shift_us={ts_shift_us} during streamed decode")
+            print(f"Applied ts_shift_us={ts_shift_us} during event loading")
 
         label_files = list(args.yolo_dir.glob("*.txt"))
         label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
@@ -1441,11 +1443,12 @@ def main() -> None:
     parser.add_argument(
         "--event-source",
         type=str,
-        default="raw",
+        default="auto",
         choices=["raw", "npz", "auto"],
         help=(
-            "Event source to use. 'raw' streams from events.raw, 'npz' loads "
-            "output_events.npz, and 'auto' tries raw first then falls back to npz."
+            "Event source to use. 'auto' loads output_events.npz into memory when present "
+            "and otherwise streams events.raw to a temporary memmap. 'raw' forces the temporary "
+            "raw decode, and 'npz' forces the high-memory NPZ load."
         ),
     )
     parser.add_argument(

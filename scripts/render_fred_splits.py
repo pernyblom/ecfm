@@ -193,11 +193,12 @@ def main() -> None:
     parser.add_argument(
         "--event-source",
         type=str,
-        default="raw",
+        default="auto",
         choices=["raw", "npz", "auto"],
         help=(
-            "Event source to use. 'raw' streams from events.raw, 'npz' loads "
-            "output_events.npz, and 'auto' tries raw first then falls back to npz."
+            "Event source to use. 'auto' loads output_events.npz into memory when present "
+            "and otherwise streams events.raw to a temporary memmap. 'raw' forces the temporary "
+            "raw decode, and 'npz' forces the high-memory NPZ load."
         ),
     )
     parser.add_argument(
