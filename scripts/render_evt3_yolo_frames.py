@@ -118,6 +118,21 @@ def _parse_geometry(meta: dict) -> Tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def _read_raw_meta_or_empty(raw_path: Path) -> dict:
+    if not raw_path.exists():
+        return {}
+    return dict(read_raw_header(raw_path)[2])
+
+
+def _infer_geometry_from_events(events: np.ndarray) -> dict:
+    if events.size == 0:
+        return {}
+    return {
+        "width": str(int(np.max(events[:, 0])) + 1),
+        "height": str(int(np.max(events[:, 1])) + 1),
+    }
+
+
 def _parse_label_time(path: Path) -> Optional[int]:
     match = _FRAME_RE.search(path.stem)
     if match:
@@ -395,7 +410,10 @@ def _load_events_from_npz(
         ts_shift_us=ts_shift_us,
     )
     t = events[:, 2] if events.size else np.zeros((0,), dtype=np.float32)
-    meta = dict(read_raw_header(raw_path)[2])
+    meta = _read_raw_meta_or_empty(raw_path)
+    width, height = _parse_geometry(meta)
+    if width is None or height is None:
+        meta.update(_infer_geometry_from_events(events))
     return events, t, meta, {}
 
 
@@ -1051,7 +1069,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     show_progress=show_progress,
                 )
         else:
-            _, _, meta = read_raw_header(args.raw)
+            meta = _read_raw_meta_or_empty(args.raw)
             events = np.zeros((0, 4), dtype=np.float32)
             t = np.zeros((0,), dtype=np.float32)
             counters = {}

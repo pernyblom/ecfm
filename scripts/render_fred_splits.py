@@ -35,10 +35,19 @@ def _filter_folders(folders: list[str], start_folder: str | None) -> list[str]:
 
 def _process_folder(folder: str, args_dict: dict) -> str:
     base = Path(args_dict["fred_root"]) / folder
-    raw_path = base / "Event" / "events.raw"
+    event_dir = base / "Event"
+    raw_path = event_dir / "events.raw"
+    npz_path = event_dir / "output_events.npz"
     yolo_dir = base / "Event_YOLO"
-    if not raw_path.exists() or not yolo_dir.exists():
-        return f"Skipping {folder}: missing raw or labels."
+    if not yolo_dir.exists():
+        return f"Skipping {folder}: missing labels."
+    event_source = str(args_dict.get("event_source", "auto")).lower()
+    if event_source == "raw" and not raw_path.exists():
+        return f"Skipping {folder}: missing raw."
+    if event_source == "npz" and not npz_path.exists():
+        return f"Skipping {folder}: missing npz."
+    if event_source == "auto" and not raw_path.exists() and not npz_path.exists():
+        return f"Skipping {folder}: missing raw and npz."
     out_dir = Path(args_dict["output_root"]) / folder
     per_args = argparse.Namespace(**args_dict)
     per_args.raw = raw_path

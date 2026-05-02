@@ -19,7 +19,7 @@ Sequence characteristics:
 - Indoor:
 - Animals: 37 (cat)
 - Windy: 38-41
-- Landed drone (no props running): 120
+- Landed/turned off drone: 120
 - 
 
 
