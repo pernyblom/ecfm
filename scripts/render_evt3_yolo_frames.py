@@ -2,6 +2,8 @@ import argparse
 import json
 import re
 import tempfile
+import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -15,6 +17,87 @@ from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
+
+
+def _progress_items(items: list[Path], *, desc: str, enabled: bool) -> Iterator[Path]:
+    if not enabled:
+        yield from items
+        return
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        yield from _simple_progress_items(items, desc=desc)
+        return
+    yield from tqdm(items, desc=desc, unit="label", dynamic_ncols=True)
+
+
+def _simple_progress_items(items: list[Path], *, desc: str) -> Iterator[Path]:
+    total = len(items)
+    if total == 0:
+        return
+    width = 32
+    start = time.monotonic()
+
+    def show(done: int, current: str | None = None) -> None:
+        elapsed = time.monotonic() - start
+        rate = done / elapsed if elapsed > 0 else 0.0
+        remaining = (total - done) / rate if rate > 0 else 0.0
+        filled = int(width * done / total)
+        bar = "#" * filled + "-" * (width - filled)
+        suffix = f" | {current}" if current else ""
+        print(
+            f"\r{desc} [{bar}] {done}/{total} "
+            f"elapsed {elapsed:5.1f}s eta {remaining:5.1f}s{suffix}",
+            end="",
+            flush=True,
+        )
+
+    show(0)
+    for index, item in enumerate(items, start=1):
+        yield item
+        show(index, item.name)
+    print()
+
+
+def _make_byte_progress_callback(desc: str, *, enabled: bool):
+    if not enabled:
+        return None, None
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        start = time.monotonic()
+        width = 32
+
+        def show(processed: int, total: int) -> None:
+            if total <= 0:
+                return
+            elapsed = time.monotonic() - start
+            done = min(processed, total)
+            rate = done / elapsed if elapsed > 0 else 0.0
+            remaining = (total - done) / rate if rate > 0 else 0.0
+            filled = int(width * done / total)
+            bar = "#" * filled + "-" * (width - filled)
+            print(
+                f"\r{desc} [{bar}] {done / (1024 * 1024):.1f}/"
+                f"{total / (1024 * 1024):.1f} MiB elapsed {elapsed:5.1f}s "
+                f"eta {remaining:5.1f}s",
+                end="",
+                flush=True,
+            )
+
+        def close() -> None:
+            print()
+
+        return show, close
+
+    bar = tqdm(total=0, desc=desc, unit="B", unit_scale=True, dynamic_ncols=True)
+
+    def update(processed: int, total: int) -> None:
+        if total != bar.total:
+            bar.reset(total=total)
+        bar.update(processed - bar.n)
+
+    return update, bar.close
 
 
 def _parse_geometry(meta: dict) -> Tuple[Optional[int], Optional[int]]:
@@ -323,12 +406,19 @@ def _load_events_from_raw(
     decode_chunk_mb: float,
     event_unit: float,
     ts_shift_us: float | None,
+    show_progress: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict, dict, Path | None]:
     tmp_events_path: Path | None = None
+    progress_callback = None
+    close_progress = None
     try:
         with tempfile.NamedTemporaryFile(prefix="evt3_render_", suffix=".f32", delete=False) as tmp:
             tmp_events_path = Path(tmp.name)
         print(f"Streaming decode {raw_path} -> {tmp_events_path}")
+        progress_callback, close_progress = _make_byte_progress_callback(
+            f"{raw_path.parent.parent.name}/{raw_path.name} decode",
+            enabled=show_progress,
+        )
         num_events, counters, meta, _ = decode_evt3_raw_to_arrayfile(
             raw_path,
             tmp_events_path,
@@ -336,7 +426,11 @@ def _load_events_from_raw(
             chunk_bytes=int(float(decode_chunk_mb) * 1024 * 1024),
             event_unit=float(event_unit),
             ts_shift_us=ts_shift_us,
+            progress_callback=progress_callback,
         )
+        if close_progress is not None:
+            close_progress()
+            close_progress = None
         if num_events > 0:
             events = np.memmap(tmp_events_path, dtype=np.float32, mode="r").reshape(num_events, 4)
             t = events[:, 2]
@@ -345,6 +439,8 @@ def _load_events_from_raw(
             t = np.zeros((0,), dtype=np.float32)
         return events, t, meta, counters, tmp_events_path
     except Exception:
+        if close_progress is not None:
+            close_progress()
         if tmp_events_path is not None:
             try:
                 tmp_events_path.unlink(missing_ok=True)
@@ -910,10 +1006,13 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
     events = None
     t = None
     counters = {}
+    event_source_label = args.raw.name
+    show_progress = bool(getattr(args, "show_progress", False))
     try:
         if event_reps:
             event_source = str(getattr(args, "event_source", "raw")).lower()
             if event_source == "npz":
+                event_source_label = "output_events.npz"
                 events, t, meta, counters = _load_events_from_npz(
                     args.raw,
                     event_unit=float(args.event_unit),
@@ -922,29 +1021,34 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             elif event_source == "auto":
                 try:
                     if args.raw.with_name("output_events.npz").exists():
+                        event_source_label = "output_events.npz"
                         events, t, meta, counters = _load_events_from_npz(
                             args.raw,
                             event_unit=float(args.event_unit),
                             ts_shift_us=ts_shift_us,
                         )
                     else:
+                        event_source_label = args.raw.name
                         events, t, meta, counters, tmp_events_path = _load_events_from_raw(
                             args.raw,
                             endian=args.endian,
                             decode_chunk_mb=float(args.decode_chunk_mb),
                             event_unit=float(args.event_unit),
                             ts_shift_us=ts_shift_us,
+                            show_progress=show_progress,
                         )
                 except Exception as exc:
                     print(f"Auto event loading failed for {args.raw}: {exc}")
                     raise
             else:
+                event_source_label = args.raw.name
                 events, t, meta, counters, tmp_events_path = _load_events_from_raw(
                     args.raw,
                     endian=args.endian,
                     decode_chunk_mb=float(args.decode_chunk_mb),
                     event_unit=float(args.event_unit),
                     ts_shift_us=ts_shift_us,
+                    show_progress=show_progress,
                 )
         else:
             _, _, meta = read_raw_header(args.raw)
@@ -1019,7 +1123,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             "files": [],
         }
 
-        for label_path in label_files:
+        progress_desc = f"{args.raw.parent.parent.name}/{event_source_label}"
+        for label_path in _progress_items(label_files, desc=progress_desc, enabled=show_progress):
             label_time_raw = _parse_label_time(label_path)
             if label_time_raw is None:
                 continue
@@ -1455,6 +1560,11 @@ def main() -> None:
         "--overwrite-existing",
         action="store_true",
         help="Re-render representations even if they already exist in the manifest.",
+    )
+    parser.add_argument(
+        "--show-progress",
+        action="store_true",
+        help="Show progress over label files while rendering this event file.",
     )
     args = parser.parse_args()
     render_yolo_frames(args)

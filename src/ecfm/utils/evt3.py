@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import numpy as np
 
@@ -207,6 +207,7 @@ def decode_evt3_raw_to_arrayfile(
     chunk_bytes: int = 64 * 1024 * 1024,
     event_unit: float = 1.0,
     ts_shift_us: float | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Tuple[int, Dict[str, int], Dict[str, str], List[str]]:
     header_lines, data_offset, meta = read_raw_header(path)
     fmt = meta.get("format_name") or meta.get("format", "")
@@ -224,6 +225,10 @@ def decode_evt3_raw_to_arrayfile(
     carry = b""
     num_events = 0
     last_time = -np.inf
+    total_bytes = max(0, path.stat().st_size - data_offset)
+    processed_bytes = 0
+    if progress_callback is not None:
+        progress_callback(0, total_bytes)
 
     with path.open("rb") as src, out_path.open("wb") as dst:
         src.seek(data_offset)
@@ -231,6 +236,9 @@ def decode_evt3_raw_to_arrayfile(
             chunk = src.read(chunk_bytes)
             if not chunk:
                 break
+            processed_bytes += len(chunk)
+            if progress_callback is not None:
+                progress_callback(min(processed_bytes, total_bytes), total_bytes)
             if carry:
                 chunk = carry + chunk
                 carry = b""
@@ -267,4 +275,6 @@ def decode_evt3_raw_to_arrayfile(
             out_chunk.tofile(dst)
             num_events += int(out_chunk.shape[0])
 
+    if progress_callback is not None:
+        progress_callback(total_bytes, total_bytes)
     return num_events, counters, meta, header_lines

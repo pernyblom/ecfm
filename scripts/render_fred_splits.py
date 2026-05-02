@@ -229,6 +229,7 @@ def main() -> None:
     folders = _filter_folders(_read_split_file(args.split_file), args.start_folder)
     args_dict = vars(args).copy()
     if args.num_workers <= 1:
+        args_dict["show_progress"] = True
         for folder in folders:
             msg = _process_folder(folder, args_dict)
             if msg:
