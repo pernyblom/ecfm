@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 import hashlib
 import json
 import pickle
 from pathlib import Path
 import re
+import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -61,6 +63,48 @@ def _read_yolo_boxes(path: Path) -> List[Tuple[float, float, float, float]]:
         except ValueError:
             continue
     return out
+
+
+def _progress_items(items: List[Tuple[str, Path]], *, desc: str, enabled: bool) -> Iterator[Tuple[str, Path]]:
+    if not enabled:
+        yield from items
+        return
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        yield from _simple_progress_items(items, desc=desc)
+        return
+    yield from tqdm(items, desc=desc, unit="label", dynamic_ncols=True)
+
+
+def _simple_progress_items(items: List[Tuple[str, Path]], *, desc: str) -> Iterator[Tuple[str, Path]]:
+    total = len(items)
+    if total == 0:
+        return
+    width = 32
+    start = time.monotonic()
+
+    def show(done: int, current: str | None = None) -> None:
+        elapsed = time.monotonic() - start
+        rate = done / elapsed if elapsed > 0 else 0.0
+        remaining = (total - done) / rate if rate > 0 else 0.0
+        filled = int(width * done / total)
+        bar = "#" * filled + "-" * (width - filled)
+        suffix = f" | {current}" if current else ""
+        print(
+            f"\r{desc} [{bar}] {done}/{total} "
+            f"elapsed {elapsed:5.1f}s eta {remaining:5.1f}s{suffix}",
+            end="",
+            flush=True,
+        )
+
+    show(0)
+    for index, item in enumerate(items, start=1):
+        folder, label_path = item
+        current = f"{folder}/{label_path.name}" if folder else label_path.name
+        yield item
+        show(index, current)
+    print()
 
 
 def _box_xyxy_to_xywh_norm(
@@ -130,6 +174,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         cache_dir: Optional[Path] = None,
         velocity_tracks_file: Optional[str] = "cleaned_tracks.txt",
         velocity_match_iou: float = 0.3,
+        show_build_progress: bool = False,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -156,6 +201,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.velocity_tracks_file = velocity_tracks_file
         self.velocity_match_iou = float(velocity_match_iou)
+        self.show_build_progress = bool(show_build_progress)
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_available_stems: Dict[str, set[str]] = {}
@@ -264,36 +310,48 @@ class FredDetectionDataset(torch.utils.data.Dataset):
     def _folders_to_scan(self) -> List[str]:
         return [""] if self.folders is None else list(self.folders)
 
-    def _build_samples(self) -> List[dict]:
-        samples: List[dict] = []
+    def _label_files_to_scan(self) -> List[Tuple[str, Path]]:
+        items: List[Tuple[str, Path]] = []
         for folder in self._folders_to_scan():
             labels_dir = self._labels_dir(folder)
             if not labels_dir.exists():
                 continue
             for label_path in sorted(labels_dir.glob("*.txt")):
-                time_raw = _parse_frame_time(label_path.stem)
-                if time_raw is None:
-                    continue
-                boxes = _read_yolo_boxes(label_path)
-                if self.require_boxes and not boxes:
-                    continue
-                if self.exclude_multiple_objects and len(boxes) > 1:
-                    continue
-                if not self._has_all_reps(folder, label_path.stem):
-                    continue
-                self._validate_manifest_entry(folder, label_path.stem)
-                samples.append(
-                    {
-                        "folder": folder,
-                        "stem": label_path.stem,
-                        "time_s": float(time_raw) * self.label_time_unit,
-                        "boxes": boxes,
-                        "input_paths": {
-                            rep: str(self._images_dir(folder) / f"{label_path.stem}_{rep}.png")
-                            for rep in self.representations
-                        },
-                    }
-                )
+                items.append((folder, label_path))
+        return items
+
+    def _build_samples(self) -> List[dict]:
+        samples: List[dict] = []
+        label_items = self._label_files_to_scan()
+        progress_desc = "Building detection dataset"
+        for folder, label_path in _progress_items(
+            label_items,
+            desc=progress_desc,
+            enabled=self.show_build_progress,
+        ):
+            time_raw = _parse_frame_time(label_path.stem)
+            if time_raw is None:
+                continue
+            boxes = _read_yolo_boxes(label_path)
+            if self.require_boxes and not boxes:
+                continue
+            if self.exclude_multiple_objects and len(boxes) > 1:
+                continue
+            if not self._has_all_reps(folder, label_path.stem):
+                continue
+            self._validate_manifest_entry(folder, label_path.stem)
+            samples.append(
+                {
+                    "folder": folder,
+                    "stem": label_path.stem,
+                    "time_s": float(time_raw) * self.label_time_unit,
+                    "boxes": boxes,
+                    "input_paths": {
+                        rep: str(self._images_dir(folder) / f"{label_path.stem}_{rep}.png")
+                        for rep in self.representations
+                    },
+                }
+            )
         return samples
 
     def _load_tracks(self, folder: str) -> Optional[dict]:

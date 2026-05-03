@@ -94,6 +94,7 @@ def _build_dataset(cfg: Dict, split: str) -> FredDetectionDataset:
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         velocity_tracks_file=data_cfg.get("velocity_tracks_file", "cleaned_tracks.txt"),
         velocity_match_iou=float(data_cfg.get("velocity_match_iou", 0.3)),
+        show_build_progress=bool(data_cfg.get("show_build_progress", True)),
     )
 
 
