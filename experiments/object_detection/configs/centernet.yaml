@@ -67,6 +67,7 @@ train:
   log_every: 20
   checkpoint_every: 1
   checkpoint_dir: outputs/object_detection_centernet_ckpt
+  resume_checkpoint:
   metrics_jsonl: outputs/object_detection_centernet_ckpt/metrics.jsonl
   vis_every: 1
   vis_samples: 8

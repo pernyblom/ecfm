@@ -137,6 +137,39 @@ def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) ->
     return DataLoader(**loader_kwargs)
 
 
+def _resolve_resume_checkpoint(args: argparse.Namespace, train_cfg: Dict) -> Path | None:
+    if getattr(args, "resume_checkpoint", None) is not None:
+        return Path(args.resume_checkpoint)
+    configured = train_cfg.get("resume_checkpoint")
+    if configured in (None, ""):
+        return None
+    return Path(configured)
+
+
+def _load_training_checkpoint(
+    path: Path,
+    *,
+    model,
+    optimizer,
+    device: torch.device,
+) -> tuple[int, float | None]:
+    if not path.exists():
+        raise FileNotFoundError(f"Resume checkpoint does not exist: {path}")
+    state = torch.load(path, map_location=device)
+    model_state = state.get("model", state)
+    model.load_state_dict(model_state)
+    if "optim" in state:
+        optimizer.load_state_dict(state["optim"])
+    else:
+        print(f"Warning: checkpoint {path} has no optimizer state; resuming model weights only.")
+    last_epoch = int(state.get("epoch", -1))
+    start_epoch = last_epoch + 1
+    best_val = state.get("best_val")
+    best_val = None if best_val is None else float(best_val)
+    print(f"Resumed {path} at epoch {start_epoch} with best_val={best_val}")
+    return start_epoch, best_val
+
+
 def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, train: bool) -> Dict[str, float]:
     train_cfg = cfg["train"]
     data_cfg = cfg["data"]
@@ -308,6 +341,12 @@ def _export_visualizations(model, loader, device: torch.device, cfg: Dict, epoch
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        default=None,
+        help="Optional checkpoint to resume from. Overrides train.resume_checkpoint in the config.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -352,9 +391,24 @@ def main() -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     metrics_jsonl = Path(train_cfg.get("metrics_jsonl", ckpt_dir / "metrics.jsonl"))
 
+    start_epoch = 0
     best_val = None
-    for epoch in range(int(train_cfg["epochs"])):
-        print(f"Epoch {epoch}/{int(train_cfg['epochs']) - 1}")
+    resume_checkpoint = _resolve_resume_checkpoint(args, train_cfg)
+    if resume_checkpoint is not None:
+        start_epoch, best_val = _load_training_checkpoint(
+            resume_checkpoint,
+            model=model,
+            optimizer=optimizer,
+            device=device,
+        )
+
+    total_epochs = int(train_cfg["epochs"])
+    if start_epoch >= total_epochs:
+        print(f"Checkpoint is already at or beyond configured epochs ({start_epoch}/{total_epochs}).")
+        return
+
+    for epoch in range(start_epoch, total_epochs):
+        print(f"Epoch {epoch}/{total_epochs - 1}")
         train_metrics = _run_epoch(
             model=model,
             loader=train_loader,
