@@ -119,9 +119,12 @@ def _parse_geometry(meta: dict) -> Tuple[Optional[int], Optional[int]]:
 
 
 def _read_raw_meta_or_empty(raw_path: Path) -> dict:
-    if not raw_path.exists():
-        return {}
-    return dict(read_raw_header(raw_path)[2])
+    if raw_path.exists():
+        return dict(read_raw_header(raw_path)[2])
+    tmp_index = raw_path.with_suffix(raw_path.suffix + ".tmp_index")
+    if tmp_index.exists():
+        return dict(read_raw_header(tmp_index)[2])
+    return {}
 
 
 def _infer_geometry_from_events(events: np.ndarray) -> dict:
@@ -349,12 +352,66 @@ def _read_ts_shift_us(raw_path: Path) -> Optional[int]:
         return None
 
 
+def _read_tmp_index_time_bounds(raw_path: Path) -> tuple[int, int] | None:
+    tmp_index = raw_path.with_suffix(raw_path.suffix + ".tmp_index")
+    if not tmp_index.exists():
+        return None
+    try:
+        _, data_offset, meta = read_raw_header(tmp_index)
+        payload_size = tmp_index.stat().st_size - data_offset
+        if payload_size < 20:
+            return None
+        indexed_size = raw_path.stat().st_size if raw_path.exists() else None
+        if indexed_size is None:
+            raw_size_meta = meta.get("size")
+            if raw_size_meta is not None:
+                indexed_size = int(raw_size_meta)
+        record_count = payload_size // 20
+        dtype = np.dtype([("t", "<i8"), ("offset", "<i8"), ("count", "<i4")])
+        records = np.memmap(
+            tmp_index,
+            dtype=dtype,
+            mode="r",
+            offset=data_offset,
+            shape=(record_count,),
+        )
+        valid_mask = records["t"] >= 0
+        if indexed_size is not None:
+            valid_mask &= (records["offset"] >= 0) & (records["offset"] <= indexed_size)
+        valid = records["t"][valid_mask]
+        if valid.size == 0:
+            return None
+        return int(valid[0]), int(valid[-1])
+    except Exception:
+        return None
+
+
+def _npz_timestamps_match_tmp_index(
+    events: np.ndarray,
+    bounds: tuple[int, int] | None,
+    *,
+    event_unit: float,
+) -> bool:
+    if bounds is None or events.size == 0:
+        return False
+    unit = float(event_unit)
+    first_index_t, last_index_t = (float(bounds[0]) * unit, float(bounds[1]) * unit)
+    first_event_t = float(events[0, 2])
+    last_event_t = float(events[-1, 2])
+    tolerance = 5000.0 * unit
+    return (
+        abs(first_event_t - first_index_t) <= tolerance
+        and last_event_t <= last_index_t + tolerance
+    )
+
+
 def _load_predecoded_events_npz(
     npz_path: Path,
     *,
     event_unit: float,
     ts_shift_us: float | None,
-) -> np.ndarray:
+    tmp_index_time_bounds: tuple[int, int] | None = None,
+) -> tuple[np.ndarray, float | None, bool]:
     with np.load(npz_path) as payload:
         if "data" not in payload:
             raise ValueError(f"Predecoded event cache missing 'data' array: {npz_path}")
@@ -384,14 +441,21 @@ def _load_predecoded_events_npz(
     unit = float(event_unit)
     if unit != 1.0:
         events[:, 2] *= unit
-    if ts_shift_us is not None:
+    already_shifted = _npz_timestamps_match_tmp_index(
+        events,
+        tmp_index_time_bounds,
+        event_unit=unit,
+    )
+    applied_ts_shift_us = None
+    if ts_shift_us is not None and not already_shifted:
         events[:, 2] -= float(ts_shift_us) * unit
+        applied_ts_shift_us = float(ts_shift_us)
         keep = events[:, 2] >= 0.0
         if np.any(keep):
             events = events[keep]
         else:
             events = np.zeros((0, 4), dtype=np.float32)
-    return events
+    return events, applied_ts_shift_us, already_shifted
 
 
 def _load_events_from_npz(
@@ -399,22 +463,23 @@ def _load_events_from_npz(
     *,
     event_unit: float,
     ts_shift_us: float | None,
-) -> tuple[np.ndarray, np.ndarray, dict, dict]:
+) -> tuple[np.ndarray, np.ndarray, dict, dict, float | None, bool]:
     predecoded_path = raw_path.with_name("output_events.npz")
     if not predecoded_path.exists():
         raise FileNotFoundError(f"Missing predecoded event cache: {predecoded_path}")
     print(f"Loading predecoded events {predecoded_path}")
-    events = _load_predecoded_events_npz(
+    events, applied_ts_shift_us, already_shifted = _load_predecoded_events_npz(
         predecoded_path,
         event_unit=float(event_unit),
         ts_shift_us=ts_shift_us,
+        tmp_index_time_bounds=_read_tmp_index_time_bounds(raw_path),
     )
     t = events[:, 2] if events.size else np.zeros((0,), dtype=np.float32)
     meta = _read_raw_meta_or_empty(raw_path)
     width, height = _parse_geometry(meta)
     if width is None or height is None:
         meta.update(_infer_geometry_from_events(events))
-    return events, t, meta, {}
+    return events, t, meta, {}, applied_ts_shift_us, already_shifted
 
 
 def _load_events_from_raw(
@@ -1025,13 +1090,22 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
     t = None
     counters = {}
     event_source_label = args.raw.name
+    applied_ts_shift_us = ts_shift_us
+    npz_timestamps_already_shifted = False
     show_progress = bool(getattr(args, "show_progress", False))
     try:
         if event_reps:
             event_source = str(getattr(args, "event_source", "raw")).lower()
             if event_source == "npz":
                 event_source_label = "output_events.npz"
-                events, t, meta, counters = _load_events_from_npz(
+                (
+                    events,
+                    t,
+                    meta,
+                    counters,
+                    applied_ts_shift_us,
+                    npz_timestamps_already_shifted,
+                ) = _load_events_from_npz(
                     args.raw,
                     event_unit=float(args.event_unit),
                     ts_shift_us=ts_shift_us,
@@ -1040,7 +1114,14 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 try:
                     if args.raw.with_name("output_events.npz").exists():
                         event_source_label = "output_events.npz"
-                        events, t, meta, counters = _load_events_from_npz(
+                        (
+                            events,
+                            t,
+                            meta,
+                            counters,
+                            applied_ts_shift_us,
+                            npz_timestamps_already_shifted,
+                        ) = _load_events_from_npz(
                             args.raw,
                             event_unit=float(args.event_unit),
                             ts_shift_us=ts_shift_us,
@@ -1055,6 +1136,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                             ts_shift_us=ts_shift_us,
                             show_progress=show_progress,
                         )
+                        applied_ts_shift_us = ts_shift_us
                 except Exception as exc:
                     print(f"Auto event loading failed for {args.raw}: {exc}")
                     raise
@@ -1068,11 +1150,13 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     ts_shift_us=ts_shift_us,
                     show_progress=show_progress,
                 )
+                applied_ts_shift_us = ts_shift_us
         else:
             meta = _read_raw_meta_or_empty(args.raw)
             events = np.zeros((0, 4), dtype=np.float32)
             t = np.zeros((0,), dtype=np.float32)
             counters = {}
+            applied_ts_shift_us = None
 
         width, height = _parse_geometry(meta)
         if args.width is not None:
@@ -1081,8 +1165,13 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             height = args.height
         if width is None or height is None:
             raise ValueError("Could not determine geometry; pass --width/--height.")
-        if ts_shift_us is not None and event_reps:
-            print(f"Applied ts_shift_us={ts_shift_us} during event loading")
+        if applied_ts_shift_us is not None and event_reps:
+            print(f"Applied ts_shift_us={applied_ts_shift_us} during event loading")
+        elif ts_shift_us is not None and npz_timestamps_already_shifted:
+            print(
+                f"Skipped ts_shift_us={ts_shift_us} for output_events.npz; "
+                "timestamps already match events.raw.tmp_index"
+            )
 
         label_files = list(args.yolo_dir.glob("*.txt"))
         label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
@@ -1112,6 +1201,10 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "label_unit": float(args.label_unit),
                 "event_unit": float(args.event_unit),
                 "ts_shift_us": None if ts_shift_us is None else float(ts_shift_us),
+                "applied_ts_shift_us": None
+                if applied_ts_shift_us is None
+                else float(applied_ts_shift_us),
+                "npz_timestamps_already_shifted": bool(npz_timestamps_already_shifted),
                 "window_mode": getattr(args, "window_mode", None) or ("center" if args.center else "trailing"),
                 "endian": args.endian,
                 "width": None if args.width is None else int(args.width),
