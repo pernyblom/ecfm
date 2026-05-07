@@ -149,6 +149,11 @@ python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/c
 The dataset loader checks `render_manifest.json` and will fail fast if the
 rendered per-representation sizes do not match the configured convention.
 
+Set `data.filter_missing_representations: true` to skip label frames whose
+configured representation images are not all present. The dataset prints a
+warning summary with missing representation counts. Set it to `false` to fail
+fast on the first missing image.
+
 `--event-source` defaults to `raw`. Use `auto` only if you want the renderer to
 fall back to `output_events.npz` when streamed raw decode fails.
 

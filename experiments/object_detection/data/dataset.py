@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from collections import Counter
 from dataclasses import dataclass
 import hashlib
 import json
@@ -148,7 +149,7 @@ def _box_iou_xywh_norm(a: Tuple[float, float, float, float], b: Tuple[float, flo
 
 
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 5
+    CACHE_VERSION = 6
 
     def __init__(
         self,
@@ -174,6 +175,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         cache_dir: Optional[Path] = None,
         velocity_tracks_file: Optional[str] = "cleaned_tracks.txt",
         velocity_match_iou: float = 0.3,
+        filter_missing_representations: bool = True,
         show_build_progress: bool = False,
     ) -> None:
         self.images_root = Path(images_root)
@@ -201,6 +203,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.velocity_tracks_file = velocity_tracks_file
         self.velocity_match_iou = float(velocity_match_iou)
+        self.filter_missing_representations = bool(filter_missing_representations)
         self.show_build_progress = bool(show_build_progress)
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
@@ -221,6 +224,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         cached = self._load_cache()
         if cached is not None:
             self.samples = cached
+            self._filter_cached_missing_representations()
         else:
             self.samples = self._build_samples()
             self._apply_sample_limit()
@@ -307,6 +311,35 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             self._folder_available_stems[folder] = available or set()
         return stem in self._folder_available_stems[folder]
 
+    def _missing_representation_paths(self, folder: str, stem: str) -> Dict[str, Path]:
+        base = self._images_dir(folder)
+        missing: Dict[str, Path] = {}
+        for rep in self.representations:
+            path = base / f"{stem}_{rep}.png"
+            if not path.exists():
+                missing[rep] = path
+        return missing
+
+    def _warn_missing_representations(
+        self,
+        *,
+        skipped: int,
+        missing_by_rep: Counter,
+        examples: List[str],
+        source: str,
+    ) -> None:
+        if skipped <= 0:
+            return
+        rep_summary = ", ".join(f"{rep}={count}" for rep, count in sorted(missing_by_rep.items()))
+        print(
+            f"Warning: skipped {skipped} object detection samples with missing representation files "
+            f"while {source}. Missing counts: {rep_summary or 'unknown'}."
+        )
+        if examples:
+            print("Warning: missing representation examples:")
+            for example in examples:
+                print(f"  {example}")
+
     def _folders_to_scan(self) -> List[str]:
         return [""] if self.folders is None else list(self.folders)
 
@@ -324,6 +357,9 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         samples: List[dict] = []
         label_items = self._label_files_to_scan()
         progress_desc = "Building detection dataset"
+        skipped_missing = 0
+        missing_by_rep: Counter = Counter()
+        missing_examples: List[str] = []
         for folder, label_path in _progress_items(
             label_items,
             desc=progress_desc,
@@ -338,7 +374,18 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             if self.exclude_multiple_objects and len(boxes) > 1:
                 continue
             if not self._has_all_reps(folder, label_path.stem):
-                continue
+                missing = self._missing_representation_paths(folder, label_path.stem)
+                if self.filter_missing_representations:
+                    skipped_missing += 1
+                    missing_by_rep.update(missing.keys())
+                    if len(missing_examples) < 5:
+                        key = f"{folder}/{label_path.stem}" if folder else label_path.stem
+                        missing_examples.append(f"{key}: {', '.join(sorted(missing))}")
+                    continue
+                missing_paths = ", ".join(str(path) for path in missing.values())
+                raise FileNotFoundError(
+                    f"Missing representation file(s) for '{folder}/{label_path.stem}': {missing_paths}"
+                )
             self._validate_manifest_entry(folder, label_path.stem)
             samples.append(
                 {
@@ -352,7 +399,46 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                     },
                 }
             )
+        self._warn_missing_representations(
+            skipped=skipped_missing,
+            missing_by_rep=missing_by_rep,
+            examples=missing_examples,
+            source="building the sample index",
+        )
         return samples
+
+    def _filter_cached_missing_representations(self) -> None:
+        if not self.samples:
+            return
+        kept: List[dict] = []
+        skipped_missing = 0
+        missing_by_rep: Counter = Counter()
+        missing_examples: List[str] = []
+        for sample in self.samples:
+            missing = {
+                rep: Path(path)
+                for rep, path in dict(sample.get("input_paths") or {}).items()
+                if not Path(path).exists()
+            }
+            if not missing:
+                kept.append(sample)
+                continue
+            if not self.filter_missing_representations:
+                key = f"{sample.get('folder', '')}/{sample.get('stem', '')}".strip("/")
+                missing_paths = ", ".join(str(path) for path in missing.values())
+                raise FileNotFoundError(f"Missing cached representation file(s) for '{key}': {missing_paths}")
+            skipped_missing += 1
+            missing_by_rep.update(missing.keys())
+            if len(missing_examples) < 5:
+                key = f"{sample.get('folder', '')}/{sample.get('stem', '')}".strip("/")
+                missing_examples.append(f"{key}: {', '.join(sorted(missing))}")
+        self.samples = kept
+        self._warn_missing_representations(
+            skipped=skipped_missing,
+            missing_by_rep=missing_by_rep,
+            examples=missing_examples,
+            source="loading the cached sample index",
+        )
 
     def _load_tracks(self, folder: str) -> Optional[dict]:
         if folder in self._folder_tracks:
@@ -473,6 +559,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             "cache_version": self.CACHE_VERSION,
             "velocity_tracks_file": self.velocity_tracks_file,
             "velocity_match_iou": self.velocity_match_iou,
+            "filter_missing_representations": self.filter_missing_representations,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 

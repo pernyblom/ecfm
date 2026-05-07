@@ -28,6 +28,7 @@ data:
   window_tolerance_ms: 2.0
   require_boxes: false
   exclude_multiple_objects: false
+  filter_missing_representations: true
   velocity_tracks_file: cleaned_tracks.txt
   velocity_match_iou: 0.3
   max_samples_train:

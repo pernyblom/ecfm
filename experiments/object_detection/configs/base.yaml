@@ -26,6 +26,7 @@ data:
   window_tolerance_ms: 2.0
   require_boxes: false
   exclude_multiple_objects: true
+  filter_missing_representations: true
   # max_samples_train: 2000
   max_samples_train:
   # max_samples_val: 400
