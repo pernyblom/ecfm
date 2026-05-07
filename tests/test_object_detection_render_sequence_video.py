@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.object_detection.render_sequence_video import _load_background_image
+from experiments.object_detection.render_folder_video import _find_image_stems
 
 
 def _write_rgb(path: Path, color: tuple[int, int, int]) -> None:
@@ -60,3 +61,14 @@ def test_rgb_source_padded_rgb_overrides_rendered_rgb(tmp_path: Path) -> None:
     )
 
     assert _pixel(img) == (40, 50, 60)
+
+
+def test_find_image_stems_requires_all_rendered_reps(tmp_path: Path) -> None:
+    images_dir = tmp_path / "rendered"
+    _write_rgb(images_dir / "frame_000000_000000010000_cstr3.png", (10, 20, 30))
+    _write_rgb(images_dir / "frame_000000_000000010000_xt_my.png", (10, 20, 30))
+    _write_rgb(images_dir / "frame_000001_000000020000_cstr3.png", (10, 20, 30))
+
+    stems = _find_image_stems(images_dir=images_dir, required_reps=["cstr3", "xt_my"])
+
+    assert stems == ["frame_000000_000000010000"]

@@ -121,6 +121,24 @@ python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/c
 python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --event-source raw --num-workers 4 --include-empty
 ```
 
+Render one standalone `.raw` file into representation frames by collected event
+count:
+
+```bash
+python scripts/render_evt3_representations.py datasets/FRED/8/Event/events.raw outputs/raw_reps/8 --representation "xt_my;yt_mx;cstr3" --events-per-frame 50000 --temporal-bins 224 --retain-spatial-dimensions --event-source raw
+```
+
+Or render fixed-duration time windows. With the default `--event-unit 1.0`,
+`--window` is in microseconds for FRED-style EVT3 timestamps:
+
+```bash
+python scripts/render_evt3_representations.py datasets/FRED/8/Event/events.raw outputs/raw_reps/8 --representation "xt_my;yt_mx;cstr3" --window 33333 --temporal-bins 224 --retain-spatial-dimensions --event-source raw
+```
+
+Use `--stride-events` or `--stride-window` for overlapping or skipped windows.
+The output files use `<stem>_<rep>.png` names and include a trailing timestamp
+in the stem so video FPS can be inferred when possible.
+
 To render explicit per-representation sizes instead of using the retained
 sensor dimensions, pass `--image-sizes`, for example:
 
@@ -238,6 +256,15 @@ This places:
 The output size is exactly `2 * tile_width` by `2 * tile_height`, where the
 tile size defaults to the `cstr3` video size. The RGB panel is scaled to fit
 inside its quadrant while preserving aspect ratio.
+
+Run object detection on any representation folder
+
+```bash
+python experiments/object_detection/render_folder_video.py --config experiments/object_detection/configs/centernet.yaml --checkpoint outputs/object_detection_centernet_ckpt/best.pt --input-dir outputs/raw_reps/8 --reps "cstr3;xt_my;yt_mx" --score-threshold 0.3 --heatmaps pred
+```
+
+This does not require FRED labels. Add `--labels-dir path/to/Event_YOLO` and
+`--draw-ground-truth` if you want ground-truth overlays or GT heatmaps.
 
 Extension points
 - Add more inputs via `data.representations`.
