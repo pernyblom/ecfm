@@ -41,8 +41,8 @@ model:
   backbone:
     type: resnet18
     in_channels: 3
-    out_dim: 128
-  centernet_hidden_dim: 128
+    out_dim: 256
+  centernet_hidden_dim: 256
   output_stride: 4
   topk: 100
   predict_velocity: false

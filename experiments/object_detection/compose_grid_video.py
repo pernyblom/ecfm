@@ -68,7 +68,7 @@ def _find_sequence_assets(sequence_dir: Path) -> dict[str, List[Path]]:
         "cstr3": sequence_dir / "frames_cstr3",
         "yt_mx": sequence_dir / "frames_yt_mx",
         "xt_my": sequence_dir / "frames_xt_my",
-        "rgb": sequence_dir / "frames_rgb",
+        "rgb": sequence_dir / "frames_padded_rgb",
     }
     for key, directory in mapping.items():
         if not directory.exists():

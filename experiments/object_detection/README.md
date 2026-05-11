@@ -217,7 +217,7 @@ python experiments/object_detection/render_sequence_video.py --config experiment
 Render CenterNet prediction and GT heatmap videos from a checkpoint:
 
 ```bash
-python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/centernet.yaml --checkpoint outputs/object_detection_centernet_ckpt/best.pt --folder 8 --reps "cstr3;rgb" --score-threshold 0.3 --draw-ground-truth --heatmaps "pred;gt"
+python experiments/object_detection/render_sequence_video.py --config experiments/object_detection/configs/centernet.yaml --checkpoint outputs/object_detection_centernet_ckpt/best.pt --folder 8 --reps "cstr3;padded_rgb" --score-threshold 0.3 --draw-ground-truth --heatmaps "pred;gt"
 ```
 
 This writes the regular box overlay videos plus separate heatmap videos such as
@@ -256,7 +256,7 @@ This places:
 - `cstr3` top-left
 - `yt_mx` top-right
 - `xt_my` bottom-left
-- `rgb` bottom-right
+- `padded_rgb` bottom-right
 
 The output size is exactly `2 * tile_width` by `2 * tile_height`, where the
 tile size defaults to the `cstr3` video size. The RGB panel is scaled to fit
