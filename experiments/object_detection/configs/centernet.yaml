@@ -4,7 +4,8 @@ data:
   split_files:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
-  labels_subdir: Event_YOLO
+  # auto uses RGB_YOLO for RGB-only training and Event_YOLO whenever an event branch is present.
+  labels_subdir: auto
   representations: ["xt_my", "yt_mx", "cstr3"]
   # representations: ["cstr3", "xt_my"]
   heatmap_representations: []
@@ -17,6 +18,8 @@ data:
     yt: [224, 224]
     cstr3: [398, 224]
     cstr2: [398, 224]
+    rgb: [1280, 720]
+    padded_rgb: [1280, 720]
 
   retain_spatial_dimensions: false
   temporal_bins: 224

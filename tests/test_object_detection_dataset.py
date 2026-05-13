@@ -109,3 +109,48 @@ def test_missing_representation_files_can_be_strict(tmp_path: Path) -> None:
             require_boxes=False,
             filter_missing_representations=False,
         )
+
+
+def test_rgb_only_auto_labels_use_rgb_yolo_and_dataset_rgb_frames(tmp_path: Path) -> None:
+    _write_label(tmp_path / "labels" / "RGB_YOLO" / "Video_0_16_03_03.363444.txt")
+    _write_image(tmp_path / "labels" / "RGB" / "Video_0_16_03_03.363444.jpg")
+
+    dataset = FredDetectionDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        representations=["rgb"],
+        heatmap_representations=[],
+        image_sizes={"rgb": (8, 8)},
+        frame_size=(8, 8),
+        folders=[""],
+        labels_subdir="auto",
+        verify_render_manifest=False,
+        require_boxes=False,
+    )
+
+    assert dataset.labels_subdir == "RGB_YOLO"
+    assert len(dataset) == 1
+    assert dataset.samples[0]["input_paths"]["rgb"].endswith("Video_0_16_03_03.363444.jpg")
+    assert dataset[0].inputs["rgb"].shape == (3, 8, 8)
+
+
+def test_auto_labels_use_event_yolo_when_any_event_rep_is_present(tmp_path: Path) -> None:
+    _write_label(tmp_path / "labels" / "Event_YOLO" / "frame_000001.txt")
+    _write_image(tmp_path / "images" / "frame_000001_cstr3.png")
+    _write_image(tmp_path / "images" / "frame_000001_rgb.png")
+
+    dataset = FredDetectionDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        representations=["cstr3", "rgb"],
+        heatmap_representations=[],
+        image_sizes={"cstr3": (8, 8), "rgb": (8, 8)},
+        frame_size=(8, 8),
+        folders=[""],
+        labels_subdir="auto",
+        verify_render_manifest=False,
+        require_boxes=False,
+    )
+
+    assert dataset.labels_subdir == "Event_YOLO"
+    assert len(dataset) == 1

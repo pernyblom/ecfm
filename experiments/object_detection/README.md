@@ -32,6 +32,9 @@ CenterNet head
 - Set `model.detector: centernet` or use `configs/centernet.yaml`.
 - The same rendered representations are encoded independently and fused on an
   XY output grid.
+- If `data.representations` contains only one representation, CenterNet skips
+  the fusion convolution block and feeds that encoder feature map directly to
+  the prediction heads.
 - The model predicts a single-class center heatmap, box size, center offset,
   and optional velocity.
 - Training uses focal-style center heatmap loss plus masked L1 losses at object
@@ -169,6 +172,16 @@ Train CenterNet:
 python experiments/object_detection/train.py --config experiments/object_detection/configs/centernet.yaml
 ```
 
+RGB-only training
+- Set `data.representations: ["rgb"]` or `["padded_rgb"]`.
+- With `data.labels_subdir: auto`, the dataset uses `RGB_YOLO` when all model
+  inputs are RGB-derived, and `Event_YOLO` whenever any event representation
+  such as `cstr3`, `xt_my`, or `yt_mx` is present.
+- RGB-only training can read frames directly from the FRED `RGB` or
+  `PADDED_RGB` folders, so rendered `*_rgb.png` files are not required for that
+  case. Mixed event+RGB training still expects rendered/aligned RGB PNGs under
+  `data.images_root`, matching the event label stems.
+
 Training throughput notes
 - The dataset sample index is cached under `data.cache_dir`, so the first run
   after changing dataset-related config is the slow one.
@@ -260,7 +273,9 @@ This places:
 
 The output size is exactly `2 * tile_width` by `2 * tile_height`, where the
 tile size defaults to the `cstr3` video size. The RGB panel is scaled to fit
-inside its quadrant while preserving aspect ratio.
+inside its quadrant while preserving aspect ratio. Add `--keep-aspect-ratio`
+to letterbox the event-representation panels as well instead of stretching
+them to the tile size.
 
 Run object detection on any representation folder
 

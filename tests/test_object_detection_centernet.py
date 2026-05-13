@@ -31,3 +31,33 @@ def test_centernet_output_grid_uses_configured_image_size_not_frame_size() -> No
     assert not out["boxes"].requires_grad
     assert not out["scores"].requires_grad
     assert not out["fused_features"].requires_grad
+
+
+def test_centernet_single_representation_disables_fusion_block() -> None:
+    model = CenterNetDetector(
+        representations=["cstr3"],
+        image_sizes={"cstr3": (32, 32)},
+        frame_size=(1280, 720),
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [8, 16], "out_dim": 16},
+        hidden_dim=32,
+        output_stride=4,
+        topk=10,
+        predict_velocity=False,
+    )
+
+    assert isinstance(model.fusion, torch.nn.Identity)
+
+
+def test_centernet_multiple_representations_keeps_fusion_block() -> None:
+    model = CenterNetDetector(
+        representations=["cstr3", "xt_my"],
+        image_sizes={"cstr3": (32, 32), "xt_my": (32, 16)},
+        frame_size=(1280, 720),
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [8, 16], "out_dim": 16},
+        hidden_dim=32,
+        output_stride=4,
+        topk=10,
+        predict_velocity=False,
+    )
+
+    assert not isinstance(model.fusion, torch.nn.Identity)

@@ -30,6 +30,25 @@ class DetectionSample:
 
 _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
+_RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
+_DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
+
+
+def _parse_frame_time_s(name: str, *, label_time_unit: float) -> Optional[float]:
+    match = _FRAME_RE.search(name)
+    if match:
+        return float(match.group(1)) * label_time_unit
+    match = _TRAILING_TIME_RE.search(name)
+    if match:
+        return float(match.group(1)) * label_time_unit
+    match = _RGB_TIME_RE.search(name)
+    if match:
+        hours = int(match.group(1))
+        minutes = int(match.group(2))
+        seconds = int(match.group(3))
+        fraction = float(f"0.{match.group(4)}")
+        return float(hours * 3600 + minutes * 60 + seconds) + fraction
+    return None
 
 
 def _parse_frame_time(name: str) -> Optional[int]:
@@ -40,6 +59,18 @@ def _parse_frame_time(name: str) -> Optional[int]:
     if match:
         return int(match.group(1))
     return None
+
+
+def _is_dataset_rgb_rep(rep: str) -> bool:
+    return rep.lower() in _DATASET_RGB_REPS
+
+
+def _resolve_labels_subdir(labels_subdir: str, representations: List[str]) -> str:
+    if str(labels_subdir).lower() != "auto":
+        return str(labels_subdir)
+    if all(_is_dataset_rgb_rep(rep) for rep in representations):
+        return "RGB_YOLO"
+    return "Event_YOLO"
 
 
 def _load_image(path: Path, size: Tuple[int, int]) -> torch.Tensor:
@@ -189,7 +220,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             ["xt_my", "yt_mx"] if heatmap_representations is None else list(heatmap_representations)
         )
         self.folders = folders
-        self.labels_subdir = labels_subdir
+        self.labels_subdir = _resolve_labels_subdir(labels_subdir, self.representations)
         self.label_time_unit = float(label_time_unit)
         self.image_window_ms = float(image_window_ms)
         self.image_window_mode = str(image_window_mode)
@@ -235,6 +266,27 @@ class FredDetectionDataset(torch.utils.data.Dataset):
 
     def _images_dir(self, folder: str) -> Path:
         return self.images_root / folder if self.folders is not None else self.images_root
+
+    def _dataset_rgb_dir(self, folder: str, rep: str) -> Path:
+        dirname = _DATASET_RGB_REPS[rep.lower()]
+        return self.labels_root / folder / dirname if self.folders is not None else self.labels_root / dirname
+
+    def _resolve_input_path(self, folder: str, stem: str, rep: str) -> Optional[Path]:
+        rendered_path = self._images_dir(folder) / f"{stem}_{rep}.png"
+        if rendered_path.exists():
+            return rendered_path
+        if _is_dataset_rgb_rep(rep):
+            rgb_dir = self._dataset_rgb_dir(folder, rep)
+            for suffix in (".jpg", ".png", ".jpeg"):
+                candidate = rgb_dir / f"{stem}{suffix}"
+                if candidate.exists():
+                    return candidate
+        return None
+
+    def _expected_input_path(self, folder: str, stem: str, rep: str) -> Path:
+        if _is_dataset_rgb_rep(rep) and self.labels_subdir == "RGB_YOLO":
+            return self._dataset_rgb_dir(folder, rep) / f"{stem}.jpg"
+        return self._images_dir(folder) / f"{stem}_{rep}.png"
 
     def _manifest_path(self, folder: str) -> Path:
         return self._images_dir(folder) / self.render_manifest_name
@@ -298,26 +350,13 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 )
 
     def _has_all_reps(self, folder: str, stem: str) -> bool:
-        if folder not in self._folder_available_stems:
-            base = self._images_dir(folder)
-            available: Optional[set[str]] = None
-            for rep in self.representations:
-                suffix = f"_{rep}.png"
-                rep_stems = {
-                    path.name[: -len(suffix)]
-                    for path in base.glob(f"*{suffix}")
-                }
-                available = rep_stems if available is None else available & rep_stems
-            self._folder_available_stems[folder] = available or set()
-        return stem in self._folder_available_stems[folder]
+        return all(self._resolve_input_path(folder, stem, rep) is not None for rep in self.representations)
 
     def _missing_representation_paths(self, folder: str, stem: str) -> Dict[str, Path]:
-        base = self._images_dir(folder)
         missing: Dict[str, Path] = {}
         for rep in self.representations:
-            path = base / f"{stem}_{rep}.png"
-            if not path.exists():
-                missing[rep] = path
+            if self._resolve_input_path(folder, stem, rep) is None:
+                missing[rep] = self._expected_input_path(folder, stem, rep)
         return missing
 
     def _warn_missing_representations(
@@ -365,8 +404,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             desc=progress_desc,
             enabled=self.show_build_progress,
         ):
-            time_raw = _parse_frame_time(label_path.stem)
-            if time_raw is None:
+            time_s = _parse_frame_time_s(label_path.stem, label_time_unit=self.label_time_unit)
+            if time_s is None:
                 continue
             boxes = _read_yolo_boxes(label_path)
             if self.require_boxes and not boxes:
@@ -391,10 +430,10 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 {
                     "folder": folder,
                     "stem": label_path.stem,
-                    "time_s": float(time_raw) * self.label_time_unit,
+                    "time_s": time_s,
                     "boxes": boxes,
                     "input_paths": {
-                        rep: str(self._images_dir(folder) / f"{label_path.stem}_{rep}.png")
+                        rep: str(self._resolve_input_path(folder, label_path.stem, rep))
                         for rep in self.representations
                     },
                 }

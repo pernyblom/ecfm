@@ -60,33 +60,39 @@ class CenterNetDetector(nn.Module):
         out_h = max(1, source_h // self.output_stride)
         self.output_size = (out_w, out_h)
         self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
-        in_dim = _encoder_fmap_dim(backbone_cfg) * len(self.representations)
-        self.fusion = nn.Sequential(
-            nn.Conv2d(in_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(hidden_dim),
-            nn.ReLU(inplace=True),
-        )
+        encoder_dim = _encoder_fmap_dim(backbone_cfg)
+        if len(self.representations) == 1:
+            self.fusion = nn.Identity()
+            head_dim = encoder_dim
+        else:
+            in_dim = encoder_dim * len(self.representations)
+            self.fusion = nn.Sequential(
+                nn.Conv2d(in_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                nn.ReLU(inplace=True),
+            )
+            head_dim = hidden_dim
         self.heatmap_head = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(head_dim, hidden_dim, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_dim, 1, kernel_size=1),
         )
         self.size_head = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(head_dim, hidden_dim, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_dim, 2, kernel_size=1),
         )
         self.offset_head = nn.Sequential(
-            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.Conv2d(head_dim, hidden_dim, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(hidden_dim, 2, kernel_size=1),
         )
         if self.predict_velocity:
             self.velocity_head = nn.Sequential(
-                nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                nn.Conv2d(head_dim, hidden_dim, kernel_size=3, padding=1),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(hidden_dim, 2, kernel_size=1),
             )

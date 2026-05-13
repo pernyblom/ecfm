@@ -40,6 +40,32 @@ def _is_dataset_rgb_rep(rep: str) -> bool:
     return rep.lower() in _RGB_SOURCE_DIRS
 
 
+def _resolve_labels_subdir(raw: str, representations: List[str]) -> str:
+    if str(raw).lower() != "auto":
+        return str(raw)
+    if all(_is_dataset_rgb_rep(rep) for rep in representations):
+        return "RGB_YOLO"
+    return "Event_YOLO"
+
+
+def _resolve_model_input_path(
+    *,
+    images_dir: Path,
+    dataset_folder_dir: Path,
+    stem: str,
+    rep: str,
+) -> Path:
+    rendered_path = images_dir / f"{stem}_{rep}.png"
+    if rendered_path.exists() or not _is_dataset_rgb_rep(rep):
+        return rendered_path
+    rgb_dir = dataset_folder_dir / _RGB_SOURCE_DIRS[rep.lower()]
+    for suffix in (".jpg", ".png", ".jpeg"):
+        candidate = rgb_dir / f"{stem}{suffix}"
+        if candidate.exists():
+            return candidate
+    return rendered_path
+
+
 def _load_input_tensor(path: Path, image_size: Tuple[int, int]) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
     if img.size != (image_size[0], image_size[1]):
@@ -404,7 +430,10 @@ def main() -> None:
 
     images_dir = Path(data_cfg["images_root"]) / folder
     dataset_folder_dir = Path(data_cfg["labels_root"]) / folder
-    labels_dir = dataset_folder_dir / data_cfg.get("labels_subdir", "Event_YOLO")
+    labels_dir = dataset_folder_dir / _resolve_labels_subdir(
+        data_cfg.get("labels_subdir", "Event_YOLO"),
+        list(data_cfg["representations"]),
+    )
     if not images_dir.exists():
         raise FileNotFoundError(f"Missing rendered images directory: {images_dir}")
     if not labels_dir.exists():
@@ -470,7 +499,12 @@ def main() -> None:
             model_inputs: Dict[str, torch.Tensor] = {}
             for model_rep in data_cfg["representations"]:
                 model_inputs[model_rep] = _load_input_tensor(
-                    images_dir / f"{stem}_{model_rep}.png",
+                    _resolve_model_input_path(
+                        images_dir=images_dir,
+                        dataset_folder_dir=dataset_folder_dir,
+                        stem=stem,
+                        rep=model_rep,
+                    ),
                     image_sizes[model_rep],
                 ).unsqueeze(0).to(device)
 
