@@ -48,10 +48,11 @@ def _compose_frame(
     rgb_path: Path,
     tile_w: int,
     tile_h: int,
+    keep_aspect_ratio: bool,
 ) -> np.ndarray:
-    top_left = _load_tile(cstr3_path, tile_w, tile_h, keep_aspect=False)
-    top_right = _load_tile(yt_path, tile_w, tile_h, keep_aspect=False)
-    bottom_left = _load_tile(xt_path, tile_w, tile_h, keep_aspect=False)
+    top_left = _load_tile(cstr3_path, tile_w, tile_h, keep_aspect=keep_aspect_ratio)
+    top_right = _load_tile(yt_path, tile_w, tile_h, keep_aspect=keep_aspect_ratio)
+    bottom_left = _load_tile(xt_path, tile_w, tile_h, keep_aspect=keep_aspect_ratio)
     bottom_right = _load_tile(rgb_path, tile_w, tile_h, keep_aspect=True)
 
     canvas = Image.new("RGB", (tile_w * 2, tile_h * 2), (0, 0, 0))
@@ -167,6 +168,14 @@ def main() -> None:
         default=None,
         help="Optional output fps override. If omitted, infer from one of the generated MP4s when available.",
     )
+    parser.add_argument(
+        "--keep-aspect-ratio",
+        action="store_true",
+        help=(
+            "Letterbox cstr3, yt_mx, and xt_my tiles instead of stretching them to the tile size. "
+            "The RGB tile is always letterboxed."
+        ),
+    )
     parser.add_argument("--max-frames", type=int, default=None)
     args = parser.parse_args()
 
@@ -207,6 +216,7 @@ def main() -> None:
                 rgb_path=assets["rgb"][idx],
                 tile_w=tile_w,
                 tile_h=tile_h,
+                keep_aspect_ratio=bool(args.keep_aspect_ratio),
             )
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             writer.write(frame_bgr)
