@@ -179,8 +179,11 @@ RGB-only training
   such as `cstr3`, `xt_my`, or `yt_mx` is present.
 - RGB-only training can read frames directly from the FRED `RGB` or
   `PADDED_RGB` folders, so rendered `*_rgb.png` files are not required for that
-  case. Mixed event+RGB training still expects rendered/aligned RGB PNGs under
-  `data.images_root`, matching the event label stems.
+  case.
+- Mixed event+RGB training first uses rendered/aligned RGB PNGs under
+  `data.images_root` if they exist. If not, it reads from the original FRED
+  `RGB` or `PADDED_RGB` folder for that representation and chooses the nearest
+  timestamped frame for each event label stem.
 
 Training throughput notes
 - The dataset sample index is cached under `data.cache_dir`, so the first run

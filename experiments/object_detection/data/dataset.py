@@ -180,7 +180,7 @@ def _box_iou_xywh_norm(a: Tuple[float, float, float, float], b: Tuple[float, flo
 
 
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 6
+    CACHE_VERSION = 7
 
     def __init__(
         self,
@@ -240,6 +240,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_available_stems: Dict[str, set[str]] = {}
         self._folder_tracks: Dict[str, Optional[dict]] = {}
+        self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
 
         if not self.representations:
             raise ValueError("representations must not be empty.")
@@ -271,6 +272,59 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         dirname = _DATASET_RGB_REPS[rep.lower()]
         return self.labels_root / folder / dirname if self.folders is not None else self.labels_root / dirname
 
+    def _parse_rgb_time(self, path: Path) -> Optional[float]:
+        match = _RGB_TIME_RE.search(path.stem)
+        if not match:
+            return None
+        hh, mm, ss, frac = match.groups()
+        try:
+            hours = int(hh)
+            minutes = int(mm)
+            seconds = int(ss)
+            micros = int(frac.ljust(6, "0")[:6])
+        except ValueError:
+            return None
+        return hours * 3600.0 + minutes * 60.0 + seconds + micros / 1_000_000.0
+
+    def _build_rgb_index(self, folder: str, rep: str) -> List[Tuple[float, Path]]:
+        key = (folder, rep.lower())
+        if key in self._folder_rgb_indices:
+            return self._folder_rgb_indices[key]
+        rgb_dir = self._dataset_rgb_dir(folder, rep)
+        if not rgb_dir.exists():
+            self._folder_rgb_indices[key] = []
+            return []
+        files = sorted(rgb_dir.glob("*.jpg")) + sorted(rgb_dir.glob("*.png")) + sorted(rgb_dir.glob("*.jpeg"))
+        parsed = [self._parse_rgb_time(path) for path in files]
+        out: List[Tuple[float, Path]] = []
+        if any(t is not None for t in parsed):
+            base = next(t for t in parsed if t is not None)
+            for path, t in zip(files, parsed):
+                if t is None:
+                    continue
+                rel_us = (t - base) * 1_000_000.0
+                out.append((rel_us * self.label_time_unit, path))
+        else:
+            for idx, path in enumerate(files):
+                out.append((float(idx), path))
+        out.sort(key=lambda item: item[0])
+        self._folder_rgb_indices[key] = out
+        return out
+
+    def _find_rgb_frame(self, folder: str, rep: str, label_time_s: float) -> Optional[Path]:
+        rgb_index = self._build_rgb_index(folder, rep)
+        if not rgb_index:
+            return None
+        times = [t for t, _ in rgb_index]
+        idx = int(np.searchsorted(times, label_time_s, side="left"))
+        if idx <= 0:
+            return rgb_index[0][1]
+        if idx >= len(rgb_index):
+            return rgb_index[-1][1]
+        before_t, before_path = rgb_index[idx - 1]
+        after_t, after_path = rgb_index[idx]
+        return before_path if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_path
+
     def _resolve_input_path(self, folder: str, stem: str, rep: str) -> Optional[Path]:
         rendered_path = self._images_dir(folder) / f"{stem}_{rep}.png"
         if rendered_path.exists():
@@ -281,6 +335,9 @@ class FredDetectionDataset(torch.utils.data.Dataset):
                 candidate = rgb_dir / f"{stem}{suffix}"
                 if candidate.exists():
                     return candidate
+            label_time_s = _parse_frame_time_s(stem, label_time_unit=self.label_time_unit)
+            if label_time_s is not None:
+                return self._find_rgb_frame(folder, rep, label_time_s)
         return None
 
     def _expected_input_path(self, folder: str, stem: str, rep: str) -> Path:
@@ -340,6 +397,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         for rep in self.representations:
             rep_entry = rep_entries.get(rep)
             if rep_entry is None:
+                if _is_dataset_rgb_rep(rep):
+                    continue
                 raise ValueError(f"Manifest representation '{rep}' missing for '{folder}/{stem}'.")
             expected_size = list(self.image_sizes[rep])
             actual_size = rep_entry.get("image_size")

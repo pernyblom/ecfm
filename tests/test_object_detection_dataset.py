@@ -154,3 +154,69 @@ def test_auto_labels_use_event_yolo_when_any_event_rep_is_present(tmp_path: Path
 
     assert dataset.labels_subdir == "Event_YOLO"
     assert len(dataset) == 1
+
+
+def test_mixed_event_rgb_uses_nearest_dataset_rgb_frame(tmp_path: Path) -> None:
+    _write_label(tmp_path / "labels" / "Event_YOLO" / "Video_0_frame_100000000.txt")
+    _write_image(tmp_path / "images" / "Video_0_frame_100000000_cstr3.png")
+    _write_image(tmp_path / "labels" / "RGB" / "Video_0_16_03_03.000000.jpg")
+    _write_image(tmp_path / "labels" / "RGB" / "Video_0_16_04_43.000000.jpg")
+
+    dataset = FredDetectionDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        representations=["cstr3", "rgb"],
+        heatmap_representations=[],
+        image_sizes={"cstr3": (8, 8), "rgb": (8, 8)},
+        frame_size=(8, 8),
+        folders=[""],
+        labels_subdir="auto",
+        label_time_unit=1.0e-6,
+        verify_render_manifest=False,
+        require_boxes=False,
+    )
+
+    assert dataset.labels_subdir == "Event_YOLO"
+    assert len(dataset) == 1
+    assert dataset.samples[0]["input_paths"]["rgb"].endswith("Video_0_16_04_43.000000.jpg")
+
+
+def test_mixed_event_rgb_manifest_validation_allows_dataset_rgb(tmp_path: Path) -> None:
+    _write_label(tmp_path / "labels" / "Event_YOLO" / "Video_0_frame_100000000.txt")
+    _write_image(tmp_path / "images" / "Video_0_frame_100000000_cstr3.png")
+    _write_image(tmp_path / "labels" / "RGB" / "Video_0_16_04_43.000000.jpg")
+    (tmp_path / "images" / "render_manifest.json").write_text(
+        """
+{
+  "render_params": {"window_mode": "trailing"},
+  "files": [
+    {
+      "label_stem": "Video_0_frame_100000000",
+      "window_duration_render_units": 33333,
+      "representations": {
+        "cstr3": {"image_size": [8, 8]}
+      }
+    }
+  ]
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    dataset = FredDetectionDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        representations=["cstr3", "rgb"],
+        heatmap_representations=[],
+        image_sizes={"cstr3": (8, 8), "rgb": (8, 8)},
+        frame_size=(8, 8),
+        folders=[""],
+        labels_subdir="auto",
+        label_time_unit=1.0e-6,
+        image_window_ms=33.333,
+        image_window_mode="trailing",
+        verify_render_manifest=True,
+        require_boxes=False,
+    )
+
+    assert len(dataset) == 1
