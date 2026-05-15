@@ -181,6 +181,32 @@ def test_mixed_event_rgb_uses_nearest_dataset_rgb_frame(tmp_path: Path) -> None:
     assert dataset.samples[0]["input_paths"]["rgb"].endswith("Video_0_16_04_43.000000.jpg")
 
 
+def test_mixed_event_rgb_ignores_appledouble_sidecar_files(tmp_path: Path) -> None:
+    _write_label(tmp_path / "labels" / "Event_YOLO" / "Video_0_frame_100000000.txt")
+    _write_image(tmp_path / "images" / "Video_0_frame_100000000_cstr3.png")
+    _write_image(tmp_path / "labels" / "RGB" / "Video_0_16_04_43.000000.jpg")
+    sidecar = tmp_path / "labels" / "RGB" / "._17_19_38.629280.jpg"
+    sidecar.write_bytes(b"not an image")
+
+    dataset = FredDetectionDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        representations=["cstr3", "rgb"],
+        heatmap_representations=[],
+        image_sizes={"cstr3": (8, 8), "rgb": (8, 8)},
+        frame_size=(8, 8),
+        folders=[""],
+        labels_subdir="auto",
+        label_time_unit=1.0e-6,
+        verify_render_manifest=False,
+        require_boxes=False,
+    )
+
+    assert len(dataset) == 1
+    assert dataset.samples[0]["input_paths"]["rgb"].endswith("Video_0_16_04_43.000000.jpg")
+    assert dataset[0].inputs["rgb"].shape == (3, 8, 8)
+
+
 def test_mixed_event_rgb_manifest_validation_allows_dataset_rgb(tmp_path: Path) -> None:
     _write_label(tmp_path / "labels" / "Event_YOLO" / "Video_0_frame_100000000.txt")
     _write_image(tmp_path / "images" / "Video_0_frame_100000000_cstr3.png")

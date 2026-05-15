@@ -171,6 +171,24 @@ def _load_training_checkpoint(
     return start_epoch, best_val
 
 
+def _checkpoint_state(*, model, optimizer, epoch: int, best_val: float | None, cfg: Dict, phase: str) -> Dict:
+    return {
+        "model": model.state_dict(),
+        "optim": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_val": best_val,
+        "config": cfg,
+        "phase": phase,
+    }
+
+
+def _save_checkpoint(path: Path, state: Dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    torch.save(state, tmp_path)
+    tmp_path.replace(path)
+
+
 def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, train: bool) -> Dict[str, float]:
     train_cfg = cfg["train"]
     data_cfg = cfg["data"]
@@ -418,6 +436,21 @@ def main() -> None:
             cfg=cfg,
             train=True,
         )
+        if bool(train_cfg.get("save_pre_validation_checkpoint", True)):
+            pre_val_raw = train_cfg.get("pre_validation_checkpoint")
+            pre_val_ckpt = Path(pre_val_raw) if pre_val_raw not in (None, "") else ckpt_dir / "pre_validation.pt"
+            _save_checkpoint(
+                pre_val_ckpt,
+                _checkpoint_state(
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    best_val=best_val,
+                    cfg=cfg,
+                    phase="pre_validation",
+                ),
+            )
+            print(f"Saved pre-validation checkpoint: {pre_val_ckpt}")
         with torch.no_grad():
             print("Running validation epoch")
             val_metrics = _run_epoch(
@@ -437,15 +470,29 @@ def main() -> None:
         val_loss = val_metrics.get("loss")
         if val_loss is not None and (best_val is None or val_loss < best_val):
             best_val = val_loss
-            torch.save(
-                {"model": model.state_dict(), "optim": optimizer.state_dict(), "epoch": epoch, "best_val": best_val, "config": cfg},
+            _save_checkpoint(
                 ckpt_dir / "best.pt",
+                _checkpoint_state(
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    best_val=best_val,
+                    cfg=cfg,
+                    phase="validated_best",
+                ),
             )
         ckpt_every = int(train_cfg.get("checkpoint_every", 1))
         if ckpt_every > 0 and (epoch + 1) % ckpt_every == 0:
-            torch.save(
-                {"model": model.state_dict(), "optim": optimizer.state_dict(), "epoch": epoch, "best_val": best_val, "config": cfg},
+            _save_checkpoint(
                 ckpt_dir / f"epoch_{epoch:03d}.pt",
+                _checkpoint_state(
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    best_val=best_val,
+                    cfg=cfg,
+                    phase="validated_epoch",
+                ),
             )
         _export_visualizations(model, val_loader, device, cfg, epoch)
 

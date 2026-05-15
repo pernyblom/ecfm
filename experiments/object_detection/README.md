@@ -188,6 +188,13 @@ RGB-only training
 Training throughput notes
 - The dataset sample index is cached under `data.cache_dir`, so the first run
   after changing dataset-related config is the slow one.
+- After each training epoch, the trainer writes a pre-validation recovery
+  checkpoint before starting validation. By default this is
+  `checkpoint_dir/pre_validation.pt` and is overwritten each epoch. Resume it
+  with `--resume-checkpoint outputs/object_detection_centernet_ckpt/pre_validation.pt`
+  if validation crashes after a long training epoch. Set
+  `train.save_pre_validation_checkpoint: false` to disable this, or
+  `train.pre_validation_checkpoint` to choose a different path.
 - The train and validation loaders now default to persistent workers on
   multi-worker runs, which avoids a full worker respawn at each epoch and when
   switching from training to validation.

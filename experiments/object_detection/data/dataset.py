@@ -180,7 +180,7 @@ def _box_iou_xywh_norm(a: Tuple[float, float, float, float], b: Tuple[float, flo
 
 
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 7
+    CACHE_VERSION = 8
 
     def __init__(
         self,
@@ -294,7 +294,12 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         if not rgb_dir.exists():
             self._folder_rgb_indices[key] = []
             return []
-        files = sorted(rgb_dir.glob("*.jpg")) + sorted(rgb_dir.glob("*.png")) + sorted(rgb_dir.glob("*.jpeg"))
+        files = [
+            path
+            for pattern in ("*.jpg", "*.png", "*.jpeg")
+            for path in sorted(rgb_dir.glob(pattern))
+            if not path.name.startswith(".") and not path.name.startswith("._")
+        ]
         parsed = [self._parse_rgb_time(path) for path in files]
         out: List[Tuple[float, Path]] = []
         if any(t is not None for t in parsed):
