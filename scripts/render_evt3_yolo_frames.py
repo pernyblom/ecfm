@@ -222,15 +222,33 @@ def _load_existing_manifest(path: Path) -> Optional[dict]:
         return None
 
 
+def _finalize_manifest_render_params(manifest: dict) -> dict:
+    manifest["render_params"]["representation"] = _canonical_rep_list(
+        manifest["render_params"]["representation"]
+    )
+    manifest["render_params"]["crop_representations"] = _canonical_rep_list(
+        manifest["render_params"]["crop_representations"]
+    )
+    return manifest
+
+
+def _manifest_params_match(existing: dict, current: dict) -> bool:
+    old_params = dict(existing.get("render_params") or {})
+    new_params = dict(current["render_params"])
+    old_params.pop("representation", None)
+    old_params.pop("crop_representations", None)
+    old_params.pop("max_label_files", None)
+    new_params.pop("representation", None)
+    new_params.pop("crop_representations", None)
+    new_params.pop("max_label_files", None)
+    old_params.setdefault("image_sizes", {})
+    new_params.setdefault("image_sizes", {})
+    return old_params == new_params
+
+
 def _merge_manifest(existing: Optional[dict], current: dict) -> dict:
     if existing is None:
-        current["render_params"]["representation"] = _canonical_rep_list(
-            current["render_params"]["representation"]
-        )
-        current["render_params"]["crop_representations"] = _canonical_rep_list(
-            current["render_params"]["crop_representations"]
-        )
-        return current
+        return _finalize_manifest_render_params(current)
 
     merged = dict(existing)
     merged["raw"] = current["raw"]
@@ -245,19 +263,8 @@ def _merge_manifest(existing: Optional[dict], current: dict) -> dict:
     old_crop = _representation_list(";".join(str(v) for v in old_params.get("crop_representations", [])))
     new_reps = list(new_params.get("representation", []))
     new_crop = list(new_params.get("crop_representations", []))
-    old_params.pop("representation", None)
-    old_params.pop("crop_representations", None)
-    old_params.pop("max_label_files", None)
-    new_params.pop("representation", None)
-    new_params.pop("crop_representations", None)
-    new_params.pop("max_label_files", None)
-    old_params.setdefault("image_sizes", {})
-    new_params.setdefault("image_sizes", {})
-    if old_params != new_params:
-        raise ValueError(
-            "Existing render_manifest.json was created with different render parameters. "
-            "Use a different output directory or remove the old manifest before merging."
-        )
+    if not _manifest_params_match(existing, current):
+        return _finalize_manifest_render_params(current)
     merged["render_params"] = dict(existing.get("render_params") or current["render_params"])
     merged["render_params"]["representation"] = _canonical_rep_list(old_reps + new_reps)
     merged["render_params"]["crop_representations"] = _canonical_rep_list(old_crop + new_crop)
@@ -1233,6 +1240,12 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             "sensor_geometry": {"width": int(width), "height": int(height)},
             "files": [],
         }
+        if existing_manifest is not None and not _manifest_params_match(existing_manifest, manifest):
+            print(
+                "Existing render_manifest.json has different render parameters; "
+                "overwriting it for this run."
+            )
+            existing_manifest = None
 
         progress_desc = f"{args.raw.parent.parent.name}/{event_source_label}"
         for label_path in _progress_items(label_files, desc=progress_desc, enabled=show_progress):
