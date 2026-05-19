@@ -167,10 +167,14 @@ def _load_background_image(
 
     for source_name in source_names:
         rgb_dir_name = _RGB_SOURCE_DIRS[source_name]
+        rgb_dir = dataset_folder_dir / rgb_dir_name
+        for suffix in (".jpg", ".png", ".jpeg"):
+            candidate = rgb_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                return Image.open(candidate).convert("RGB")
         rgb_index = rgb_indices.get(source_name)
         if rgb_index is None:
-            candidate_dir = dataset_folder_dir / rgb_dir_name
-            rgb_index = _build_rgb_index(candidate_dir, label_time_unit=label_time_unit)
+            rgb_index = _build_rgb_index(rgb_dir, label_time_unit=label_time_unit)
             rgb_indices[source_name] = rgb_index
         rgb_path = _find_rgb_frame(rgb_index, label_time_s)
         if rgb_path is not None and rgb_path.exists():
