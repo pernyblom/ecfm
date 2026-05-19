@@ -108,7 +108,11 @@ def _prepare_detections_for_map(
         gt_boxes = gt_by_frame[frame_key]
         if gt_boxes.numel() == 0:
             continue
-        det_boxes = torch.stack([ordered[idx]["box"] for idx in det_indices], dim=0)
+        det_box_rows = [ordered[idx]["box"] for idx in det_indices]
+        if det_box_rows and isinstance(det_box_rows[0], torch.Tensor):
+            det_boxes = torch.stack(det_box_rows, dim=0)
+        else:
+            det_boxes = torch.as_tensor(det_box_rows, dtype=gt_boxes.dtype, device=gt_boxes.device)
         ious_by_frame[frame_key] = pairwise_box_iou(det_boxes, gt_boxes, frame_size)
     return ordered, ious_by_frame, int(sum(int(boxes.shape[0]) for boxes in gt_by_frame.values()))
 

@@ -120,6 +120,21 @@ def _weighted_mean_dict(rows: List[Dict[str, float]], weights: List[int]) -> Dic
     return out
 
 
+def _detach_preds_for_metrics(preds: Dict) -> Dict:
+    out: Dict = {}
+    for key, value in preds.items():
+        if isinstance(value, torch.Tensor):
+            out[key] = value.detach()
+        elif isinstance(value, dict):
+            out[key] = {
+                sub_key: sub_value.detach() if isinstance(sub_value, torch.Tensor) else sub_value
+                for sub_key, sub_value in value.items()
+            }
+        else:
+            out[key] = value
+    return out
+
+
 def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) -> DataLoader:
     num_workers = int(train_cfg.get("num_workers", 0))
     loader_kwargs = {
@@ -200,10 +215,32 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     row_weights: List[int] = []
     detections_all: List[dict] = []
     gt_by_frame_all: Dict[str, torch.Tensor] = {}
+    compute_epoch_map = bool(
+        train_cfg.get(
+            "compute_train_epoch_map" if train else "compute_val_epoch_map",
+            not train,
+        )
+    )
+    epoch_map_score_threshold = train_cfg.get(
+        "train_epoch_map_score_threshold" if train else "val_epoch_map_score_threshold",
+        train_cfg.get("epoch_map_score_threshold"),
+    )
+    epoch_map_score_threshold = (
+        None if epoch_map_score_threshold is None else float(epoch_map_score_threshold)
+    )
+    max_epoch_map_detections_per_frame = train_cfg.get(
+        "train_epoch_map_max_detections_per_frame" if train else "val_epoch_map_max_detections_per_frame",
+        train_cfg.get("epoch_map_max_detections_per_frame"),
+    )
+    max_epoch_map_detections_per_frame = (
+        None
+        if max_epoch_map_detections_per_frame is None
+        else max(0, int(max_epoch_map_detections_per_frame))
+    )
     num_batches = len(loader)
     for step, batch in enumerate(loader):
-        inputs = {k: v.to(device) for k, v in batch.inputs.items()}
-        target_heatmaps = {k: v.to(device) for k, v in batch.heatmaps.items()}
+        inputs = {k: v.to(device, non_blocking=True) for k, v in batch.inputs.items()}
+        target_heatmaps = {k: v.to(device, non_blocking=True) for k, v in batch.heatmaps.items()}
         target_boxes_list = batch.gt_boxes_xywh
         with torch.set_grad_enabled(train):
             preds = model(inputs)
@@ -234,9 +271,11 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 (loss / accumulation_window).backward()
                 if accumulation_idx == accumulation_window - 1:
                     optimizer.step()
+        metric_preds = _detach_preds_for_metrics(preds)
+        detector_type = metric_preds.get("detector_type")
         with torch.no_grad():
             metrics = summarize_metrics(
-                preds,
+                metric_preds,
                 target_boxes_list,
                 target_heatmaps,
                 aux.get("target_objectness"),
@@ -247,24 +286,37 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             )
             rows.append({**loss_metrics, **metrics})
             row_weights.append(len(batch.frame_keys))
-            pred_boxes_cpu = preds["boxes"].detach().cpu()
-            pred_scores_cpu = detection_scores(preds).detach().cpu()
-            for frame_idx, frame_key in enumerate(batch.frame_keys):
-                for query_idx in range(pred_boxes_cpu.shape[1]):
-                    detections_all.append(
-                        {
-                            "frame_key": frame_key,
-                            "score": float(pred_scores_cpu[frame_idx, query_idx].item()),
-                            "box": pred_boxes_cpu[frame_idx, query_idx],
-                        }
-                    )
-            for frame_key, gt_boxes in zip(batch.frame_keys, target_boxes_list):
-                gt_by_frame_all[frame_key] = gt_boxes.detach().cpu()
+            if compute_epoch_map:
+                pred_boxes_cpu = metric_preds["boxes"].cpu()
+                pred_scores_cpu = detection_scores(metric_preds).cpu()
+                for frame_idx, frame_key in enumerate(batch.frame_keys):
+                    frame_scores = pred_scores_cpu[frame_idx]
+                    if max_epoch_map_detections_per_frame is None:
+                        query_indices = range(int(frame_scores.shape[0]))
+                    elif max_epoch_map_detections_per_frame == 0:
+                        query_indices = []
+                    else:
+                        k = min(max_epoch_map_detections_per_frame, int(frame_scores.shape[0]))
+                        query_indices = torch.topk(frame_scores, k=k, dim=0).indices.tolist()
+                    for query_idx in query_indices:
+                        score = float(frame_scores[query_idx].item())
+                        if epoch_map_score_threshold is not None and score < epoch_map_score_threshold:
+                            continue
+                        detections_all.append(
+                            {
+                                "frame_key": frame_key,
+                                "score": score,
+                                "box": tuple(float(v) for v in pred_boxes_cpu[frame_idx, query_idx].tolist()),
+                            }
+                        )
+                for frame_key, gt_boxes in zip(batch.frame_keys, target_boxes_list):
+                    gt_by_frame_all[frame_key] = gt_boxes.detach().cpu()
+        del metric_preds, preds, loss, aux
         if step % int(train_cfg.get("log_every", 20)) == 0:
             phase = "train" if train else "val"
             map_50 = metrics.get("mAP_50")
             map_50_95 = metrics.get("mAP_50_95")
-            if preds.get("detector_type") == "centernet":
+            if detector_type == "centernet":
                 print(
                     f"{phase} step {step} loss {loss_metrics['loss']:.4f} "
                     f"hm {loss_metrics['centernet_heatmap']:.4f} "
@@ -287,13 +339,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                     f"mAP_50:95 {(f'{map_50_95:.4f}' if map_50_95 is not None else 'n/a')}"
                 )
     out = _weighted_mean_dict(rows, row_weights)
-    compute_epoch_map = bool(
-        train_cfg.get(
-            "compute_train_epoch_map" if train else "compute_val_epoch_map",
-            not train,
-        )
-    )
-    if compute_epoch_map and detections_all:
+    if compute_epoch_map and gt_by_frame_all:
         out.update(
             map_metrics(
                 detections=detections_all,
