@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Iterable
+import re
 
 import yaml
+
+_GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
+_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "xt_my", "yt_mx", "events"}
 
 
 def load_config(path: Path) -> Dict[str, Any]:
@@ -17,6 +21,14 @@ def _normalize_size(value: Iterable[Any]) -> tuple[int, int]:
     return int(items[0]), int(items[1])
 
 
+def _base_representation(rep: str) -> str:
+    match = _GRID_REP_RE.match(str(rep))
+    if match is None:
+        return str(rep)
+    base = match.group("base")
+    return base if base in _GRID_SPLIT_BASE_REPS else str(rep)
+
+
 def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tuple[int, int]]:
     reps = list(data_cfg.get("representations", []))
     if not reps:
@@ -25,6 +37,11 @@ def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tu
     explicit_sizes = data_cfg.get("image_sizes")
     if explicit_sizes:
         resolved = {str(rep): _normalize_size(size) for rep, size in dict(explicit_sizes).items()}
+        for rep in reps:
+            if rep not in resolved:
+                base_rep = _base_representation(rep)
+                if base_rep in resolved:
+                    resolved[rep] = resolved[base_rep]
         missing = [rep for rep in reps if rep not in resolved]
         if missing:
             raise ValueError(f"Missing image_sizes entries for representations: {missing}")

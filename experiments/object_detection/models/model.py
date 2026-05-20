@@ -6,7 +6,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .backbones import build_single_encoder
+from .backbones import build_single_encoder, grid_split_from_rep_name
 
 
 class HeatmapHead(nn.Module):
@@ -55,6 +55,29 @@ class ObjectnessHead(nn.Module):
         return self.net(x).squeeze(-1)
 
 
+def _encoder_cfg_for_rep(
+    backbone_cfg: Dict,
+    rep: str,
+    *,
+    cell_local_first_conv: bool,
+    cell_local_first_conv_representations: List[str] | None,
+) -> Dict:
+    cfg = dict(backbone_cfg)
+    if not cell_local_first_conv:
+        return cfg
+    allowed = set(cell_local_first_conv_representations or [])
+    grid = grid_split_from_rep_name(rep)
+    if allowed:
+        if rep not in allowed:
+            return cfg
+        if grid is None:
+            raise ValueError(f"cell_local_first_conv representation '{rep}' has no NxM suffix.")
+    elif grid is None:
+        return cfg
+    cfg["cell_local_first_conv_grid"] = grid
+    return cfg
+
+
 class MultiRepObjectDetector(nn.Module):
     def __init__(
         self,
@@ -68,6 +91,8 @@ class MultiRepObjectDetector(nn.Module):
         box_hidden_dim: int = 256,
         num_queries: int = 8,
         query_hidden_dim: int = 256,
+        cell_local_first_conv: bool = False,
+        cell_local_first_conv_representations: List[str] | None = None,
     ) -> None:
         super().__init__()
         self.representations = list(representations)
@@ -76,7 +101,19 @@ class MultiRepObjectDetector(nn.Module):
         self.image_sizes = {
             str(rep): (int(size[0]), int(size[1])) for rep, size in dict(image_sizes).items()
         }
-        self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
+        self.encoders = nn.ModuleDict(
+            {
+                rep: build_single_encoder(
+                    _encoder_cfg_for_rep(
+                        backbone_cfg,
+                        rep,
+                        cell_local_first_conv=bool(cell_local_first_conv),
+                        cell_local_first_conv_representations=cell_local_first_conv_representations,
+                    )
+                )
+                for rep in self.representations
+            }
+        )
         per_rep_dim = int(backbone_cfg.get("out_dim", 128))
         fused_dim = per_rep_dim * len(self.representations)
         self.fusion = nn.Sequential(nn.Linear(fused_dim, fusion_hidden_dim), nn.ReLU(inplace=True))

@@ -6,7 +6,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .backbones import build_single_encoder
+from .backbones import build_single_encoder, grid_split_from_rep_name
 
 
 def _encoder_fmap_dim(backbone_cfg: Dict) -> int:
@@ -24,6 +24,29 @@ def _is_temporal_plane(rep: str) -> bool:
     return rep_l.startswith("xt") or rep_l.startswith("yt")
 
 
+def _encoder_cfg_for_rep(
+    backbone_cfg: Dict,
+    rep: str,
+    *,
+    cell_local_first_conv: bool,
+    cell_local_first_conv_representations: List[str] | None,
+) -> Dict:
+    cfg = dict(backbone_cfg)
+    if not cell_local_first_conv:
+        return cfg
+    allowed = set(cell_local_first_conv_representations or [])
+    grid = grid_split_from_rep_name(rep)
+    if allowed:
+        if rep not in allowed:
+            return cfg
+        if grid is None:
+            raise ValueError(f"cell_local_first_conv representation '{rep}' has no NxM suffix.")
+    elif grid is None:
+        return cfg
+    cfg["cell_local_first_conv_grid"] = grid
+    return cfg
+
+
 class CenterNetDetector(nn.Module):
     def __init__(
         self,
@@ -36,6 +59,8 @@ class CenterNetDetector(nn.Module):
         output_stride: int = 4,
         topk: int = 100,
         predict_velocity: bool = True,
+        cell_local_first_conv: bool = False,
+        cell_local_first_conv_representations: List[str] | None = None,
     ) -> None:
         super().__init__()
         self.representations = list(representations)
@@ -59,7 +84,19 @@ class CenterNetDetector(nn.Module):
         out_w = max(1, source_w // self.output_stride)
         out_h = max(1, source_h // self.output_stride)
         self.output_size = (out_w, out_h)
-        self.encoders = nn.ModuleDict({rep: build_single_encoder(backbone_cfg) for rep in self.representations})
+        self.encoders = nn.ModuleDict(
+            {
+                rep: build_single_encoder(
+                    _encoder_cfg_for_rep(
+                        backbone_cfg,
+                        rep,
+                        cell_local_first_conv=bool(cell_local_first_conv),
+                        cell_local_first_conv_representations=cell_local_first_conv_representations,
+                    )
+                )
+                for rep in self.representations
+            }
+        )
         encoder_dim = _encoder_fmap_dim(backbone_cfg)
         if len(self.representations) == 1:
             self.fusion = nn.Identity()

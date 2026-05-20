@@ -23,6 +23,10 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
             output_stride=int(model_cfg.get("output_stride", 4)),
             topk=int(model_cfg.get("topk", 100)),
             predict_velocity=bool(model_cfg.get("predict_velocity", True)),
+            cell_local_first_conv=bool(model_cfg.get("cell_local_first_conv", False)),
+            cell_local_first_conv_representations=list(
+                model_cfg.get("cell_local_first_conv_representations") or []
+            ),
         ).to(device)
     if detector_type not in {"detr_lite", "query", "detr-lite"}:
         raise ValueError(f"Unknown model.detector: {detector_type}")
@@ -36,4 +40,8 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         box_hidden_dim=int(model_cfg.get("box_hidden_dim", 256)),
         num_queries=int(model_cfg.get("num_queries", 8)),
         query_hidden_dim=int(model_cfg.get("query_hidden_dim", 256)),
+        cell_local_first_conv=bool(model_cfg.get("cell_local_first_conv", False)),
+        cell_local_first_conv_representations=list(
+            model_cfg.get("cell_local_first_conv_representations") or []
+        ),
     ).to(device)

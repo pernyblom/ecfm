@@ -17,6 +17,8 @@ from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
+_GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
+_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "xt_my", "yt_mx", "events"}
 
 
 def _progress_items(items: list[Path], *, desc: str, enabled: bool) -> Iterator[Path]:
@@ -209,6 +211,20 @@ def _representation_list(raw_value: str) -> list[str]:
     return [r.strip() for r in raw_value.replace(",", ";").split(";") if r.strip()]
 
 
+def _resolve_representation_alias(rep: str) -> tuple[str, int | None, int | None]:
+    match = _GRID_REP_RE.match(rep)
+    if match is None:
+        return rep, None, None
+    base = match.group("base")
+    if base not in _GRID_SPLIT_BASE_REPS:
+        return rep, None, None
+    grid_x = int(match.group("grid_x"))
+    grid_y = int(match.group("grid_y"))
+    if grid_x <= 0 or grid_y <= 0:
+        raise ValueError(f"Grid dimensions in representation '{rep}' must be positive.")
+    return base, grid_x, grid_y
+
+
 def _canonical_rep_list(reps: list[str]) -> list[str]:
     return sorted(dict.fromkeys(reps))
 
@@ -235,14 +251,21 @@ def _finalize_manifest_render_params(manifest: dict) -> dict:
 def _manifest_params_match(existing: dict, current: dict) -> bool:
     old_params = dict(existing.get("render_params") or {})
     new_params = dict(current["render_params"])
+    old_image_sizes = dict(old_params.get("image_sizes") or {})
+    new_image_sizes = dict(new_params.get("image_sizes") or {})
+    for rep in set(old_image_sizes) & set(new_image_sizes):
+        if old_image_sizes.get(rep) != new_image_sizes.get(rep):
+            return False
     old_params.pop("representation", None)
     old_params.pop("crop_representations", None)
     old_params.pop("max_label_files", None)
     new_params.pop("representation", None)
     new_params.pop("crop_representations", None)
     new_params.pop("max_label_files", None)
-    old_params.setdefault("image_sizes", {})
-    new_params.setdefault("image_sizes", {})
+    old_params.pop("representation_grid_specs", None)
+    new_params.pop("representation_grid_specs", None)
+    old_params.pop("image_sizes", None)
+    new_params.pop("image_sizes", None)
     return old_params == new_params
 
 
@@ -1086,7 +1109,15 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
     unknown_size_reps = sorted(set(image_sizes) - set(representations))
     if unknown_size_reps:
         raise ValueError(f"--image-sizes contains representations not requested by --representation: {unknown_size_reps}")
-    event_reps = [rep for rep in representations if rep not in {"rgb", "grayscale", "gray"}]
+    rep_specs = {
+        rep: _resolve_representation_alias(rep)
+        for rep in representations
+    }
+    event_reps = [
+        rep
+        for rep in representations
+        if rep_specs[rep][0] not in {"rgb", "grayscale", "gray"}
+    ]
 
     ts_shift_us = args.ts_shift_us
     if ts_shift_us is None:
@@ -1223,6 +1254,11 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "spatial_bins": int(args.spatial_bins),
                 "output_size": None if args.output_size is None else [int(v) for v in args.output_size],
                 "image_sizes": {rep: [int(w), int(h)] for rep, (w, h) in sorted(image_sizes.items())},
+                "representation_grid_specs": {
+                    rep: {"base": base, "grid_x": int(rep_grid_x), "grid_y": int(rep_grid_y)}
+                    for rep, (base, rep_grid_x, rep_grid_y) in sorted(rep_specs.items())
+                    if rep_grid_x is not None and rep_grid_y is not None
+                },
                 "retain_spatial_dimensions": bool(getattr(args, "retain_spatial_dimensions", False)),
                 "grid_x": int(args.grid_x),
                 "grid_y": int(args.grid_y),
@@ -1316,25 +1352,28 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                         existing_entry = candidate
                         break
             for rep in representations:
-                if rep not in valid:
+                base_rep, rep_grid_x, rep_grid_y = rep_specs[rep]
+                if base_rep not in valid:
                     raise ValueError(f"Unknown representation: {rep}")
+                render_grid_x = int(args.grid_x) if rep_grid_x is None else int(rep_grid_x)
+                render_grid_y = int(args.grid_y) if rep_grid_y is None else int(rep_grid_y)
                 existing_rep = (existing_entry or {}).get("representations", {}).get(rep)
                 if existing_rep and not bool(getattr(args, "overwrite_existing", False)):
                     existing_path = Path(existing_rep.get("path", ""))
                     if existing_path.exists():
                         file_entry["representations"][rep] = existing_rep
                         continue
-                if rep in {"rgb", "grayscale", "gray"}:
+                if base_rep in {"rgb", "grayscale", "gray"}:
                     rgb_path = _find_rgb_frame(rgb_index, label_time)
                     if rgb_path is None:
                         print(f"Warning: no RGB frame found for {label_path.name}")
                         continue
                     img = _read_rgb_image(rgb_path)
-                    if rep in {"grayscale", "gray"}:
+                    if base_rep in {"grayscale", "gray"}:
                         img = _to_grayscale(img)
-                elif rep == "events":
+                elif base_rep == "events":
                     native_output_size = image_sizes.get(rep)
-                    if args.grid_x == 1 and args.grid_y == 1:
+                    if render_grid_x == 1 and render_grid_y == 1:
                         img = events_to_image(
                             ev,
                             width,
@@ -1351,8 +1390,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                             plane="xy",
                             time_bins=1,
                             patch_size=args.spatial_bins,
-                            grid_x=args.grid_x,
-                            grid_y=args.grid_y,
+                            grid_x=render_grid_x,
+                            grid_y=render_grid_y,
                             retain_spatial_dimensions=bool(
                                 getattr(args, "retain_spatial_dimensions", False)
                             ),
@@ -1366,20 +1405,20 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                         height=height,
                         t0=t0,
                         dt=t1 - t0,
-                        plane=rep,
+                        plane=base_rep,
                         time_bins=args.temporal_bins,
                         patch_size=args.spatial_bins,
-                        grid_x=args.grid_x,
-                        grid_y=args.grid_y,
+                        grid_x=render_grid_x,
+                        grid_y=render_grid_y,
                         retain_spatial_dimensions=bool(
                             getattr(args, "retain_spatial_dimensions", False)
                         ),
                         output_size=native_output_size,
                     )
-                time_horizontal = rep.startswith("yt")
+                time_horizontal = base_rep.startswith("yt")
                 img = _apply_transform(
                     img,
-                    rep=rep,
+                    rep=base_rep,
                     transform=args.transform,
                     time_horizontal=time_horizontal,
                     scale_mode=args.transform_scale,
@@ -1422,6 +1461,9 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     "image_size": [int(img.shape[1]), int(img.shape[0])],
                     "time_horizontal": bool(time_horizontal),
                     "cropped_to_boxes": bool(rep in crop_reps),
+                    "base_representation": base_rep,
+                    "grid_x": int(render_grid_x),
+                    "grid_y": int(render_grid_y),
                 }
             if file_entry["representations"]:
                 manifest["files"].append(file_entry)

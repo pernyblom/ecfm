@@ -11,7 +11,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from scripts.render_evt3_yolo_frames import _parse_image_sizes, _render_histogram_grid
+from scripts.render_evt3_yolo_frames import (
+    _parse_image_sizes,
+    _render_histogram_grid,
+    _resolve_representation_alias,
+)
 from scripts.render_evt3_representations import _frame_slices, _resolve_frame_windows, _time_frame_slices
 
 
@@ -26,6 +30,12 @@ def test_parse_image_sizes() -> None:
 def test_parse_image_sizes_rejects_invalid_entry() -> None:
     with pytest.raises(ValueError, match="Expected rep=WIDTHxHEIGHT"):
         _parse_image_sizes("xt_my:398x224")
+
+
+def test_grid_split_representation_alias_parses_base_and_grid() -> None:
+    assert _resolve_representation_alias("xt_my_10x10") == ("xt_my", 10, 10)
+    assert _resolve_representation_alias("yt_mx_4x2") == ("yt_mx", 4, 2)
+    assert _resolve_representation_alias("xt_my") == ("xt_my", None, None)
 
 
 def test_histogram_grid_uses_explicit_output_size_as_native_size() -> None:

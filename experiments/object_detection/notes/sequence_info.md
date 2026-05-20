@@ -18,6 +18,7 @@ Sequence characteristics:
 - UAV shadows: 0
 - Indoor:
 - Animals: 37 (cat)
+- Rain: 81
 - Windy: 38-41
 - Landed/turned off drone: 120
 - 

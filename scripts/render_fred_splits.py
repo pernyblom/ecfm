@@ -121,7 +121,11 @@ def main() -> None:
         "--representation",
         type=str,
         default="events",
-        help="Representation(s) to render, separated by ';' (default: events).",
+        help=(
+            "Representation(s) to render, separated by ';' (default: events). "
+            "Grid-split aliases such as xt_my_10x10 render xt_my with a 10x10 grid "
+            "and write separate *_xt_my_10x10.png files."
+        ),
     )
     parser.add_argument(
         "--crop-representations",

@@ -149,6 +149,23 @@ sensor dimensions, pass `--image-sizes`, for example:
 python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --image-sizes "xt_my=398x224;yt_mx=224x224;cstr3=398x224" --event-source raw --num-workers 6 --include-empty
 ```
 
+Grid-split aliases
+- Representations with a trailing grid suffix render the base representation
+  independently inside each sensor cell. For example, `xt_my_10x10` renders
+  the `xt_my` plane with a `10 x 10` sensor grid and writes files such as
+  `<stem>_xt_my_10x10.png`.
+- You can render the base and derived representation in the same run without
+  overwriting either one:
+
+```bash
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;xt_my_10x10;yt_mx;cstr3" --window 33333 --window-mode trailing --temporal-bins 224 --image-sizes "xt_my=398x224;xt_my_10x10=398x224;yt_mx=224x224;cstr3=398x224" --event-source raw --num-workers 6 --include-empty
+```
+
+In configs, add the derived name to `data.representations`, for example
+`["cstr3", "xt_my", "xt_my_10x10"]`. If `data.image_sizes` contains the base
+entry (`xt_my`) but not the derived one, the derived representation reuses the
+base size.
+
 The dataset loader checks `render_manifest.json` and will fail fast if the
 rendered per-representation sizes do not match the configured convention.
 
@@ -304,6 +321,14 @@ Extension points
 - Switch detector variants with `model.detector`.
 - Tune CenterNet output resolution with `model.output_stride` and decoded
   candidate count with `model.topk`.
+- For grid-split representations, set `model.cell_local_first_conv: true` to
+  run the first encoder convolution independently per rendered cell. By default
+  this is applied automatically only to representation names with an `NxM`
+  suffix, such as `xt_my_10x10`; use
+  `model.cell_local_first_conv_representations` to restrict it further.
+  This prevents the first convolution from reading across cell borders, but
+  later ResNet layers can still mix information after the cell feature maps are
+  stitched back together.
 
 Current scope
 - The detector predicts a fixed number of query boxes per frame and learns which

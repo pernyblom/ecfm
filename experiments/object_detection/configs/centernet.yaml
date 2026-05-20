@@ -7,6 +7,9 @@ data:
   # auto uses RGB_YOLO for RGB-only training and Event_YOLO whenever an event branch is present.
   labels_subdir: auto
   # representations: ["xt_my", "yt_mx", "cstr3"]
+  # Grid-split aliases such as xt_my_10x10 reuse the base xt_my image size unless
+  # an explicit image_sizes entry is provided.
+  # representations: ["cstr3", "xt_my", "xt_my_10x10", "rgb"]
   representations: ["cstr3", "xt_my", "rgb"]
   heatmap_representations: []
   frame_size: [1280, 720]
@@ -49,6 +52,11 @@ model:
   output_stride: 4
   topk: 100
   predict_velocity: false
+  # When true, grid-split reps such as xt_my_10x10 run the first encoder
+  # convolution independently inside each rendered cell before stitching the
+  # feature map back together.
+  cell_local_first_conv: false
+  cell_local_first_conv_representations: []
 
 train:
   device: cuda
