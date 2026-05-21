@@ -16,7 +16,11 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.object_detection.data.dataset import _parse_frame_time, _read_yolo_boxes
+from experiments.object_detection.data.dataset import (
+    _parse_frame_time,
+    _parse_frame_time_s,
+    _read_yolo_boxes,
+)
 from experiments.object_detection.metrics import detection_scores
 from experiments.object_detection.models.factory import build_model
 from experiments.object_detection.utils.config import load_config, resolve_representation_image_sizes
@@ -54,16 +58,27 @@ def _resolve_model_input_path(
     dataset_folder_dir: Path,
     stem: str,
     rep: str,
-) -> Path:
+    label_time_s: Optional[float],
+    rgb_indices: Dict[str, List[Tuple[float, Path]]],
+    label_time_unit: float,
+) -> Optional[Path]:
     rendered_path = images_dir / f"{stem}_{rep}.png"
-    if rendered_path.exists() or not _is_dataset_rgb_rep(rep):
+    if rendered_path.exists():
         return rendered_path
+    if not _is_dataset_rgb_rep(rep):
+        return None
     rgb_dir = dataset_folder_dir / _RGB_SOURCE_DIRS[rep.lower()]
     for suffix in (".jpg", ".png", ".jpeg"):
         candidate = rgb_dir / f"{stem}{suffix}"
         if candidate.exists():
             return candidate
-    return rendered_path
+    if label_time_s is None:
+        return None
+    rgb_index = rgb_indices.get(rep.lower())
+    if rgb_index is None:
+        rgb_index = _build_rgb_index(rgb_dir, label_time_unit=label_time_unit)
+        rgb_indices[rep.lower()] = rgb_index
+    return _find_rgb_frame(rgb_index, label_time_s)
 
 
 def _load_input_tensor(path: Path, image_size: Tuple[int, int]) -> torch.Tensor:
@@ -77,13 +92,29 @@ def _load_input_tensor(path: Path, image_size: Tuple[int, int]) -> torch.Tensor:
 def _find_frame_stems(
     *,
     images_dir: Path,
+    dataset_folder_dir: Path,
     labels_dir: Path,
     required_reps: List[str],
+    label_time_unit: float,
+    rgb_indices: Dict[str, List[Tuple[float, Path]]],
 ) -> List[str]:
     stems: List[str] = []
     for label_path in sorted(labels_dir.glob("*.txt"), key=lambda p: (_parse_frame_time(p.stem) or -1, p.name)):
         stem = label_path.stem
-        if all(_is_dataset_rgb_rep(rep) or (images_dir / f"{stem}_{rep}.png").exists() for rep in required_reps):
+        label_time_s = _parse_frame_time_s(stem, label_time_unit=label_time_unit)
+        if all(
+            _resolve_model_input_path(
+                images_dir=images_dir,
+                dataset_folder_dir=dataset_folder_dir,
+                stem=stem,
+                rep=rep,
+                label_time_s=label_time_s,
+                rgb_indices=rgb_indices,
+                label_time_unit=label_time_unit,
+            )
+            is not None
+            for rep in required_reps
+        ):
             stems.append(stem)
     return stems
 
@@ -106,7 +137,7 @@ def _parse_rgb_time(path: Path) -> Optional[float]:
 def _build_rgb_index(rgb_dir: Path, *, label_time_unit: float) -> List[Tuple[float, Path]]:
     if not rgb_dir.exists():
         return []
-    files = sorted(rgb_dir.glob("*.jpg")) + sorted(rgb_dir.glob("*.png"))
+    files = sorted(rgb_dir.glob("*.jpg")) + sorted(rgb_dir.glob("*.png")) + sorted(rgb_dir.glob("*.jpeg"))
     if not files:
         return []
     parsed = [_parse_rgb_time(p) for p in files]
@@ -438,16 +469,31 @@ def main() -> None:
         data_cfg.get("labels_subdir", "Event_YOLO"),
         list(data_cfg["representations"]),
     )
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Missing rendered images directory: {images_dir}")
     if not labels_dir.exists():
         raise FileNotFoundError(f"Missing labels directory: {labels_dir}")
 
     use_model = args.checkpoint is not None
     if "pred" in heatmap_modes and not use_model:
         raise ValueError("--heatmaps includes pred, so --checkpoint is required.")
-    required_reps = list(data_cfg["representations"]) if use_model else reps
-    stems = _find_frame_stems(images_dir=images_dir, labels_dir=labels_dir, required_reps=required_reps)
+    required_reps = (
+        list(data_cfg["representations"])
+        if use_model
+        else [rep for rep in reps if not _is_dataset_rgb_rep(rep)]
+    )
+    requires_rendered_images = any(not _is_dataset_rgb_rep(rep) for rep in required_reps)
+    if requires_rendered_images and not images_dir.exists():
+        raise FileNotFoundError(f"Missing rendered images directory: {images_dir}")
+
+    label_time_unit = float(data_cfg.get("label_time_unit", 1e-6))
+    rgb_indices: Dict[str, List[Tuple[float, Path]]] = {}
+    stems = _find_frame_stems(
+        images_dir=images_dir,
+        dataset_folder_dir=dataset_folder_dir,
+        labels_dir=labels_dir,
+        required_reps=required_reps,
+        label_time_unit=label_time_unit,
+        rgb_indices=rgb_indices,
+    )
     if args.max_frames is not None:
         stems = stems[: max(0, int(args.max_frames))]
     if not stems:
@@ -469,7 +515,6 @@ def main() -> None:
     mode = f"checkpoint {args.checkpoint}" if use_model else "ground truth only" if args.draw_ground_truth else "backgrounds only"
     print(f"Rendering folder {folder} with {len(stems)} frames at {fps:.3f} fps ({mode})")
 
-    rgb_indices: Dict[str, List[Tuple[float, Path]]] = {}
     if any(_is_dataset_rgb_rep(rep) for rep in reps):
         requested_sources = {"padded_rgb"} if any(rep.lower() == "padded_rgb" for rep in reps) else set()
         if any(rep.lower() == "rgb" for rep in reps):
@@ -481,7 +526,7 @@ def main() -> None:
             candidate = dataset_folder_dir / _RGB_SOURCE_DIRS[source_name]
             rgb_indices[source_name] = _build_rgb_index(
                 candidate,
-                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
+                label_time_unit=label_time_unit,
             )
 
     rep_frame_dirs = {}
@@ -499,16 +544,24 @@ def main() -> None:
         pred_boxes: Optional[torch.Tensor] = None
         pred_scores: Optional[torch.Tensor] = None
         preds: Optional[Dict[str, torch.Tensor]] = None
+        parsed_label_time_s = _parse_frame_time_s(stem, label_time_unit=label_time_unit)
+        label_time_s = parsed_label_time_s if parsed_label_time_s is not None else 0.0
         if model is not None:
             model_inputs: Dict[str, torch.Tensor] = {}
             for model_rep in data_cfg["representations"]:
+                input_path = _resolve_model_input_path(
+                    images_dir=images_dir,
+                    dataset_folder_dir=dataset_folder_dir,
+                    stem=stem,
+                    rep=model_rep,
+                    label_time_s=parsed_label_time_s,
+                    rgb_indices=rgb_indices,
+                    label_time_unit=label_time_unit,
+                )
+                if input_path is None:
+                    raise FileNotFoundError(f"Missing input image for {folder}/{stem} representation '{model_rep}'.")
                 model_inputs[model_rep] = _load_input_tensor(
-                    _resolve_model_input_path(
-                        images_dir=images_dir,
-                        dataset_folder_dir=dataset_folder_dir,
-                        stem=stem,
-                        rep=model_rep,
-                    ),
+                    input_path,
                     image_sizes[model_rep],
                 ).unsqueeze(0).to(device)
 
@@ -519,8 +572,6 @@ def main() -> None:
 
         label_path = labels_dir / f"{stem}.txt"
         gt_boxes = _read_yolo_boxes(label_path) if label_path.exists() else []
-        label_time_raw = _parse_frame_time(stem)
-        label_time_s = float(label_time_raw) * float(data_cfg.get("label_time_unit", 1e-6)) if label_time_raw is not None else 0.0
 
         for rep in reps:
             bg_img = _load_background_image(
@@ -529,7 +580,7 @@ def main() -> None:
                 label_time_s=label_time_s,
                 images_dir=images_dir,
                 dataset_folder_dir=dataset_folder_dir,
-                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
+                label_time_unit=label_time_unit,
                 rgb_indices=rgb_indices,
                 rgb_source=str(args.rgb_source),
             )

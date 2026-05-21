@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.object_detection.render_sequence_video import _load_background_image
+from experiments.object_detection.render_sequence_video import _find_frame_stems, _load_background_image, _resolve_model_input_path
 from experiments.object_detection.render_folder_video import _find_image_stems
 
 
@@ -61,6 +61,46 @@ def test_rgb_source_padded_rgb_overrides_rendered_rgb(tmp_path: Path) -> None:
     )
 
     assert _pixel(img) == (40, 50, 60)
+
+
+def test_resolve_model_input_path_uses_nearest_dataset_rgb_frame(tmp_path: Path) -> None:
+    images_dir = tmp_path / "rendered"
+    dataset_dir = tmp_path / "dataset"
+    _write_rgb(dataset_dir / "RGB" / "fred_12_00_00.000000.jpg", (10, 20, 30))
+    _write_rgb(dataset_dir / "RGB" / "fred_12_00_00.040000.jpg", (40, 50, 60))
+
+    path = _resolve_model_input_path(
+        images_dir=images_dir,
+        dataset_folder_dir=dataset_dir,
+        stem="frame_000000_000000033333",
+        rep="rgb",
+        label_time_s=0.033333,
+        rgb_indices={},
+        label_time_unit=1.0e-6,
+    )
+
+    assert path == dataset_dir / "RGB" / "fred_12_00_00.040000.jpg"
+
+
+def test_find_frame_stems_allows_dataset_rgb_model_input(tmp_path: Path) -> None:
+    images_dir = tmp_path / "rendered"
+    dataset_dir = tmp_path / "dataset"
+    labels_dir = dataset_dir / "Event_YOLO"
+    labels_dir.mkdir(parents=True)
+    (labels_dir / "frame_000000_000000033333.txt").write_text("", encoding="utf-8")
+    _write_rgb(images_dir / "frame_000000_000000033333_cstr3.png", (10, 20, 30))
+    _write_rgb(dataset_dir / "RGB" / "fred_12_00_00.040000.jpg", (40, 50, 60))
+
+    stems = _find_frame_stems(
+        images_dir=images_dir,
+        dataset_folder_dir=dataset_dir,
+        labels_dir=labels_dir,
+        required_reps=["cstr3", "rgb"],
+        label_time_unit=1.0e-6,
+        rgb_indices={},
+    )
+
+    assert stems == ["frame_000000_000000033333"]
 
 
 def test_find_image_stems_requires_all_rendered_reps(tmp_path: Path) -> None:
