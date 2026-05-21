@@ -283,6 +283,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 batch.frame_keys,
                 tuple(data_cfg["frame_size"]),
                 include_map=False,
+                centernet_targets=aux.get("centernet_targets"),
             )
             rows.append({**loss_metrics, **metrics})
             row_weights.append(len(batch.frame_keys))
@@ -323,6 +324,9 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                     f"size {loss_metrics['centernet_size']:.4f} "
                     f"offset {loss_metrics['centernet_offset']:.4f} "
                     f"vel {loss_metrics['centernet_velocity']:.4f} "
+                    f"gt_cell_size {metrics.get('centernet_gt_cell_size_l1', float('nan')):.4f} "
+                    f"decode_size {metrics.get('centernet_decode_size_l1_nearest', float('nan')):.4f} "
+                    f"decode_cell {metrics.get('centernet_decode_center_l1_cells_nearest', float('nan')):.2f} "
                     f"mAP_50 {(f'{map_50:.4f}' if map_50 is not None else 'n/a')} "
                     f"mAP_50:95 {(f'{map_50_95:.4f}' if map_50_95 is not None else 'n/a')}"
                 )

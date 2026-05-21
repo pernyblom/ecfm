@@ -184,6 +184,76 @@ def map_metrics(
     return {"mAP_50": ap_values[0], "mAP_50_95": float(sum(ap_values) / len(ap_values))}
 
 
+def _centernet_diagnostics(
+    preds: Dict[str, torch.Tensor],
+    target_boxes_list: Sequence[torch.Tensor],
+    centernet_targets: Dict[str, torch.Tensor] | None,
+) -> Dict[str, float]:
+    if centernet_targets is None:
+        return {}
+    required_pred_keys = {"centernet_heatmap_logits", "centernet_size_raw", "boxes"}
+    if any(key not in preds for key in required_pred_keys):
+        return {}
+    if not {"size", "mask"}.issubset(centernet_targets):
+        return {}
+
+    size_pred_map = preds["centernet_size_raw"].sigmoid()
+    target_size_map = centernet_targets["size"].to(size_pred_map.device)
+    target_mask = centernet_targets["mask"].to(size_pred_map.device).bool()
+    if not bool(target_mask.any().item()):
+        return {}
+
+    out_h, out_w = size_pred_map.shape[-2:]
+    pred_gt_cell_sizes = size_pred_map.permute(0, 2, 3, 1)[target_mask.squeeze(1)]
+    target_gt_cell_sizes = target_size_map.permute(0, 2, 3, 1)[target_mask.squeeze(1)]
+    gt_cell_size_l1 = (pred_gt_cell_sizes - target_gt_cell_sizes).abs().mean()
+
+    pred_boxes = preds["boxes"]
+    if pred_boxes.numel() == 0:
+        return {
+            "centernet_gt_cell_size_l1": float(gt_cell_size_l1.item()),
+            "centernet_gt_size_mean": float(target_gt_cell_sizes.mean().item()),
+            "centernet_pred_gt_cell_size_mean": float(pred_gt_cell_sizes.mean().item()),
+        }
+
+    decoded_size_l1: list[torch.Tensor] = []
+    decoded_center_l1_cells: list[torch.Tensor] = []
+    decoded_size_means: list[torch.Tensor] = []
+    nearest_same_cell: list[torch.Tensor] = []
+    scale = torch.tensor([out_w, out_h], device=pred_boxes.device, dtype=pred_boxes.dtype)
+    min_cell = torch.zeros((2,), device=pred_boxes.device, dtype=pred_boxes.dtype)
+    max_cell = torch.tensor([out_w - 1, out_h - 1], device=pred_boxes.device, dtype=pred_boxes.dtype)
+    for batch_idx, gt_boxes_raw in enumerate(target_boxes_list):
+        gt_boxes = gt_boxes_raw.to(device=pred_boxes.device, dtype=pred_boxes.dtype)
+        if gt_boxes.numel() == 0:
+            continue
+        pred_centers_cells = pred_boxes[batch_idx, :, :2] * scale
+        pred_center_cells_int = torch.minimum(torch.maximum(torch.floor(pred_centers_cells), min_cell), max_cell)
+        for gt_box in gt_boxes:
+            gt_center_cells = gt_box[:2] * scale
+            gt_cell_int = torch.minimum(torch.maximum(torch.floor(gt_center_cells), min_cell), max_cell)
+            distances = (pred_centers_cells - gt_center_cells).abs().sum(dim=-1)
+            nearest_idx = torch.argmin(distances)
+            decoded_size_l1.append((pred_boxes[batch_idx, nearest_idx, 2:] - gt_box[2:]).abs().mean())
+            decoded_center_l1_cells.append(distances[nearest_idx] / 2.0)
+            decoded_size_means.append(pred_boxes[batch_idx, nearest_idx, 2:].mean())
+            nearest_same_cell.append((pred_center_cells_int[nearest_idx] == gt_cell_int).all().float())
+
+    out = {
+        "centernet_gt_cell_size_l1": float(gt_cell_size_l1.item()),
+        "centernet_gt_size_mean": float(target_gt_cell_sizes.mean().item()),
+        "centernet_pred_gt_cell_size_mean": float(pred_gt_cell_sizes.mean().item()),
+    }
+    if decoded_size_l1:
+        out["centernet_decode_size_l1_nearest"] = float(torch.stack(decoded_size_l1).mean().item())
+        out["centernet_decode_center_l1_cells_nearest"] = float(
+            torch.stack(decoded_center_l1_cells).mean().item()
+        )
+        out["centernet_decode_size_mean_nearest"] = float(torch.stack(decoded_size_means).mean().item())
+        out["centernet_decode_same_cell_frac_nearest"] = float(torch.stack(nearest_same_cell).mean().item())
+    return out
+
+
 def summarize_metrics(
     preds: Dict[str, torch.Tensor],
     target_boxes_list: Sequence[torch.Tensor],
@@ -193,12 +263,14 @@ def summarize_metrics(
     frame_keys: Sequence[str],
     frame_size: tuple[int, int],
     include_map: bool = False,
+    centernet_targets: Dict[str, torch.Tensor] | None = None,
 ) -> Dict[str, float]:
     out: Dict[str, float] = {}
     pred_scores = detection_scores(preds)
     pred_boxes = preds["boxes"]
 
     if target_objectness is None or frame_matches is None:
+        out.update(_centernet_diagnostics(preds, target_boxes_list, centernet_targets))
         for rep, target in target_heatmaps.items():
             if rep in preds["heatmaps"]:
                 out[f"heatmap_iou_{rep}"] = float(heatmap_iou(preds["heatmaps"][rep], target).item())

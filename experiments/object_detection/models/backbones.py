@@ -97,29 +97,59 @@ class ResNet18Encoder(nn.Module):
         in_channels: int,
         out_dim: int,
         first_conv_grid: tuple[int, int] | None = None,
+        feature_stage: str = "layer4",
     ) -> None:
         super().__init__()
+        stage_channels = {
+            "stem": 64,
+            "layer1": 64,
+            "layer2": 128,
+            "layer3": 256,
+            "layer4": 512,
+        }
+        self.feature_stage = str(feature_stage).lower()
+        if self.feature_stage not in stage_channels:
+            raise ValueError(
+                f"Unknown ResNet18 feature_stage: {feature_stage}. "
+                f"Expected one of {sorted(stage_channels)}."
+            )
         net = models.resnet18(weights=None)
         if in_channels != 3:
             net.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         conv1: nn.Module = net.conv1
         if first_conv_grid is not None:
             conv1 = CellLocalConv2d(net.conv1, grid_x=first_conv_grid[0], grid_y=first_conv_grid[1])
-        self.backbone = nn.Sequential(
+        self.stem = nn.Sequential(
             conv1,
             net.bn1,
             net.relu,
             net.maxpool,
-            net.layer1,
-            net.layer2,
-            net.layer3,
-            net.layer4,
         )
+        self.layer1 = net.layer1
+        self.layer2 = net.layer2
+        self.layer3 = net.layer3
+        self.layer4 = net.layer4
         self.pool = nn.AdaptiveAvgPool2d(1)
-        self.proj = nn.Linear(512, out_dim)
+        self.proj = nn.Linear(stage_channels[self.feature_stage], out_dim)
 
     def forward(self, x: torch.Tensor) -> EncoderOutput:
-        fmap = self.backbone(x)
+        x = self.stem(x)
+        if self.feature_stage == "stem":
+            fmap = x
+        else:
+            x = self.layer1(x)
+            if self.feature_stage == "layer1":
+                fmap = x
+            else:
+                x = self.layer2(x)
+                if self.feature_stage == "layer2":
+                    fmap = x
+                else:
+                    x = self.layer3(x)
+                    if self.feature_stage == "layer3":
+                        fmap = x
+                    else:
+                        fmap = self.layer4(x)
         pooled = self.proj(self.pool(fmap).flatten(1))
         return EncoderOutput(fmap=fmap, pooled=pooled)
 
@@ -140,5 +170,10 @@ def build_single_encoder(cfg: Dict) -> nn.Module:
             first_conv_grid=first_conv_grid,
         )
     if backbone_type == "resnet18":
-        return ResNet18Encoder(in_channels, out_dim, first_conv_grid=first_conv_grid)
+        return ResNet18Encoder(
+            in_channels,
+            out_dim,
+            first_conv_grid=first_conv_grid,
+            feature_stage=str(cfg.get("feature_stage", "layer4")),
+        )
     raise ValueError(f"Unknown backbone type: {backbone_type}")

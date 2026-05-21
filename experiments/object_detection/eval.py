@@ -111,6 +111,7 @@ def main() -> None:
                     aux.get("frame_matches"),
                     batch.frame_keys,
                     tuple(cfg["data"]["frame_size"]),
+                    centernet_targets=aux.get("centernet_targets"),
                 )
             )
             row_weights.append(len(batch.frame_keys))

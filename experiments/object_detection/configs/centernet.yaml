@@ -48,6 +48,10 @@ model:
     type: resnet18
     in_channels: 3
     out_dim: 256
+    # CenterNet needs a spatial feature map close to model.output_stride.
+    # layer1 is stride 4 for ResNet18; layer4 is stride 32 and is too coarse
+    # for stable dense size/offset prediction.
+    feature_stage: layer1
   centernet_hidden_dim: 256
   output_stride: 4
   topk: 100
