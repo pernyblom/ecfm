@@ -1,0 +1,110 @@
+from pathlib import Path
+import sys
+
+import numpy as np
+from PIL import Image
+import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
+from experiments.kalman_ml_forecasting.models.kalman_residual import (
+    KalmanResidualForecaster,
+    constant_velocity_forecast,
+)
+
+
+def _write_image(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(path)
+
+
+def _write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def test_constant_velocity_forecast_uses_last_two_boxes() -> None:
+    past = torch.tensor([[[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]]])
+    past_t = torch.tensor([[0.0, 1.0]])
+    future_t = torch.tensor([[2.0, 3.0]])
+
+    pred = constant_velocity_forecast(past, past_t, future_t)
+
+    assert torch.allclose(pred[0, :, :2], torch.tensor([[0.3, 0.4], [0.4, 0.5]]), atol=1e-6)
+
+
+def test_kalman_residual_forecaster_forward_shapes() -> None:
+    model = KalmanResidualForecaster(
+        representations=["cstr3", "xt_my"],
+        image_sizes={"cstr3": (8, 8), "xt_my": (8, 8)},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        fusion_hidden_dim=16,
+        state_hidden_dim=8,
+        residual_hidden_dim=16,
+    )
+    inputs = {
+        "cstr3": torch.zeros((2, 3, 8, 8)),
+        "xt_my": torch.zeros((2, 3, 8, 8)),
+    }
+    past = torch.tensor(
+        [
+            [[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]],
+            [[0.4, 0.5, 0.2, 0.2], [0.5, 0.6, 0.2, 0.2]],
+        ],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+    future_t = torch.tensor([[2.0, 3.0, 4.0], [2.0, 3.0, 4.0]])
+
+    out = model(inputs, past, past_t, future_t, return_debug=True)
+
+    assert out["boxes"].shape == (2, 3, 4)
+    assert out["residual_accel"].shape == (2, 3, 4)
+    assert out["cv_boxes"].shape == (2, 3, 4)
+
+
+def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:
+    labels = tmp_path / "labels" / "seq" / "Event_YOLO"
+    images = tmp_path / "images" / "seq"
+    for idx, t in enumerate([0, 1000000, 2000000, 3000000], start=1):
+        stem = f"Video_0_frame_{t}"
+        _write_text(labels / f"{stem}.txt", "0 0.5 0.5 0.1 0.1\n")
+        _write_image(images / f"{stem}_cstr3.png")
+    _write_text(
+        tmp_path / "labels" / "seq" / "cleaned_tracks.txt",
+        "\n".join(
+            [
+                "0.0,1,10,20,4,6",
+                "1.0,1,12,22,4,6",
+                "2.0,1,14,24,4,6",
+                "3.0,1,16,26,4,6",
+            ]
+        ),
+    )
+
+    dataset = TrackKalmanForecastDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        frame_size=(100, 100),
+        representations=["cstr3"],
+        image_sizes={"cstr3": (8, 8)},
+        history_ms=1000.0,
+        forecast_ms=1000.0,
+        folders=["seq"],
+        label_time_unit=1e-6,
+        track_time_unit=1.0,
+        time_align="none",
+        verify_render_manifest=False,
+    )
+
+    assert len(dataset) == 2
+    sample = dataset[0]
+    assert sample.inputs["cstr3"].shape == (3, 8, 8)
+    assert sample.past_boxes.shape == (2, 4)
+    assert sample.future_boxes.shape == (1, 4)
+    assert sample.frame_key == "seq/Video_0_frame_1000000"
+
