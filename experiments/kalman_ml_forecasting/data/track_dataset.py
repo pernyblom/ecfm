@@ -85,7 +85,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackKalmanForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 1
+    CACHE_VERSION = 2
 
     def __init__(
         self,
@@ -114,6 +114,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         seed: int = 123,
         cache_dir: Optional[Path] = None,
         filter_missing_representations: bool = True,
+        require_representations: bool = True,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -139,6 +140,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.seed = int(seed)
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.filter_missing_representations = bool(filter_missing_representations)
+        self.require_representations = bool(require_representations)
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
@@ -303,7 +305,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 if time_raw is None:
                     continue
                 time_s = float(time_raw) * self.label_time_unit
-                if self._has_all_reps(folder, txt.stem, time_s) or not self.filter_missing_representations:
+                if (
+                    not self.require_representations
+                    or self._has_all_reps(folder, txt.stem, time_s)
+                    or not self.filter_missing_representations
+                ):
                     items.append(FrameItem(stem=txt.stem, time_s=time_s))
             items.sort(key=lambda x: x.time_s)
             out[folder] = items
@@ -391,30 +397,30 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     anchor_idx = history_steps
                     anchor_stem = stems[start + anchor_idx]
                     anchor_time = float(query_times[start + anchor_idx])
-                    missing = [
-                        rep
-                        for rep in self.representations
-                        if self._resolve_input_path(folder, anchor_stem, rep, anchor_time) is None
-                    ]
-                    if missing:
-                        if self.filter_missing_representations:
-                            skipped_missing += 1
-                            missing_by_rep.update(missing)
-                            continue
-                        raise FileNotFoundError(
-                            f"Missing representation file(s) for '{folder}/{anchor_stem}': {missing}"
-                        )
-                    self._validate_manifest_entry(folder, anchor_stem)
+                    input_paths = {}
+                    if self.require_representations:
+                        resolved_paths = {
+                            rep: self._resolve_input_path(folder, anchor_stem, rep, anchor_time)
+                            for rep in self.representations
+                        }
+                        missing = [rep for rep, path in resolved_paths.items() if path is None]
+                        if missing:
+                            if self.filter_missing_representations:
+                                skipped_missing += 1
+                                missing_by_rep.update(missing)
+                                continue
+                            raise FileNotFoundError(
+                                f"Missing representation file(s) for '{folder}/{anchor_stem}': {missing}"
+                            )
+                        self._validate_manifest_entry(folder, anchor_stem)
+                        input_paths = {rep: str(path) for rep, path in resolved_paths.items() if path is not None}
                     samples.append(
                         {
                             "folder": folder,
                             "track_id": int(track_id),
                             "anchor_stem": anchor_stem,
                             "anchor_time_s": anchor_time,
-                            "input_paths": {
-                                rep: str(self._resolve_input_path(folder, anchor_stem, rep, anchor_time))
-                                for rep in self.representations
-                            },
+                            "input_paths": input_paths,
                             "past_boxes": boxes[start : start + anchor_idx + 1].astype(np.float32),
                             "future_boxes": boxes[start + anchor_idx + 1 : end].astype(np.float32),
                             "past_times_s": query_times[start : start + anchor_idx + 1].astype(np.float32),
@@ -467,6 +473,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "label_period_s": self.label_period_s,
             "max_tracks": self.max_tracks,
             "max_samples": self.max_samples,
+            "require_representations": self.require_representations,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,
         }
@@ -520,4 +527,3 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             track_id=int(sample["track_id"]),
             input_paths=dict(sample["input_paths"]),
         )
-

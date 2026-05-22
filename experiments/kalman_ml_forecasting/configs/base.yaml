@@ -45,6 +45,18 @@ model:
   cell_local_first_conv: false
   cell_local_first_conv_representations: []
 
+kalman:
+  enabled: true
+  initial_pos_std: 0.05
+  initial_size_std: 0.05
+  initial_vel_std: 1.0
+  process_pos_std: 0.001
+  process_size_std: 0.001
+  process_vel_std: 0.1
+  process_size_vel_std: 0.1
+  measurement_pos_std: 0.01
+  measurement_size_std: 0.01
+
 train:
   device: cuda
   epochs: 40
@@ -63,4 +75,3 @@ train:
   checkpoint_dir: outputs/kalman_ml_forecasting_ckpt
   resume_checkpoint:
   metrics_jsonl: outputs/kalman_ml_forecasting_ckpt/metrics.jsonl
-

@@ -10,9 +10,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
+from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_cv_forecast, kalman_filter_history
 from experiments.kalman_ml_forecasting.models.kalman_residual import (
     KalmanResidualForecaster,
     constant_velocity_forecast,
+)
+from experiments.kalman_ml_forecasting.optimize_kalman import (
+    _objective_score,
+    _parse_objective_weights,
 )
 
 
@@ -34,6 +39,53 @@ def test_constant_velocity_forecast_uses_last_two_boxes() -> None:
     pred = constant_velocity_forecast(past, past_t, future_t)
 
     assert torch.allclose(pred[0, :, :2], torch.tensor([[0.3, 0.4], [0.4, 0.5]]), atol=1e-6)
+
+
+def test_kalman_cv_forecast_shapes() -> None:
+    past = torch.tensor(
+        [
+            [[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]],
+            [[0.4, 0.5, 0.2, 0.2], [0.5, 0.6, 0.2, 0.2]],
+        ],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+    future_t = torch.tensor([[2.0, 3.0, 4.0], [2.0, 3.0, 4.0]])
+
+    pred = kalman_cv_forecast(past, past_t, future_t)
+
+    assert pred.shape == (2, 3, 4)
+
+
+def test_kalman_measurement_trust_changes_velocity_estimate() -> None:
+    past = torch.tensor(
+        [[[0.0, 0.5, 0.1, 0.1], [0.1, 0.5, 0.1, 0.1], [0.7, 0.5, 0.1, 0.1]]],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0, 2.0]])
+    low_noise_state, _ = kalman_filter_history(
+        past,
+        past_t,
+        {"measurement_pos_std": 1.0e-4, "process_vel_std": 1.0, "initial_vel_std": 2.0},
+    )
+    high_noise_state, _ = kalman_filter_history(
+        past,
+        past_t,
+        {"measurement_pos_std": 0.5, "process_vel_std": 1.0e-3, "initial_vel_std": 0.01},
+    )
+
+    assert low_noise_state[0, 4] > high_noise_state[0, 4]
+
+
+def test_optimize_kalman_objective_weights_support_maximize_and_weighted_score() -> None:
+    metrics = {"fde_center_px": 10.0, "ade_center_px": 4.0, "miou": 0.25}
+
+    maximize = _parse_objective_weights(None, "miou", True)
+    weighted = _parse_objective_weights("fde_center_px=1,ade_center_px=0.5,miou=-100", "fde_center_px", False)
+
+    assert maximize == {"miou": -1.0}
+    assert _objective_score(metrics, maximize) == -0.25
+    assert _objective_score(metrics, weighted) == -13.0
 
 
 def test_kalman_residual_forecaster_forward_shapes() -> None:
@@ -107,4 +159,3 @@ def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:
     assert sample.past_boxes.shape == (2, 4)
     assert sample.future_boxes.shape == (1, 4)
     assert sample.frame_key == "seq/Video_0_frame_1000000"
-

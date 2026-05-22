@@ -21,7 +21,7 @@ from experiments.kalman_ml_forecasting.data.track_dataset import (
 )
 from experiments.kalman_ml_forecasting.metrics import summarize_forecast_metrics
 from experiments.kalman_ml_forecasting.models.factory import build_model
-from experiments.kalman_ml_forecasting.models.kalman_residual import constant_velocity_forecast
+from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_cv_forecast, kalman_config_from_dict
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
@@ -119,6 +119,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     frame_size = tuple(cfg["data"]["frame_size"])
     loss_fn = nn.SmoothL1Loss(beta=float(train_cfg.get("smooth_l1_beta", 0.05)))
     residual_weight = float(train_cfg.get("residual_l2_weight", 0.0))
+    kalman_cfg = kalman_config_from_dict(cfg.get("kalman"))
     model.train(mode=train)
     rows: List[Dict[str, float]] = []
     for step, batch in enumerate(loader):
@@ -149,9 +150,17 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 optimizer.step()
         with torch.no_grad():
             metrics = summarize_forecast_metrics(pred.detach(), future_boxes, frame_size)
-            cv_metrics = summarize_forecast_metrics(out["cv_boxes"].detach(), future_boxes, frame_size)
+            kalman_boxes = kalman_cv_forecast(
+                past_boxes,
+                past_times_s,
+                future_times_s,
+                kalman_cfg,
+            )
+            kalman_metrics = summarize_forecast_metrics(kalman_boxes.detach(), future_boxes, frame_size)
+            last2_metrics = summarize_forecast_metrics(out["last2_boxes"].detach(), future_boxes, frame_size)
             row = {"loss": float(loss.item()), **metrics}
-            row.update({f"cv_{key}": value for key, value in cv_metrics.items()})
+            row.update({f"kalman_{key}": value for key, value in kalman_metrics.items()})
+            row.update({f"last2_{key}": value for key, value in last2_metrics.items()})
             rows.append(row)
         if step % int(train_cfg.get("log_every", 20)) == 0:
             phase = "train" if train else "val"
@@ -159,7 +168,8 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 f"{phase} step {step} loss {row['loss']:.4f} "
                 f"ADE_C {row['ade_center_px']:.2f} FDE_C {row['fde_center_px']:.2f} "
                 f"mIoU {row['miou']:.4f} "
-                f"CV_ADE_C {row['cv_ade_center_px']:.2f}"
+                f"KALMAN_ADE_C {row['kalman_ade_center_px']:.2f} "
+                f"LAST2_ADE_C {row['last2_ade_center_px']:.2f}"
             )
     return _mean_rows(rows)
 
@@ -264,4 +274,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

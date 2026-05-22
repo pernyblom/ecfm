@@ -20,7 +20,7 @@ def box_sequence_to_state(past_boxes: torch.Tensor, past_times_s: torch.Tensor) 
     return torch.cat([last, velocity], dim=-1)
 
 
-def constant_velocity_forecast(
+def last_two_constant_velocity_forecast(
     past_boxes: torch.Tensor,
     past_times_s: torch.Tensor,
     future_times_s: torch.Tensor,
@@ -30,6 +30,15 @@ def constant_velocity_forecast(
     vel = state[:, 4:]
     dt = future_times_s - past_times_s[:, -1:].expand_as(future_times_s)
     return (pos.unsqueeze(1) + vel.unsqueeze(1) * dt.unsqueeze(-1)).clamp(0.0, 1.0)
+
+
+def constant_velocity_forecast(
+    past_boxes: torch.Tensor,
+    past_times_s: torch.Tensor,
+    future_times_s: torch.Tensor,
+) -> torch.Tensor:
+    """Backward-compatible alias for the simple last-two-point CV baseline."""
+    return last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
 
 
 def _encoder_cfg_for_rep(
@@ -180,6 +189,6 @@ class KalmanResidualForecaster(nn.Module):
         return {
             "boxes": pred,
             "residual_accel": torch.stack(residuals, dim=1),
-            "cv_boxes": constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
+            "last2_boxes": last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
+            "cv_boxes": last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
         }
-
