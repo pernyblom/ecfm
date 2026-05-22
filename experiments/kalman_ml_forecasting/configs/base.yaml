@@ -75,6 +75,22 @@ kalman:
 #   measurement_size_std: 0.07238128
 
 
+# Optimized 160000 train samples
+# Best val score: 109.78
+# --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
+# kalman:
+#   enabled: true
+#   initial_pos_std: 9.6178901e-06
+#   initial_size_std: 0.020246828
+#   initial_vel_std: 0.0004936771
+#   process_pos_std: 4.2104816e-06
+#   process_size_std: 1.2950349
+#   process_vel_std: 0.13281414
+#   process_size_vel_std: 0.003452712
+#   measurement_pos_std: 0.010384851
+#   measurement_size_std: 0.11314614
+
+
 train:
   device: cuda
   epochs: 40
