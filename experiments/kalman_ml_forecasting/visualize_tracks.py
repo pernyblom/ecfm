@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
 from experiments.kalman_ml_forecasting.models.factory import build_model
 from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_cv_forecast
-from experiments.kalman_ml_forecasting.models.kalman_residual import last_two_constant_velocity_forecast
+from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     resolve_representation_image_sizes,
@@ -232,7 +232,7 @@ def main() -> None:
     parser.add_argument("--max-frames-per-track", type=int, default=200)
     parser.add_argument("--duration-ms", type=int, default=120)
     parser.add_argument("--include-cv", action="store_true", help="Also draw configured Kalman CV baseline in cyan.")
-    parser.add_argument("--include-last2", action="store_true", help="Draw the old last-two CV baseline in cyan instead.")
+    parser.add_argument("--include-last4", action="store_true", help="Draw the last-four linear extrapolation baseline in cyan instead.")
     parser.add_argument(
         "--baseline-only",
         action="store_true",
@@ -287,14 +287,14 @@ def main() -> None:
                 past_times_s = sample.past_times_s.unsqueeze(0).to(device)
                 future_times_s = sample.future_times_s.unsqueeze(0).to(device)
                 kalman_boxes = kalman_cv_forecast(past_boxes, past_times_s, future_times_s, kalman_cfg)
-                last2_boxes = last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
+                last4_boxes = last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
                 if args.baseline_only:
                     pred_boxes = kalman_boxes
                     cv_overlay = None
                 else:
                     pred_boxes = model(inputs, past_boxes, past_times_s, future_times_s)
-                    if args.include_last2:
-                        cv_overlay = last2_boxes
+                    if args.include_last4:
+                        cv_overlay = last4_boxes
                     else:
                         cv_overlay = kalman_boxes if args.include_cv else None
                 backdrop = _load_backdrop(

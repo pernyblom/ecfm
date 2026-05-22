@@ -8,8 +8,34 @@ from torch import nn
 from experiments.object_detection.models.backbones import build_single_encoder, grid_split_from_rep_name
 
 
+def _fit_recent_velocity(
+    past_boxes: torch.Tensor,
+    past_times_s: torch.Tensor,
+    *,
+    num_samples: int,
+) -> torch.Tensor:
+    if past_boxes.shape[1] < 2:
+        return torch.zeros_like(past_boxes[:, -1])
+    boxes = past_boxes[:, -num_samples:]
+    times = past_times_s[:, -num_samples:]
+    centered_t = times - times.mean(dim=1, keepdim=True)
+    centered_boxes = boxes - boxes.mean(dim=1, keepdim=True)
+    denom = centered_t.square().sum(dim=1, keepdim=True).clamp(min=1.0e-12)
+    return (centered_boxes * centered_t.unsqueeze(-1)).sum(dim=1) / denom
+
+
 def box_sequence_to_state(past_boxes: torch.Tensor, past_times_s: torch.Tensor) -> torch.Tensor:
-    """Return [cx, cy, w, h, vx, vy, vw, vh] from the last two observed boxes."""
+    """Return [cx, cy, w, h, vx, vy, vw, vh] using a last-four linear fit."""
+    last = past_boxes[:, -1]
+    velocity = _fit_recent_velocity(past_boxes, past_times_s, num_samples=4)
+    return torch.cat([last, velocity], dim=-1)
+
+
+def last_two_constant_velocity_forecast(
+    past_boxes: torch.Tensor,
+    past_times_s: torch.Tensor,
+    future_times_s: torch.Tensor,
+) -> torch.Tensor:
     last = past_boxes[:, -1]
     if past_boxes.shape[1] < 2:
         velocity = torch.zeros_like(last)
@@ -17,10 +43,11 @@ def box_sequence_to_state(past_boxes: torch.Tensor, past_times_s: torch.Tensor) 
         prev = past_boxes[:, -2]
         dt = (past_times_s[:, -1] - past_times_s[:, -2]).clamp(min=1.0e-6).unsqueeze(-1)
         velocity = (last - prev) / dt
-    return torch.cat([last, velocity], dim=-1)
+    dt = future_times_s - past_times_s[:, -1:].expand_as(future_times_s)
+    return (last.unsqueeze(1) + velocity.unsqueeze(1) * dt.unsqueeze(-1)).clamp(0.0, 1.0)
 
 
-def last_two_constant_velocity_forecast(
+def last_four_constant_velocity_forecast(
     past_boxes: torch.Tensor,
     past_times_s: torch.Tensor,
     future_times_s: torch.Tensor,
@@ -37,8 +64,8 @@ def constant_velocity_forecast(
     past_times_s: torch.Tensor,
     future_times_s: torch.Tensor,
 ) -> torch.Tensor:
-    """Backward-compatible alias for the simple last-two-point CV baseline."""
-    return last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
+    """Backward-compatible alias for the last-four linear extrapolation baseline."""
+    return last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
 
 
 def _encoder_cfg_for_rep(
@@ -189,6 +216,7 @@ class KalmanResidualForecaster(nn.Module):
         return {
             "boxes": pred,
             "residual_accel": torch.stack(residuals, dim=1),
+            "last4_boxes": last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
             "last2_boxes": last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
-            "cv_boxes": last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
+            "cv_boxes": last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
         }

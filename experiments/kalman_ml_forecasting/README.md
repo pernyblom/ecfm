@@ -18,8 +18,10 @@ Model
 - The Kalman baseline is separate from the learned model. It is initialized
   fresh for each sample and only filters the configured history window, for
   example `0.4 s`, before rolling forward without future measurements.
-- The old last-two-point constant-velocity extrapolator is still reported as
-  `last2_*` metrics for comparison.
+- The linear extrapolation baseline follows the paper-style setup: estimate
+  velocity from the last four observed poses, then roll forward with constant
+  velocity. We apply the same last-four linear fit to all box channels
+  `(cx, cy, w, h)`.
 
 Data
 - Samples are track-aligned from `cleaned_tracks.txt` and anchor label times in
@@ -79,13 +81,35 @@ The optimizer:
 - uses the configured `kalman:` block as the initial incumbent, so random
   trials must beat the current config to become the best result
 - prints the best parameters in YAML-ready `kalman:` format
-- reports last-two CV metrics beside the tuned Kalman metrics
+- reports last-four linear extrapolation metrics beside the tuned Kalman metrics
 
 By default it uses all available train tracklets. You can cap runtime with:
 
 ```bash
 python experiments/kalman_ml_forecasting/optimize_kalman.py --config experiments/kalman_ml_forecasting/configs/base.yaml --trials 50 --max-tune-train-samples 2000 --max-tune-val-samples 2000
 ```
+
+Backprop Optimization
+
+There is also an experimental optimizer that backpropagates through the Kalman
+filter applications. It initializes the log-standard-deviation parameters from
+the configured `kalman:` block and optimizes the same weighted objective:
+
+```bash
+python experiments/kalman_ml_forecasting/optimize_kalman_backprop.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1.0e-2 --objective fde_center_px
+```
+
+Weighted objectives work the same way:
+
+```bash
+python experiments/kalman_ml_forecasting/optimize_kalman_backprop.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1.0e-2 --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
+```
+
+Notes:
+- parameters are optimized in log space and clamped by `--min-std`/`--max-std`
+- the configured `kalman:` block is the initial incumbent
+- mIoU is piecewise differentiable and can have weak gradients when boxes do
+  not overlap, so distance-based terms are often useful in the weighted loss
 
 Visualize Tracks
 
@@ -101,22 +125,22 @@ Useful options:
 - `--max-tracks 10` to cap a batch render
 - `--max-frames-per-track 200` to cap GIF length
 - `--include-cv` to draw the configured Kalman CV baseline in cyan alongside the learned prediction
-- `--include-last2` to draw the old last-two CV baseline in cyan
+- `--include-last4` to draw the last-four linear extrapolation baseline in cyan
 - `--baseline-only` to render configured Kalman predictions without loading a checkpoint
 
 The overlay colors are:
 - blue: history boxes
 - yellow: learned predicted boxes
 - green: future ground truth boxes
-- cyan: optional Kalman or last-two CV baseline
+- cyan: optional Kalman or last-four extrapolation baseline
 
 Metrics
 - The trainer reports the learned model metrics, configured Kalman baseline
-  metrics, and last-two CV metrics in the same validation pass.
+  metrics, and last-four extrapolation metrics in the same validation pass.
 - `kalman_ade_center_px` and related `kalman_*` metrics are the real Kalman
   baseline.
-- `last2_ade_center_px` and related `last2_*` metrics are the old last-two
-  extrapolator.
+- `last4_ade_center_px` and related `last4_*` metrics are the last-four
+  linear extrapolator.
 - Non-prefixed metrics are the image-conditioned residual model.
 
 Extension points

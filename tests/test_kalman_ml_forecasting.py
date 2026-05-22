@@ -10,7 +10,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
-from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_cv_forecast, kalman_filter_history
+from experiments.kalman_ml_forecasting.models.kalman_filter import (
+    kalman_cv_forecast,
+    kalman_cv_forecast_tensor_params,
+    kalman_filter_history,
+    kalman_std_tensors_from_config,
+)
 from experiments.kalman_ml_forecasting.models.kalman_residual import (
     KalmanResidualForecaster,
     constant_velocity_forecast,
@@ -31,14 +36,16 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def test_constant_velocity_forecast_uses_last_two_boxes() -> None:
-    past = torch.tensor([[[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]]])
-    past_t = torch.tensor([[0.0, 1.0]])
-    future_t = torch.tensor([[2.0, 3.0]])
+def test_constant_velocity_forecast_uses_last_four_linear_fit() -> None:
+    past = torch.tensor(
+        [[[0.0, 0.1, 0.1, 0.1], [0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1], [0.3, 0.4, 0.1, 0.1]]]
+    )
+    past_t = torch.tensor([[0.0, 1.0, 2.0, 3.0]])
+    future_t = torch.tensor([[4.0, 5.0]])
 
     pred = constant_velocity_forecast(past, past_t, future_t)
 
-    assert torch.allclose(pred[0, :, :2], torch.tensor([[0.3, 0.4], [0.4, 0.5]]), atol=1e-6)
+    assert torch.allclose(pred[0, :, :2], torch.tensor([[0.4, 0.5], [0.5, 0.6]]), atol=1e-6)
 
 
 def test_kalman_cv_forecast_shapes() -> None:
@@ -75,6 +82,25 @@ def test_kalman_measurement_trust_changes_velocity_estimate() -> None:
     )
 
     assert low_noise_state[0, 4] > high_noise_state[0, 4]
+
+
+def test_kalman_tensor_parameters_receive_gradients() -> None:
+    past = torch.tensor(
+        [[[0.0, 0.5, 0.1, 0.1], [0.1, 0.5, 0.1, 0.1], [0.7, 0.5, 0.1, 0.1]]],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0, 2.0]])
+    future_t = torch.tensor([[3.0]])
+    params = {
+        key: value.detach().clone().requires_grad_(True)
+        for key, value in kalman_std_tensors_from_config(None, device=past.device, dtype=past.dtype).items()
+    }
+
+    pred = kalman_cv_forecast_tensor_params(past, past_t, future_t, params)
+    loss = pred[..., 0].sum()
+    loss.backward()
+
+    assert params["measurement_pos_std"].grad is not None
 
 
 def test_optimize_kalman_objective_weights_support_maximize_and_weighted_score() -> None:

@@ -21,7 +21,7 @@ from experiments.kalman_ml_forecasting.models.kalman_filter import (
     kalman_config_from_dict,
     kalman_cv_forecast,
 )
-from experiments.kalman_ml_forecasting.models.kalman_residual import last_two_constant_velocity_forecast
+from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
@@ -145,8 +145,8 @@ def _evaluate(
         past_boxes, future_boxes, past_times, future_times = _stack_batch(samples, batch_indices, device=device)
         if baseline == "kalman":
             pred = kalman_cv_forecast(past_boxes, past_times, future_times, params)
-        elif baseline == "last2":
-            pred = last_two_constant_velocity_forecast(past_boxes, past_times, future_times)
+        elif baseline == "last4":
+            pred = last_four_constant_velocity_forecast(past_boxes, past_times, future_times)
         else:
             raise ValueError(f"Unknown baseline: {baseline}")
         rows.append(summarize_forecast_metrics(pred, future_boxes, frame_size))
@@ -276,23 +276,23 @@ def main() -> None:
     print(f"Objective score minimized: {objective_label}")
 
     configured = kalman_config_from_dict(cfg.get("kalman"))
-    last2_train = _evaluate(
+    last4_train = _evaluate(
         dataset.samples,
         train_idx,
         frame_size=frame_size,
         params=None,
         batch_size=int(args.batch_size),
         device=device,
-        baseline="last2",
+        baseline="last4",
     )
-    last2_val = _evaluate(
+    last4_val = _evaluate(
         dataset.samples,
         val_idx,
         frame_size=frame_size,
         params=None,
         batch_size=int(args.batch_size),
         device=device,
-        baseline="last2",
+        baseline="last4",
     )
     configured_val = _evaluate(
         dataset.samples,
@@ -312,8 +312,8 @@ def main() -> None:
         device=device,
         baseline="kalman",
     )
-    print(f"Last-two CV tune train: {json.dumps(last2_train, sort_keys=True)}")
-    print(f"Last-two CV tune val:   {json.dumps(last2_val, sort_keys=True)}")
+    print(f"Last-four CV tune train: {json.dumps(last4_train, sort_keys=True)}")
+    print(f"Last-four CV tune val:   {json.dumps(last4_val, sort_keys=True)}")
     print(f"Configured Kalman train:{json.dumps(configured_train, sort_keys=True)}")
     print(f"Configured Kalman val:  {json.dumps(configured_val, sort_keys=True)}")
 
@@ -376,7 +376,7 @@ def main() -> None:
     print(f"Best tune val score:   {best['val_score']:.6f}")
     print(f"Best tune train metrics: {json.dumps(best['train'], sort_keys=True)}")
     print(f"Best tune val metrics:   {json.dumps(best['val'], sort_keys=True)}")
-    print(f"Last-two tune val:       {json.dumps(last2_val, sort_keys=True)}")
+    print(f"Last-four tune val:      {json.dumps(last4_val, sort_keys=True)}")
 
     if args.output_json is not None:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -384,8 +384,8 @@ def main() -> None:
             "objective": args.objective,
             "objective_weights": objective_weights,
             "best": best,
-            "last2_train": last2_train,
-            "last2_val": last2_val,
+            "last4_train": last4_train,
+            "last4_val": last4_val,
             "configured_train": configured_train,
             "configured_val": configured_val,
             "trials": trials,

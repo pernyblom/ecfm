@@ -157,10 +157,10 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 kalman_cfg,
             )
             kalman_metrics = summarize_forecast_metrics(kalman_boxes.detach(), future_boxes, frame_size)
-            last2_metrics = summarize_forecast_metrics(out["last2_boxes"].detach(), future_boxes, frame_size)
+            last4_metrics = summarize_forecast_metrics(out["last4_boxes"].detach(), future_boxes, frame_size)
             row = {"loss": float(loss.item()), **metrics}
             row.update({f"kalman_{key}": value for key, value in kalman_metrics.items()})
-            row.update({f"last2_{key}": value for key, value in last2_metrics.items()})
+            row.update({f"last4_{key}": value for key, value in last4_metrics.items()})
             rows.append(row)
         if step % int(train_cfg.get("log_every", 20)) == 0:
             phase = "train" if train else "val"
@@ -169,7 +169,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                 f"ADE_C {row['ade_center_px']:.2f} FDE_C {row['fde_center_px']:.2f} "
                 f"mIoU {row['miou']:.4f} "
                 f"KALMAN_ADE_C {row['kalman_ade_center_px']:.2f} "
-                f"LAST2_ADE_C {row['last2_ade_center_px']:.2f}"
+                f"LAST4_ADE_C {row['last4_ade_center_px']:.2f}"
             )
     return _mean_rows(rows)
 

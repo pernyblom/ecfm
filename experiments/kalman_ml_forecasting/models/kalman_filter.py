@@ -77,6 +77,59 @@ def _std_vector(params: Dict[str, float | bool], *, prefix: str, device, dtype) 
     raise ValueError(f"Unknown std prefix: {prefix}")
 
 
+def kalman_std_tensors_from_config(
+    cfg: Dict[str, Any] | None,
+    *,
+    device,
+    dtype,
+) -> dict[str, torch.Tensor]:
+    params = kalman_config_from_dict(cfg)
+    return {
+        key: torch.tensor(float(value), device=device, dtype=dtype)
+        for key, value in params.items()
+        if key != "enabled"
+    }
+
+
+def _std_vector_from_tensors(params: Dict[str, torch.Tensor], *, prefix: str) -> torch.Tensor:
+    if prefix == "initial":
+        return torch.stack(
+            [
+                params["initial_pos_std"],
+                params["initial_pos_std"],
+                params["initial_size_std"],
+                params["initial_size_std"],
+                params["initial_vel_std"],
+                params["initial_vel_std"],
+                params["initial_vel_std"],
+                params["initial_vel_std"],
+            ]
+        )
+    if prefix == "process":
+        return torch.stack(
+            [
+                params["process_pos_std"],
+                params["process_pos_std"],
+                params["process_size_std"],
+                params["process_size_std"],
+                params["process_vel_std"],
+                params["process_vel_std"],
+                params["process_size_vel_std"],
+                params["process_size_vel_std"],
+            ]
+        )
+    if prefix == "measurement":
+        return torch.stack(
+            [
+                params["measurement_pos_std"],
+                params["measurement_pos_std"],
+                params["measurement_size_std"],
+                params["measurement_size_std"],
+            ]
+        )
+    raise ValueError(f"Unknown std prefix: {prefix}")
+
+
 def _transition(dt: torch.Tensor) -> torch.Tensor:
     batch = int(dt.shape[0])
     f = torch.eye(8, device=dt.device, dtype=dt.dtype).unsqueeze(0).repeat(batch, 1, 1)
@@ -116,7 +169,7 @@ def _update(state: torch.Tensor, cov: torch.Tensor, measurement: torch.Tensor, r
     kh = torch.bmm(k, h)
     # Joseph form is a little more expensive, but keeps P symmetric/positive for tuned extremes.
     cov = torch.bmm(torch.bmm(eye - kh, cov), (eye - kh).transpose(1, 2)) + torch.bmm(torch.bmm(k, r), k.transpose(1, 2))
-    state[:, :4] = state[:, :4].clamp(0.0, 1.0)
+    state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
     return state, cov
 
 
@@ -158,7 +211,57 @@ def kalman_cv_forecast(
         next_time = future_times_s[:, idx]
         dt = (next_time - current_time).clamp(min=1.0e-6)
         state, cov = _predict(state, cov, dt, process_std)
-        state[:, :4] = state[:, :4].clamp(0.0, 1.0)
+        state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
+        preds.append(state[:, :4])
+        current_time = next_time
+    return torch.stack(preds, dim=1)
+
+
+def kalman_filter_history_tensor_params(
+    past_boxes: torch.Tensor,
+    past_times_s: torch.Tensor,
+    params: Dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    batch = int(past_boxes.shape[0])
+    device = past_boxes.device
+    dtype = past_boxes.dtype
+    state = torch.cat(
+        [
+            past_boxes[:, 0],
+            torch.zeros((batch, 4), device=device, dtype=dtype),
+        ],
+        dim=-1,
+    )
+    init_std = _std_vector_from_tensors(params, prefix="initial").to(device=device, dtype=dtype)
+    process_std = _std_vector_from_tensors(params, prefix="process").to(device=device, dtype=dtype)
+    meas_std = _std_vector_from_tensors(params, prefix="measurement").to(device=device, dtype=dtype)
+    cov = torch.diag_embed(init_std.unsqueeze(0).expand(batch, -1).square())
+    state, cov = _update(state, cov, past_boxes[:, 0], meas_std)
+    for idx in range(1, past_boxes.shape[1]):
+        dt = (past_times_s[:, idx] - past_times_s[:, idx - 1]).clamp(min=1.0e-6)
+        state, cov = _predict(state, cov, dt, process_std)
+        state, cov = _update(state, cov, past_boxes[:, idx], meas_std)
+    return state, cov
+
+
+def kalman_cv_forecast_tensor_params(
+    past_boxes: torch.Tensor,
+    past_times_s: torch.Tensor,
+    future_times_s: torch.Tensor,
+    params: Dict[str, torch.Tensor],
+) -> torch.Tensor:
+    state, cov = kalman_filter_history_tensor_params(past_boxes, past_times_s, params)
+    process_std = _std_vector_from_tensors(params, prefix="process").to(
+        device=past_boxes.device,
+        dtype=past_boxes.dtype,
+    )
+    current_time = past_times_s[:, -1]
+    preds: list[torch.Tensor] = []
+    for idx in range(future_times_s.shape[1]):
+        next_time = future_times_s[:, idx]
+        dt = (next_time - current_time).clamp(min=1.0e-6)
+        state, cov = _predict(state, cov, dt, process_std)
+        state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
         preds.append(state[:, :4])
         current_time = next_time
     return torch.stack(preds, dim=1)
