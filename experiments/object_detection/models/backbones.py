@@ -6,6 +6,7 @@ import re
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 from torchvision import models
 
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
@@ -98,6 +99,8 @@ class ResNet18Encoder(nn.Module):
         out_dim: int,
         first_conv_grid: tuple[int, int] | None = None,
         feature_stage: str = "layer4",
+        fpn: bool = False,
+        fpn_dim: int = 128,
     ) -> None:
         super().__init__()
         stage_channels = {
@@ -108,11 +111,17 @@ class ResNet18Encoder(nn.Module):
             "layer4": 512,
         }
         self.feature_stage = str(feature_stage).lower()
+        self.use_fpn = bool(fpn)
+        self.fpn_dim = int(fpn_dim)
         if self.feature_stage not in stage_channels:
             raise ValueError(
                 f"Unknown ResNet18 feature_stage: {feature_stage}. "
                 f"Expected one of {sorted(stage_channels)}."
             )
+        if self.use_fpn and self.feature_stage == "stem":
+            raise ValueError("ResNet18 FPN supports feature_stage layer1..layer4, not stem.")
+        if self.use_fpn and self.fpn_dim <= 0:
+            raise ValueError(f"fpn_dim must be positive, got {self.fpn_dim}.")
         net = models.resnet18(weights=None)
         if in_channels != 3:
             net.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -129,19 +138,48 @@ class ResNet18Encoder(nn.Module):
         self.layer2 = net.layer2
         self.layer3 = net.layer3
         self.layer4 = net.layer4
+        if self.use_fpn:
+            self.fpn_lateral1 = nn.Conv2d(64, self.fpn_dim, kernel_size=1)
+            self.fpn_lateral2 = nn.Conv2d(128, self.fpn_dim, kernel_size=1)
+            self.fpn_lateral3 = nn.Conv2d(256, self.fpn_dim, kernel_size=1)
+            self.fpn_lateral4 = nn.Conv2d(512, self.fpn_dim, kernel_size=1)
+            self.fpn_smooth1 = nn.Conv2d(self.fpn_dim, self.fpn_dim, kernel_size=3, padding=1)
+            self.fpn_smooth2 = nn.Conv2d(self.fpn_dim, self.fpn_dim, kernel_size=3, padding=1)
+            self.fpn_smooth3 = nn.Conv2d(self.fpn_dim, self.fpn_dim, kernel_size=3, padding=1)
+            self.fpn_smooth4 = nn.Conv2d(self.fpn_dim, self.fpn_dim, kernel_size=3, padding=1)
         self.pool = nn.AdaptiveAvgPool2d(1)
-        self.proj = nn.Linear(stage_channels[self.feature_stage], out_dim)
+        fmap_dim = self.fpn_dim if self.use_fpn else stage_channels[self.feature_stage]
+        self.proj = nn.Linear(fmap_dim, out_dim)
+
+    def _forward_fpn(self, c1: torch.Tensor, c2: torch.Tensor, c3: torch.Tensor, c4: torch.Tensor) -> torch.Tensor:
+        p4 = self.fpn_lateral4(c4)
+        p3 = self.fpn_lateral3(c3) + F.interpolate(p4, size=c3.shape[-2:], mode="nearest")
+        p2 = self.fpn_lateral2(c2) + F.interpolate(p3, size=c2.shape[-2:], mode="nearest")
+        p1 = self.fpn_lateral1(c1) + F.interpolate(p2, size=c1.shape[-2:], mode="nearest")
+
+        pyramid = {
+            "layer1": self.fpn_smooth1(p1),
+            "layer2": self.fpn_smooth2(p2),
+            "layer3": self.fpn_smooth3(p3),
+            "layer4": self.fpn_smooth4(p4),
+        }
+        return pyramid[self.feature_stage]
 
     def forward(self, x: torch.Tensor) -> EncoderOutput:
         x = self.stem(x)
         if self.feature_stage == "stem":
             fmap = x
         else:
-            x = self.layer1(x)
-            if self.feature_stage == "layer1":
-                fmap = x
+            c1 = self.layer1(x)
+            if self.use_fpn:
+                c2 = self.layer2(c1)
+                c3 = self.layer3(c2)
+                c4 = self.layer4(c3)
+                fmap = self._forward_fpn(c1, c2, c3, c4)
+            elif self.feature_stage == "layer1":
+                fmap = c1
             else:
-                x = self.layer2(x)
+                x = self.layer2(c1)
                 if self.feature_stage == "layer2":
                     fmap = x
                 else:
@@ -175,5 +213,7 @@ def build_single_encoder(cfg: Dict) -> nn.Module:
             out_dim,
             first_conv_grid=first_conv_grid,
             feature_stage=str(cfg.get("feature_stage", "layer4")),
+            fpn=bool(cfg.get("fpn", False)),
+            fpn_dim=int(cfg.get("fpn_dim", 128)),
         )
     raise ValueError(f"Unknown backbone type: {backbone_type}")

@@ -52,6 +52,10 @@ model:
     # layer1 is stride 4 for ResNet18; layer4 is stride 32 and is too coarse
     # for stable dense size/offset prediction.
     feature_stage: layer1
+    # Fuse layer2-layer4 context back into the stride-4 layer1 map before the
+    # CenterNet heads. Set fpn: false to use the cheaper layer1-only baseline.
+    fpn: true
+    fpn_dim: 128
   centernet_hidden_dim: 256
   output_stride: 4
   topk: 100

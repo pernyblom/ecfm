@@ -43,6 +43,35 @@ CenterNet head
   and visualization can share the same detector-style output format as
   DETR-lite.
 
+CenterNet ResNet feature maps
+- CenterNet uses dense heatmap, size, and offset heads, so its prediction grid
+  should be backed by a feature map with similar spatial resolution.
+- With ResNet18, the final `layer4` map is stride 32. That is too coarse for
+  the default CenterNet `model.output_stride: 4`; upsampling it to the dense
+  grid can give good-looking center heatmaps while size/offset predictions are
+  unstable.
+- `configs/centernet.yaml` therefore sets:
+
+```yaml
+model:
+  backbone:
+    type: resnet18
+    feature_stage: layer1
+    fpn: true
+    fpn_dim: 128
+```
+
+- `feature_stage: layer1` makes the CenterNet heads operate on a stride-4
+  feature map.
+- `fpn: true` runs `layer2`, `layer3`, and `layer4`, then fuses their context
+  back into the `layer1` map with a small top-down FPN before the CenterNet
+  heads.
+- Set `fpn: false` to use the cheaper layer1-only baseline. In that mode,
+  layers after `feature_stage` are not used or trained.
+- Changing `feature_stage`, `fpn`, or `fpn_dim` changes model parameter shapes.
+  Checkpoints trained with a different setting generally cannot be loaded into
+  the new architecture without switching the config back.
+
 Current loss
 - DETR-lite box regression uses `L1 + CIoU` on matched queries
 - DETR-lite objectness uses binary cross-entropy over all queries
@@ -61,6 +90,10 @@ Reported metrics
 - `mAP_50:95`
 - `objectness_acc`
 - per-plane heatmap IoU for `xt_my` and `yt_mx`
+- CenterNet diagnostics include GT-cell size error, decoded-nearest size error,
+  decoded center-cell error, and same-cell fraction. These help separate
+  "size is wrong at the supervised cell" from "the heatmap peak decodes size
+  from a neighboring cell."
 
 The mAP values follow the FRED paper protocol:
 - `mAP_50`: AP at IoU `0.50`

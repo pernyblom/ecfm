@@ -12,6 +12,8 @@ from .backbones import build_single_encoder, grid_split_from_rep_name
 def _encoder_fmap_dim(backbone_cfg: Dict) -> int:
     backbone_type = str(backbone_cfg.get("type", "small_cnn")).lower()
     if backbone_type == "resnet18":
+        if bool(backbone_cfg.get("fpn", False)):
+            return int(backbone_cfg.get("fpn_dim", 128))
         stage = str(backbone_cfg.get("feature_stage", "layer4")).lower()
         stage_channels = {
             "stem": 64,
