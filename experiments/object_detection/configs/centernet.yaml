@@ -69,7 +69,7 @@ model:
   centernet_upsampling:
     mode: none
     # mode: learned
-    stages: 2
+    stages: 0
     hidden_dim: 256
   # When true, grid-split reps such as xt_my_10x10 run the first encoder
   # convolution independently inside each rendered cell before stitching the
