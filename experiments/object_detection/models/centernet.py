@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Tuple
 
 import torch
@@ -59,6 +60,26 @@ def _encoder_cfg_for_rep(
     return cfg
 
 
+def _make_learned_upsampler(
+    in_dim: int,
+    hidden_dim: int,
+    stages: int,
+) -> tuple[nn.Module, int]:
+    layers: list[nn.Module] = []
+    cur_dim = int(in_dim)
+    out_dim = int(hidden_dim)
+    for _ in range(int(stages)):
+        layers.extend(
+            [
+                nn.ConvTranspose2d(cur_dim, out_dim, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(out_dim),
+                nn.ReLU(inplace=True),
+            ]
+        )
+        cur_dim = out_dim
+    return nn.Sequential(*layers), cur_dim
+
+
 class CenterNetDetector(nn.Module):
     def __init__(
         self,
@@ -71,6 +92,9 @@ class CenterNetDetector(nn.Module):
         output_stride: int = 4,
         topk: int = 100,
         predict_velocity: bool = True,
+        upsampling_mode: str = "none",
+        upsampling_stages: int = 0,
+        upsampling_hidden_dim: int | None = None,
         cell_local_first_conv: bool = False,
         cell_local_first_conv_representations: List[str] | None = None,
     ) -> None:
@@ -83,10 +107,20 @@ class CenterNetDetector(nn.Module):
         self.output_stride = int(output_stride)
         self.topk = int(topk)
         self.predict_velocity = bool(predict_velocity)
+        self.upsampling_mode = str(upsampling_mode).lower()
+        self.upsampling_stages = int(upsampling_stages)
         if self.output_stride < 1:
             raise ValueError(f"output_stride must be >= 1, got {self.output_stride}")
         if not self.representations:
             raise ValueError("representations must not be empty.")
+        if self.upsampling_mode not in {"none", "learned"}:
+            raise ValueError(f"Unknown CenterNet upsampling mode: {upsampling_mode}")
+        if self.upsampling_stages < 0:
+            raise ValueError(f"upsampling_stages must be >= 0, got {self.upsampling_stages}")
+        if self.upsampling_mode == "none" and self.upsampling_stages != 0:
+            raise ValueError("CenterNet upsampling_stages must be 0 when upsampling_mode is 'none'.")
+        if self.upsampling_mode == "learned" and self.upsampling_stages < 1:
+            raise ValueError("CenterNet learned upsampling requires upsampling_stages >= 1.")
 
         output_source_reps = [rep for rep in self.representations if not _is_temporal_plane(rep)]
         if not output_source_reps:
@@ -124,6 +158,14 @@ class CenterNetDetector(nn.Module):
                 nn.ReLU(inplace=True),
             )
             head_dim = hidden_dim
+        if self.upsampling_mode == "learned":
+            self.upsampler, head_dim = _make_learned_upsampler(
+                head_dim,
+                int(upsampling_hidden_dim or hidden_dim),
+                self.upsampling_stages,
+            )
+        else:
+            self.upsampler = nn.Identity()
         self.heatmap_head = nn.Sequential(
             nn.Conv2d(head_dim, hidden_dim, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -151,6 +193,13 @@ class CenterNetDetector(nn.Module):
         prior = 0.01
         nn.init.constant_(self.heatmap_head[-1].bias, -torch.log(torch.tensor((1.0 - prior) / prior)).item())
 
+    def _fusion_target_hw(self) -> tuple[int, int]:
+        out_h, out_w = self.output_size[1], self.output_size[0]
+        if self.upsampling_mode != "learned":
+            return out_h, out_w
+        scale = 2 ** self.upsampling_stages
+        return max(1, math.ceil(out_h / scale)), max(1, math.ceil(out_w / scale))
+
     def _decode(
         self,
         heatmap_logits: torch.Tensor,
@@ -166,7 +215,7 @@ class CenterNetDetector(nn.Module):
         ys = torch.div(indices, out_w, rounding_mode="floor")
         xs = indices % out_w
         gather_idx = indices.unsqueeze(1).expand(-1, 2, -1)
-        size = size_raw.sigmoid().flatten(2).gather(2, gather_idx).permute(0, 2, 1)
+        size = F.softplus(size_raw).flatten(2).gather(2, gather_idx).permute(0, 2, 1)
         offset = offset_raw.sigmoid().flatten(2).gather(2, gather_idx).permute(0, 2, 1)
         centers = torch.stack([xs.to(size.dtype), ys.to(size.dtype)], dim=-1) + offset
         scale = torch.tensor([out_w, out_h], device=size.device, dtype=size.dtype)
@@ -176,13 +225,17 @@ class CenterNetDetector(nn.Module):
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         target_hw = (self.output_size[1], self.output_size[0])
+        fusion_hw = self._fusion_target_hw()
         fmaps = []
         pooled = []
         for rep in self.representations:
             enc = self.encoders[rep](inputs[rep])
-            fmaps.append(F.interpolate(enc.fmap, size=target_hw, mode="bilinear", align_corners=False))
+            fmaps.append(F.interpolate(enc.fmap, size=fusion_hw, mode="bilinear", align_corners=False))
             pooled.append(enc.pooled)
         fused_map = self.fusion(torch.cat(fmaps, dim=1))
+        fused_map = self.upsampler(fused_map)
+        if fused_map.shape[-2:] != target_hw:
+            fused_map = F.interpolate(fused_map, size=target_hw, mode="bilinear", align_corners=False)
         heatmap_logits = self.heatmap_head(fused_map)
         size_raw = self.size_head(fused_map)
         offset_raw = self.offset_head(fused_map)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Sequence
 
 import torch
+import torch.nn.functional as F
 
 
 def heatmap_iou(pred_logits: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
@@ -197,7 +198,7 @@ def _centernet_diagnostics(
     if not {"size", "mask"}.issubset(centernet_targets):
         return {}
 
-    size_pred_map = preds["centernet_size_raw"].sigmoid()
+    size_pred_map = F.softplus(preds["centernet_size_raw"])
     target_size_map = centernet_targets["size"].to(size_pred_map.device)
     target_mask = centernet_targets["mask"].to(size_pred_map.device).bool()
     if not bool(target_mask.any().item()):

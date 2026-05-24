@@ -225,7 +225,7 @@ def compute_centernet_losses(
         dtype=dtype,
         gaussian_radius=int(gaussian_radius),
     )
-    size_pred = preds["centernet_size_raw"].sigmoid()
+    size_pred = F.softplus(preds["centernet_size_raw"])
     offset_pred = preds["centernet_offset_raw"].sigmoid()
     heatmap_loss = _centernet_focal_loss(logits, targets["heatmap"])
     size_loss = _masked_l1(size_pred, targets["size"], targets["mask"])

@@ -66,11 +66,31 @@ model:
 - `fpn: true` runs `layer2`, `layer3`, and `layer4`, then fuses their context
   back into the `layer1` map with a small top-down FPN before the CenterNet
   heads.
+- `configs/centernet.yaml` also enables an experimental post-fusion learned
+  upsampling path:
+
+```yaml
+model:
+  centernet_upsampling:
+    mode: learned
+    stages: 2
+    hidden_dim: 256
+```
+
+- In `mode: learned`, each encoded representation is resized to a lower common
+  grid, the representation features are fused, and transposed-convolution
+  stages upsample the fused map before the CenterNet heatmap, size, offset, and
+  optional velocity heads. The final feature map is resized once to the exact
+  `model.output_stride` grid so loss computation and decoding stay unchanged.
+- Set `centernet_upsampling.mode: none` and `stages: 0` to use the previous
+  direct-fusion behavior where feature maps are resized straight to the output
+  grid before the heads.
 - Set `fpn: false` to use the cheaper layer1-only baseline. In that mode,
   layers after `feature_stage` are not used or trained.
-- Changing `feature_stage`, `fpn`, or `fpn_dim` changes model parameter shapes.
-  Checkpoints trained with a different setting generally cannot be loaded into
-  the new architecture without switching the config back.
+- Changing `feature_stage`, `fpn`, `fpn_dim`, or `centernet_upsampling` changes
+  model parameter shapes. Checkpoints trained with a different setting
+  generally cannot be loaded into the new architecture without switching the
+  config back.
 
 Current loss
 - DETR-lite box regression uses `L1 + CIoU` on matched queries
@@ -80,6 +100,9 @@ Current loss
   exact matcher suited for the small number of objects per FRED frame
 - CenterNet uses heatmap focal loss and masked L1 losses for size, offset, and
   optional velocity
+- CenterNet size is regressed as a positive `softplus(raw)` value at masked
+  object-center cells, not as a sigmoid probability; decoded boxes clamp size
+  to the normalized `[1e-4, 1.0]` range.
 - if heatmaps are disabled, heatmap-only losses and metrics are omitted from
   the summaries instead of being reported as dummy zeros
 
@@ -354,6 +377,8 @@ Extension points
 - Switch detector variants with `model.detector`.
 - Tune CenterNet output resolution with `model.output_stride` and decoded
   candidate count with `model.topk`.
+- Toggle the CenterNet post-fusion upsampling experiment with
+  `model.centernet_upsampling.mode`.
 - For grid-split representations, set `model.cell_local_first_conv: true` to
   run the first encoder convolution independently per rendered cell. By default
   this is applied automatically only to representation names with an `NxM`

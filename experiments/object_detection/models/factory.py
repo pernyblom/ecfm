@@ -14,6 +14,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
     model_cfg = cfg["model"]
     detector_type = str(model_cfg.get("detector", "detr_lite")).lower()
     if detector_type == "centernet":
+        upsampling_cfg = dict(model_cfg.get("centernet_upsampling") or {})
         return CenterNetDetector(
             representations=list(data_cfg["representations"]),
             image_sizes=resolve_representation_image_sizes(data_cfg),
@@ -23,6 +24,11 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
             output_stride=int(model_cfg.get("output_stride", 4)),
             topk=int(model_cfg.get("topk", 100)),
             predict_velocity=bool(model_cfg.get("predict_velocity", True)),
+            upsampling_mode=str(upsampling_cfg.get("mode", "none")),
+            upsampling_stages=int(upsampling_cfg.get("stages", 0)),
+            upsampling_hidden_dim=(
+                int(upsampling_cfg["hidden_dim"]) if upsampling_cfg.get("hidden_dim") is not None else None
+            ),
             cell_local_first_conv=bool(model_cfg.get("cell_local_first_conv", False)),
             cell_local_first_conv_representations=list(
                 model_cfg.get("cell_local_first_conv_representations") or []

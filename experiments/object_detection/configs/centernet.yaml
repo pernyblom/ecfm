@@ -2,8 +2,10 @@ data:
   images_root: outputs/fred_reps
   labels_root: datasets/FRED
   split_files:
-    train: datasets/FRED/dataset_splits/canonical/train_split.txt
-    val: datasets/FRED/dataset_splits/canonical/test_split.txt
+    # train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    # val: datasets/FRED/dataset_splits/canonical/test_split.txt
+    train: datasets/FRED/dataset_splits/canonical/train_tiny.txt
+    val: datasets/FRED/dataset_splits/canonical/test_tiny.txt
   # auto uses RGB_YOLO for RGB-only training and Event_YOLO whenever an event branch is present.
   labels_subdir: auto
   # representations: ["xt_my", "yt_mx", "cstr3"]
@@ -37,8 +39,8 @@ data:
   filter_missing_representations: true
   velocity_tracks_file: cleaned_tracks.txt
   velocity_match_iou: 0.3
-  max_samples_train:
-  max_samples_val:
+  max_samples_train: 10000
+  max_samples_val: 2000
   seed: 123
   cache_dir: outputs/object_detection_cache
 
@@ -51,15 +53,23 @@ model:
     # CenterNet needs a spatial feature map close to model.output_stride.
     # layer1 is stride 4 for ResNet18; layer4 is stride 32 and is too coarse
     # for stable dense size/offset prediction.
-    feature_stage: layer1
+    feature_stage: layer3
     # Fuse layer2-layer4 context back into the stride-4 layer1 map before the
     # CenterNet heads. Set fpn: false to use the cheaper layer1-only baseline.
-    fpn: true
+    fpn: false
     fpn_dim: 128
   centernet_hidden_dim: 256
   output_stride: 4
   topk: 100
   predict_velocity: false
+  # Optional CenterNet-style learned upsampling after representation fusion.
+  # mode: none keeps the original experiment behavior. mode: learned fuses on
+  # a lower grid, upsamples with transposed convolutions, then resizes once to
+  # the exact output_stride grid before the dense heads.
+  centernet_upsampling:
+    mode: learned
+    stages: 2
+    hidden_dim: 256
   # When true, grid-split reps such as xt_my_10x10 run the first encoder
   # convolution independently inside each rendered cell before stitching the
   # feature map back together.
@@ -70,7 +80,7 @@ train:
   device: cuda
   epochs: 40
   batch_size: 32
-  accumulation_steps: 4
+  accumulation_steps: 2
   num_workers: 2
   persistent_workers: true
   pin_memory: true
