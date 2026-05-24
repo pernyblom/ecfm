@@ -39,8 +39,8 @@ data:
   filter_missing_representations: true
   velocity_tracks_file: cleaned_tracks.txt
   velocity_match_iou: 0.3
-  max_samples_train: 80000
-  max_samples_val: 16000
+  max_samples_train: 160000
+  max_samples_val: 32000
   seed: 123
   cache_dir: outputs/object_detection_cache
 
