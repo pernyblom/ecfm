@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from experiments.object_detection.models.backbones import build_single_encoder, grid_split_from_rep_name
+from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_filter_history
 
 
 def _fit_recent_velocity(
@@ -117,6 +118,10 @@ class KalmanResidualForecaster(nn.Module):
         residual_hidden_dim: int = 256,
         residual_scale: float = 1.0,
         predict_size_residuals: bool = True,
+        use_filter_state_features: bool = False,
+        filter_covariance_features: str = "none",
+        initial_state_source: str = "last_four",
+        kalman_params: Dict | None = None,
         cell_local_first_conv: bool = False,
         cell_local_first_conv_representations: List[str] | None = None,
     ) -> None:
@@ -128,6 +133,16 @@ class KalmanResidualForecaster(nn.Module):
         self.history_steps = int(history_steps)
         self.residual_scale = float(residual_scale)
         self.predict_size_residuals = bool(predict_size_residuals)
+        self.use_filter_state_features = bool(use_filter_state_features)
+        self.filter_covariance_features = str(filter_covariance_features).lower()
+        self.initial_state_source = str(initial_state_source).lower()
+        self.kalman_params = dict(kalman_params or {})
+        if self.filter_covariance_features not in {"none", "diag", "full"}:
+            raise ValueError(
+                "filter_covariance_features must be one of: none, diag, full."
+            )
+        if self.initial_state_source not in {"last_four", "kalman_filter"}:
+            raise ValueError("initial_state_source must be one of: last_four, kalman_filter.")
         self.encoders = nn.ModuleDict(
             {
                 rep: build_single_encoder(
@@ -143,6 +158,12 @@ class KalmanResidualForecaster(nn.Module):
         )
         per_rep_dim = int(backbone_cfg.get("out_dim", 128))
         fused_dim = per_rep_dim * len(self.representations)
+        if self.use_filter_state_features:
+            fused_dim += 8
+        if self.filter_covariance_features == "diag":
+            fused_dim += 8
+        elif self.filter_covariance_features == "full":
+            fused_dim += 64
         self.image_fusion = nn.Sequential(
             nn.Linear(fused_dim, fusion_hidden_dim),
             nn.ReLU(inplace=True),
@@ -175,8 +196,24 @@ class KalmanResidualForecaster(nn.Module):
         rel_times = times - times[:, -1:].expand_as(times)
         return self.history_encoder(torch.cat([boxes, rel_times.unsqueeze(-1)], dim=-1).flatten(1))
 
-    def _image_features(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _image_features(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        filter_state: torch.Tensor | None = None,
+        filter_cov: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         enc = [self.encoders[rep](inputs[rep]).pooled for rep in self.representations]
+        if self.use_filter_state_features:
+            if filter_state is None:
+                raise ValueError("filter_state is required when use_filter_state_features=True.")
+            enc.append(filter_state)
+        if self.filter_covariance_features != "none":
+            if filter_cov is None:
+                raise ValueError("filter_cov is required when filter_covariance_features is enabled.")
+            if self.filter_covariance_features == "diag":
+                enc.append(torch.diagonal(filter_cov, dim1=-2, dim2=-1))
+            else:
+                enc.append(filter_cov.flatten(1))
         return self.image_fusion(torch.cat(enc, dim=-1))
 
     def forward(
@@ -188,9 +225,23 @@ class KalmanResidualForecaster(nn.Module):
         *,
         return_debug: bool = False,
     ):
-        image_feat = self._image_features(inputs)
+        filter_state = None
+        filter_cov = None
+        needs_filter = (
+            self.use_filter_state_features
+            or self.filter_covariance_features != "none"
+            or self.initial_state_source == "kalman_filter"
+        )
+        if needs_filter:
+            filter_state, filter_cov = kalman_filter_history(past_boxes, past_times_s, self.kalman_params)
+        image_feat = self._image_features(inputs, filter_state, filter_cov)
         history_feat = self._history_features(past_boxes, past_times_s)
-        state = box_sequence_to_state(past_boxes, past_times_s)
+        if self.initial_state_source == "kalman_filter":
+            if filter_state is None:
+                raise RuntimeError("filter_state was not computed for kalman_filter initial_state_source.")
+            state = filter_state
+        else:
+            state = box_sequence_to_state(past_boxes, past_times_s)
         current_time = past_times_s[:, -1]
         preds: list[torch.Tensor] = []
         residuals: list[torch.Tensor] = []
@@ -213,10 +264,15 @@ class KalmanResidualForecaster(nn.Module):
         pred = torch.stack(preds, dim=1)
         if not return_debug:
             return pred
-        return {
+        debug = {
             "boxes": pred,
             "residual_accel": torch.stack(residuals, dim=1),
             "last4_boxes": last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
             "last2_boxes": last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
             "cv_boxes": last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
         }
+        if filter_state is not None:
+            debug["filter_state"] = filter_state
+        if filter_cov is not None:
+            debug["filter_cov"] = filter_cov
+        return debug

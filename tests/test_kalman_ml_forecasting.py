@@ -145,6 +145,65 @@ def test_kalman_residual_forecaster_forward_shapes() -> None:
     assert out["cv_boxes"].shape == (2, 3, 4)
 
 
+def test_kalman_residual_forecaster_can_fuse_single_rep_with_filter_state() -> None:
+    model = KalmanResidualForecaster(
+        representations=["cstr3"],
+        image_sizes={"cstr3": (8, 8)},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        fusion_hidden_dim=16,
+        state_hidden_dim=8,
+        residual_hidden_dim=16,
+        use_filter_state_features=True,
+        kalman_params={"measurement_pos_std": 0.01},
+    )
+    inputs = {"cstr3": torch.zeros((2, 3, 8, 8))}
+    past = torch.tensor(
+        [
+            [[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]],
+            [[0.4, 0.5, 0.2, 0.2], [0.5, 0.6, 0.2, 0.2]],
+        ],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+    future_t = torch.tensor([[2.0], [2.0]])
+
+    out = model(inputs, past, past_t, future_t, return_debug=True)
+
+    assert model.image_fusion[0].in_features == 24
+    assert out["boxes"].shape == (2, 1, 4)
+    assert out["filter_state"].shape == (2, 8)
+
+
+def test_kalman_residual_forecaster_can_use_kalman_initial_state_and_covariance_features() -> None:
+    model = KalmanResidualForecaster(
+        representations=["cstr3"],
+        image_sizes={"cstr3": (8, 8)},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        fusion_hidden_dim=16,
+        state_hidden_dim=8,
+        residual_hidden_dim=16,
+        initial_state_source="kalman_filter",
+        filter_covariance_features="diag",
+        kalman_params={"measurement_pos_std": 0.01},
+    )
+    inputs = {"cstr3": torch.zeros((1, 3, 8, 8))}
+    past = torch.tensor(
+        [[[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]]],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0]])
+    future_t = torch.tensor([[2.0]])
+
+    out = model(inputs, past, past_t, future_t, return_debug=True)
+
+    assert model.image_fusion[0].in_features == 24
+    assert out["boxes"].shape == (1, 1, 4)
+    assert out["filter_state"].shape == (1, 8)
+    assert out["filter_cov"].shape == (1, 8, 8)
+
+
 def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:
     labels = tmp_path / "labels" / "seq" / "Event_YOLO"
     images = tmp_path / "images" / "seq"

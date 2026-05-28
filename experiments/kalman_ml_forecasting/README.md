@@ -152,5 +152,16 @@ Extension points
 - Use grid-split render aliases such as `xt_my_10x10` as in object detection.
 - Set `model.predict_size_residuals: false` to learn only center acceleration
   residuals while leaving size dynamics at constant velocity.
+- Set `model.initial_state_source: kalman_filter` to start the learned residual
+  rollout from the configured Kalman filter's final history state instead of
+  the default last-four linear-fit state.
+- Set `model.use_filter_state_features: true` to append the configured Kalman
+  filter's final history state to the CNN encoder features before image fusion.
+  The residual rollout still starts from the last-four linear-fit state; the
+  filter state is additional conditioning information unless
+  `model.initial_state_source: kalman_filter` is also set.
+- Set `model.filter_covariance_features: diag` or `full` to append the Kalman
+  history covariance diagonal or flattened covariance matrix to the fusion
+  features. The default is `none`.
 - Tune `model.residual_scale` if residual accelerations are too aggressive early
   in training.
