@@ -240,19 +240,27 @@ def _write_csv(path: Path, samples: List[AccelSample]) -> None:
 def _bin_vectors(
     samples: List[AccelSample],
     *,
-    frame_size: tuple[int, int],
     grid_cols: int,
     grid_rows: int,
+    bin_x_attr: str,
+    bin_y_attr: str,
     x_attr: str,
     y_attr: str,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
 ) -> dict[str, np.ndarray]:
-    frame_w, frame_h = frame_size
     sum_ax = np.zeros((grid_rows, grid_cols), dtype=np.float64)
     sum_ay = np.zeros((grid_rows, grid_cols), dtype=np.float64)
     counts = np.zeros((grid_rows, grid_cols), dtype=np.int64)
+    x_span = max(float(x_max) - float(x_min), 1.0e-9)
+    y_span = max(float(y_max) - float(y_min), 1.0e-9)
     for sample in samples:
-        col = min(grid_cols - 1, max(0, int(sample.cx_px / frame_w * grid_cols)))
-        row = min(grid_rows - 1, max(0, int(sample.cy_px / frame_h * grid_rows)))
+        bin_x = float(getattr(sample, bin_x_attr))
+        bin_y = float(getattr(sample, bin_y_attr))
+        col = min(grid_cols - 1, max(0, int((bin_x - x_min) / x_span * grid_cols)))
+        row = min(grid_rows - 1, max(0, int((bin_y - y_min) / y_span * grid_rows)))
         sum_ax[row, col] += float(getattr(sample, x_attr))
         sum_ay[row, col] += float(getattr(sample, y_attr))
         counts[row, col] += 1
@@ -261,10 +269,10 @@ def _bin_vectors(
     return {"mean_ax": mean_ax, "mean_ay": mean_ay, "counts": counts}
 
 
-def _magnitude_color(value: float, max_value: float) -> tuple[int, int, int]:
-    if max_value <= 0:
+def _magnitude_color(value: float, min_value: float, max_value: float) -> tuple[int, int, int]:
+    if max_value <= min_value:
         return (40, 80, 180)
-    t = max(0.0, min(1.0, value / max_value))
+    t = max(0.0, min(1.0, (value - min_value) / (max_value - min_value)))
     return (
         int(40 + 210 * t),
         int(90 * (1.0 - t) + 40 * t),
@@ -301,12 +309,19 @@ def _draw_arrow(
 def _render_vector_field(
     *,
     samples: List[AccelSample],
-    frame_size: tuple[int, int],
     grid_cols: int,
     grid_rows: int,
     output_path: Path,
+    bin_x_attr: str,
+    bin_y_attr: str,
     x_attr: str,
     y_attr: str,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    x_label: str,
+    y_label: str,
     title: str,
     colorbar_label: str,
     summary_prefix: str,
@@ -314,15 +329,28 @@ def _render_vector_field(
     min_count: int,
     arrow_scale: Optional[float],
     bound_percentile: float,
+    magnitude_min: Optional[float] = None,
+    magnitude_max: Optional[float] = None,
+    invert_y: bool = False,
 ) -> dict[str, float | int]:
-    frame_w, frame_h = frame_size
+    x_min = float(x_min)
+    x_max = float(x_max)
+    y_min = float(y_min)
+    y_max = float(y_max)
+    x_span = max(x_max - x_min, 1.0e-9)
+    y_span = max(y_max - y_min, 1.0e-9)
     bins = _bin_vectors(
         samples,
-        frame_size=frame_size,
         grid_cols=grid_cols,
         grid_rows=grid_rows,
+        bin_x_attr=bin_x_attr,
+        bin_y_attr=bin_y_attr,
         x_attr=x_attr,
         y_attr=y_attr,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
     )
     mean_ax = bins["mean_ax"]
     mean_ay = bins["mean_ay"]
@@ -330,39 +358,45 @@ def _render_vector_field(
     valid = counts >= int(min_count)
     mags = np.sqrt(mean_ax * mean_ax + mean_ay * mean_ay)
     nonzero = mags[valid & (mags > 0)]
-    cell_w = frame_w / grid_cols
-    cell_h = frame_h / grid_rows
+    cell_w = x_span / grid_cols
+    cell_h = y_span / grid_rows
     if arrow_scale is None:
         reference = float(np.median(nonzero)) if nonzero.size else 1.0
         arrow_scale = 0.35 * min(cell_w, cell_h) / max(reference, 1.0e-9)
     bound_percentile = max(0.0, min(100.0, float(bound_percentile)))
-    max_mag = float(np.percentile(nonzero, bound_percentile)) if nonzero.size else 0.0
+    auto_min_mag = float(np.min(nonzero)) if nonzero.size else 0.0
+    auto_max_mag = float(np.percentile(nonzero, bound_percentile)) if nonzero.size else 0.0
+    min_mag = auto_min_mag if magnitude_min is None else float(magnitude_min)
+    max_mag = auto_max_mag if magnitude_max is None else float(magnitude_max)
 
     try:
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
     except Exception:
         plt = None
 
     if plt is not None:
-        xs = (np.arange(grid_cols, dtype=np.float64) + 0.5) * cell_w
-        ys = (np.arange(grid_rows, dtype=np.float64) + 0.5) * cell_h
+        xs = x_min + (np.arange(grid_cols, dtype=np.float64) + 0.5) * cell_w
+        ys = y_min + (np.arange(grid_rows, dtype=np.float64) + 0.5) * cell_h
         xx, yy = np.meshgrid(xs, ys)
         masked_ax = np.where(valid, mean_ax, np.nan)
         masked_ay = np.where(valid, mean_ay, np.nan)
         masked_mag = np.where(valid, mags, np.nan)
         fig_w = max(8.0, min(16.0, float(max_output_width) / 100.0))
-        fig_h = fig_w * frame_h / frame_w
+        fig_h = fig_w * y_span / x_span
         fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=120)
         density = np.ma.masked_where(counts <= 0, counts)
+        extent = (x_min, x_max, y_max, y_min) if invert_y else (x_min, x_max, y_min, y_max)
         ax.imshow(
             density,
-            extent=(0, frame_w, frame_h, 0),
+            extent=extent,
             cmap="Greys",
             alpha=0.22,
             interpolation="nearest",
+            origin="upper" if invert_y else "lower",
         )
         quiver = ax.quiver(
             xx,
@@ -374,16 +408,17 @@ def _render_vector_field(
             scale_units="xy",
             scale=1.0,
             cmap="viridis",
+            norm=Normalize(vmin=min_mag, vmax=max_mag) if max_mag > min_mag else None,
             width=0.0035,
             headwidth=3.5,
             headlength=5.0,
             headaxislength=4.5,
         )
-        ax.set_xlim(0, frame_w)
-        ax.set_ylim(frame_h, 0)
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim((y_max, y_min) if invert_y else (y_min, y_max))
         ax.set_aspect("equal")
-        ax.set_xlabel("x position (px)")
-        ax.set_ylabel("y position (px)")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
         ax.set_title(f"{title}, n={len(samples)}, grid={grid_cols}x{grid_rows}")
         cbar = fig.colorbar(quiver, ax=ax, fraction=0.026, pad=0.02)
         cbar.set_label(colorbar_label)
@@ -408,12 +443,17 @@ def _render_vector_field(
             "max_count": int(counts.max()) if counts.size else 0,
             "valid_cells": int(valid.sum()),
             f"{summary_prefix}_magnitude_bound": max_mag,
+            f"{summary_prefix}_magnitude_min": min_mag,
             f"{summary_prefix}_bound_percentile": bound_percentile,
+            "x_min": x_min,
+            "x_max": x_max,
+            "y_min": y_min,
+            "y_max": y_max,
             "renderer": "matplotlib",
         }
 
-    scale = min(1.0, float(max_output_width) / float(frame_w))
-    image_size = (max(1, int(round(frame_w * scale))), max(1, int(round(frame_h * scale))))
+    scale = min(1.0, float(max_output_width) / float(x_span))
+    image_size = (max(1, int(round(x_span * scale))), max(1, int(round(y_span * scale))))
     img = Image.new("RGB", image_size, (248, 248, 248))
     draw = ImageDraw.Draw(img)
 
@@ -431,10 +471,14 @@ def _render_vector_field(
                 continue
             cx = (col + 0.5) * cell_w * scale
             cy = (row + 0.5) * cell_h * scale
+            if not invert_y:
+                cy = image_size[1] - cy
             vx = mean_ax[row, col] * float(arrow_scale) * scale
             vy = mean_ay[row, col] * float(arrow_scale) * scale
+            if not invert_y:
+                vy = -vy
             mag = float(mags[row, col])
-            color = _magnitude_color(mag, max_mag)
+            color = _magnitude_color(mag, min_mag, max_mag)
             width = 1 + int(3 * counts[row, col] / max(1, max_count))
             _draw_arrow(draw, (cx, cy), (vx, vy), color=color, width=width)
 
@@ -451,7 +495,12 @@ def _render_vector_field(
         "max_count": max_count,
         "valid_cells": int(valid.sum()),
         f"{summary_prefix}_magnitude_bound": max_mag,
+        f"{summary_prefix}_magnitude_min": min_mag,
         f"{summary_prefix}_bound_percentile": bound_percentile,
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
         "renderer": "pil",
     }
 
@@ -469,6 +518,35 @@ def _select_folders(args: argparse.Namespace, cfg: Dict) -> List[str]:
     if args.max_folders is not None:
         folders = folders[: max(0, int(args.max_folders))]
     return folders
+
+
+def _resolve_velocity_bounds(
+    samples: List[AccelSample],
+    *,
+    velocity_bin_min: Optional[float],
+    velocity_bin_max: Optional[float],
+    percentile: float,
+) -> tuple[float, float]:
+    if velocity_bin_min is not None and velocity_bin_max is not None:
+        return float(velocity_bin_min), float(velocity_bin_max)
+    values = np.concatenate(
+        [
+            np.asarray([sample.vx_px_s for sample in samples], dtype=np.float64),
+            np.asarray([sample.vy_px_s for sample in samples], dtype=np.float64),
+        ]
+    )
+    percentile = max(0.0, min(100.0, float(percentile)))
+    auto_min = float(np.percentile(values, 100.0 - percentile))
+    auto_max = float(np.percentile(values, percentile))
+    if velocity_bin_min is not None:
+        auto_min = float(velocity_bin_min)
+    if velocity_bin_max is not None:
+        auto_max = float(velocity_bin_max)
+    if auto_max <= auto_min:
+        pad = max(1.0, abs(auto_min) * 0.05)
+        auto_min -= pad
+        auto_max += pad
+    return auto_min, auto_max
 
 
 def main() -> None:
@@ -497,9 +575,35 @@ def main() -> None:
         default=95.0,
         help="Dataset percentile used as the color upper bound for velocity and acceleration magnitudes.",
     )
+    parser.add_argument(
+        "--velocity-bin-min",
+        dest="velocity_bin_min",
+        type=float,
+        default=None,
+        help="Lower velocity axis bound for the velocity-to-acceleration field, in px/s.",
+    )
+    parser.add_argument(
+        "--velocity-bin-max",
+        dest="velocity_bin_max",
+        type=float,
+        default=None,
+        help="Upper velocity axis bound for the velocity-to-acceleration field, in px/s.",
+    )
+    parser.add_argument(
+        "--velocity-bin-bound-percentile",
+        type=float,
+        default=99.0,
+        help="Percentile used for automatic velocity axis bounds when min/max are omitted.",
+    )
     parser.add_argument("--max-output-width", type=int, default=1280)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/kalman_ml_acceleration_field"))
     args = parser.parse_args()
+    if (
+        args.velocity_bin_min is not None
+        and args.velocity_bin_max is not None
+        and float(args.velocity_bin_max) <= float(args.velocity_bin_min)
+    ):
+        raise ValueError("--velocity-bin-max must be greater than --velocity-bin-min.")
 
     cfg = load_config(args.config)
     folders = _select_folders(args, cfg)
@@ -532,7 +636,7 @@ def main() -> None:
     npz_path = output_dir / f"{args.split}_center_acceleration_samples.npz"
     csv_path = output_dir / f"{args.split}_center_acceleration_samples.csv"
     accel_png_path = output_dir / f"{args.split}_center_acceleration_field.png"
-    velocity_png_path = output_dir / f"{args.split}_center_velocity_field.png"
+    velocity_png_path = output_dir / f"{args.split}_center_velocity_to_acceleration_field.png"
     meta_path = output_dir / f"{args.split}_center_motion_field_summary.json"
 
     np.savez_compressed(npz_path, **arrays)
@@ -540,12 +644,19 @@ def main() -> None:
     frame_size = tuple(int(value) for value in cfg["data"]["frame_size"])
     accel_vis_summary = _render_vector_field(
         samples=samples,
-        frame_size=frame_size,
         grid_cols=int(args.grid_cols),
         grid_rows=int(args.grid_rows),
         output_path=accel_png_path,
+        bin_x_attr="cx_px",
+        bin_y_attr="cy_px",
         x_attr="ax_px_s2",
         y_attr="ay_px_s2",
+        x_min=0.0,
+        x_max=float(frame_size[0]),
+        y_min=0.0,
+        y_max=float(frame_size[1]),
+        x_label="x position (px)",
+        y_label="y position (px)",
         title="Center acceleration field",
         colorbar_label="mean acceleration magnitude (px/s^2)",
         summary_prefix="accel",
@@ -553,22 +664,37 @@ def main() -> None:
         min_count=int(args.min_count),
         arrow_scale=args.accel_arrow_scale,
         bound_percentile=float(args.vector_bound_percentile),
+        invert_y=True,
+    )
+    velocity_min, velocity_max = _resolve_velocity_bounds(
+        samples,
+        velocity_bin_min=args.velocity_bin_min,
+        velocity_bin_max=args.velocity_bin_max,
+        percentile=float(args.velocity_bin_bound_percentile),
     )
     velocity_vis_summary = _render_vector_field(
         samples=samples,
-        frame_size=frame_size,
         grid_cols=int(args.grid_cols),
         grid_rows=int(args.grid_rows),
         output_path=velocity_png_path,
-        x_attr="vx_px_s",
-        y_attr="vy_px_s",
-        title="Center velocity field",
-        colorbar_label="mean velocity magnitude (px/s)",
-        summary_prefix="velocity",
+        bin_x_attr="vx_px_s",
+        bin_y_attr="vy_px_s",
+        x_attr="ax_px_s2",
+        y_attr="ay_px_s2",
+        x_min=velocity_min,
+        x_max=velocity_max,
+        y_min=velocity_min,
+        y_max=velocity_max,
+        x_label="vx at anchor (px/s)",
+        y_label="vy at anchor (px/s, image-down positive)",
+        title="Center velocity to acceleration field",
+        colorbar_label="mean acceleration magnitude (px/s^2)",
+        summary_prefix="velocity_to_accel",
         max_output_width=int(args.max_output_width),
         min_count=int(args.min_count),
         arrow_scale=args.velocity_arrow_scale,
         bound_percentile=float(args.vector_bound_percentile),
+        invert_y=True,
     )
     accel_mag = np.sqrt(arrays["ax_px_s2"] ** 2 + arrays["ay_px_s2"] ** 2)
     velocity_mag = np.sqrt(arrays["vx_px_s"] ** 2 + arrays["vy_px_s"] ** 2)
@@ -587,7 +713,7 @@ def main() -> None:
         "median_velocity_mag_px_s": float(np.median(velocity_mag)),
         "p95_velocity_mag_px_s": float(np.percentile(velocity_mag, 95)),
         "acceleration_visualization": accel_vis_summary,
-        "velocity_visualization": velocity_vis_summary,
+        "velocity_to_acceleration_visualization": velocity_vis_summary,
     }
     meta_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))

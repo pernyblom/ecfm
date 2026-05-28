@@ -162,9 +162,13 @@ The same fit also gives the anchor velocity:
 python experiments/kalman_ml_forecasting/acceleration_field.py --config experiments/kalman_ml_forecasting/configs/base.yaml --split train --max-folders 20 --max-samples 5000 --grid-cols 24 --grid-rows 14
 ```
 
-The script writes sample data as `.npz` and `.csv`, plus binned acceleration and
-velocity vector-field PNGs. If `matplotlib` is installed it uses quiver plots;
-otherwise it falls back to a PIL renderer.
+The script writes sample data as `.npz` and `.csv`, plus two PNGs:
+- center position bins -> mean center acceleration
+- center velocity bins -> mean center acceleration
+
+Use `--velocity-bin-min` and `--velocity-bin-max` to force the same velocity
+axis bounds when comparing two splits. If `matplotlib` is installed it uses
+quiver plots; otherwise it falls back to a PIL renderer.
 
 Metrics
 - The trainer reports the learned model metrics, configured Kalman baseline
