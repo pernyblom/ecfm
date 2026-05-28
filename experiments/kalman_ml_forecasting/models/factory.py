@@ -23,6 +23,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         residual_scale=float(model_cfg.get("residual_scale", 1.0)),
         predict_size_residuals=bool(model_cfg.get("predict_size_residuals", True)),
         use_filter_state_features=bool(model_cfg.get("use_filter_state_features", False)),
+        filter_state_feature_mode=str(model_cfg.get("filter_state_feature_mode", "full")),
         filter_covariance_features=str(model_cfg.get("filter_covariance_features", "none")),
         initial_state_source=str(model_cfg.get("initial_state_source", "last_four")),
         kalman_params=dict(cfg.get("kalman") or {}),

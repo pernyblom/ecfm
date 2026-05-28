@@ -174,8 +174,11 @@ Extension points
   The residual rollout still starts from the last-four linear-fit state; the
   filter state is additional conditioning information unless
   `model.initial_state_source: kalman_filter` is also set.
+- Set `model.filter_state_feature_mode` to control which filtered state entries
+  are appended: `full`, `center_velocity`, or `velocities`.
 - Set `model.filter_covariance_features: diag` or `full` to append the Kalman
   history covariance diagonal or flattened covariance matrix to the fusion
-  features. The default is `none`.
+  features. Covariance features use the same state subset selected by
+  `model.filter_state_feature_mode`. The default is `none`.
 - Tune `model.residual_scale` if residual accelerations are too aggressive early
   in training.

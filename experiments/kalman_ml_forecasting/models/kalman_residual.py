@@ -92,6 +92,18 @@ def _encoder_cfg_for_rep(
     return cfg
 
 
+def _filter_state_indices(mode: str) -> list[int]:
+    if mode == "full":
+        return list(range(8))
+    if mode == "center_velocity":
+        return [4, 5]
+    if mode == "velocities":
+        return [4, 5, 6, 7]
+    raise ValueError(
+        "filter_state_feature_mode must be one of: full, center_velocity, velocities."
+    )
+
+
 class KalmanResidualForecaster(nn.Module):
     """Constant-velocity Kalman-style rollout with image-conditioned residuals.
 
@@ -119,6 +131,7 @@ class KalmanResidualForecaster(nn.Module):
         residual_scale: float = 1.0,
         predict_size_residuals: bool = True,
         use_filter_state_features: bool = False,
+        filter_state_feature_mode: str = "full",
         filter_covariance_features: str = "none",
         initial_state_source: str = "last_four",
         kalman_params: Dict | None = None,
@@ -134,6 +147,8 @@ class KalmanResidualForecaster(nn.Module):
         self.residual_scale = float(residual_scale)
         self.predict_size_residuals = bool(predict_size_residuals)
         self.use_filter_state_features = bool(use_filter_state_features)
+        self.filter_state_feature_mode = str(filter_state_feature_mode).lower()
+        self.filter_state_feature_indices = _filter_state_indices(self.filter_state_feature_mode)
         self.filter_covariance_features = str(filter_covariance_features).lower()
         self.initial_state_source = str(initial_state_source).lower()
         self.kalman_params = dict(kalman_params or {})
@@ -165,12 +180,13 @@ class KalmanResidualForecaster(nn.Module):
         )
         per_rep_dim = int(backbone_cfg.get("out_dim", 128))
         fused_dim = per_rep_dim * len(self.representations)
+        filter_state_dim = len(self.filter_state_feature_indices)
         if self.use_filter_state_features:
-            fused_dim += 8
+            fused_dim += filter_state_dim
         if self.filter_covariance_features == "diag":
-            fused_dim += 8
+            fused_dim += filter_state_dim
         elif self.filter_covariance_features == "full":
-            fused_dim += 64
+            fused_dim += filter_state_dim * filter_state_dim
         self.image_fusion = nn.Sequential(
             nn.Linear(fused_dim, fusion_hidden_dim),
             nn.ReLU(inplace=True),
@@ -213,14 +229,20 @@ class KalmanResidualForecaster(nn.Module):
         if self.use_filter_state_features:
             if filter_state is None:
                 raise ValueError("filter_state is required when use_filter_state_features=True.")
-            enc.append(filter_state)
+            enc.append(filter_state[:, self.filter_state_feature_indices])
         if self.filter_covariance_features != "none":
             if filter_cov is None:
                 raise ValueError("filter_cov is required when filter_covariance_features is enabled.")
+            idx = torch.tensor(
+                self.filter_state_feature_indices,
+                device=filter_cov.device,
+                dtype=torch.long,
+            )
+            selected_cov = filter_cov.index_select(1, idx).index_select(2, idx)
             if self.filter_covariance_features == "diag":
-                enc.append(torch.diagonal(filter_cov, dim1=-2, dim2=-1))
+                enc.append(torch.diagonal(selected_cov, dim1=-2, dim2=-1))
             else:
-                enc.append(filter_cov.flatten(1))
+                enc.append(selected_cov.flatten(1))
         return self.image_fusion(torch.cat(enc, dim=-1))
 
     def forward(

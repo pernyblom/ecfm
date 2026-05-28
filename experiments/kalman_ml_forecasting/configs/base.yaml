@@ -57,11 +57,17 @@ model:
   # Kalman filter's final history state.
   initial_state_source: last_four
   # If true, append the configured Kalman filter's final history state
-  # [cx, cy, w, h, vx, vy, vw, vh] to the encoder features before image fusion.
+  # to the encoder features before image fusion.
   use_filter_state_features: false
+  # Which Kalman state entries to append, and which covariance entries to keep
+  # when filter_covariance_features is enabled:
+  # - full: [cx, cy, w, h, vx, vy, vw, vh]
+  # - center_velocity: [vx, vy]
+  # - velocities: [vx, vy, vw, vh]
+  filter_state_feature_mode: full
   # Optional covariance features from the configured Kalman filter history
-  # state. Use "none", "diag" for the 8 covariance diagonal entries, or "full"
-  # for the flattened 8x8 covariance matrix.
+  # state. Use "none", "diag" for the selected covariance diagonal entries, or
+  # "full" for the flattened selected covariance submatrix.
   filter_covariance_features: none
   cell_local_first_conv: false
   cell_local_first_conv_representations: []
