@@ -237,12 +237,14 @@ def _write_csv(path: Path, samples: List[AccelSample]) -> None:
             writer.writerow(sample.__dict__)
 
 
-def _bin_accelerations(
+def _bin_vectors(
     samples: List[AccelSample],
     *,
     frame_size: tuple[int, int],
     grid_cols: int,
     grid_rows: int,
+    x_attr: str,
+    y_attr: str,
 ) -> dict[str, np.ndarray]:
     frame_w, frame_h = frame_size
     sum_ax = np.zeros((grid_rows, grid_cols), dtype=np.float64)
@@ -251,8 +253,8 @@ def _bin_accelerations(
     for sample in samples:
         col = min(grid_cols - 1, max(0, int(sample.cx_px / frame_w * grid_cols)))
         row = min(grid_rows - 1, max(0, int(sample.cy_px / frame_h * grid_rows)))
-        sum_ax[row, col] += sample.ax_px_s2
-        sum_ay[row, col] += sample.ay_px_s2
+        sum_ax[row, col] += float(getattr(sample, x_attr))
+        sum_ay[row, col] += float(getattr(sample, y_attr))
         counts[row, col] += 1
     mean_ax = np.divide(sum_ax, counts, out=np.zeros_like(sum_ax), where=counts > 0)
     mean_ay = np.divide(sum_ay, counts, out=np.zeros_like(sum_ay), where=counts > 0)
@@ -303,12 +305,25 @@ def _render_vector_field(
     grid_cols: int,
     grid_rows: int,
     output_path: Path,
+    x_attr: str,
+    y_attr: str,
+    title: str,
+    colorbar_label: str,
+    summary_prefix: str,
     max_output_width: int,
     min_count: int,
     arrow_scale: Optional[float],
+    bound_percentile: float,
 ) -> dict[str, float | int]:
     frame_w, frame_h = frame_size
-    bins = _bin_accelerations(samples, frame_size=frame_size, grid_cols=grid_cols, grid_rows=grid_rows)
+    bins = _bin_vectors(
+        samples,
+        frame_size=frame_size,
+        grid_cols=grid_cols,
+        grid_rows=grid_rows,
+        x_attr=x_attr,
+        y_attr=y_attr,
+    )
     mean_ax = bins["mean_ax"]
     mean_ay = bins["mean_ay"]
     counts = bins["counts"]
@@ -320,7 +335,8 @@ def _render_vector_field(
     if arrow_scale is None:
         reference = float(np.median(nonzero)) if nonzero.size else 1.0
         arrow_scale = 0.35 * min(cell_w, cell_h) / max(reference, 1.0e-9)
-    max_mag = float(np.percentile(nonzero, 95)) if nonzero.size else 0.0
+    bound_percentile = max(0.0, min(100.0, float(bound_percentile)))
+    max_mag = float(np.percentile(nonzero, bound_percentile)) if nonzero.size else 0.0
 
     try:
         import matplotlib
@@ -368,9 +384,9 @@ def _render_vector_field(
         ax.set_aspect("equal")
         ax.set_xlabel("x position (px)")
         ax.set_ylabel("y position (px)")
-        ax.set_title(f"Center acceleration field, n={len(samples)}, grid={grid_cols}x{grid_rows}")
+        ax.set_title(f"{title}, n={len(samples)}, grid={grid_cols}x{grid_rows}")
         cbar = fig.colorbar(quiver, ax=ax, fraction=0.026, pad=0.02)
-        cbar.set_label("mean acceleration magnitude (px/s^2)")
+        cbar.set_label(colorbar_label)
         ax.text(
             0.01,
             0.99,
@@ -391,7 +407,8 @@ def _render_vector_field(
             "arrow_scale": float(arrow_scale),
             "max_count": int(counts.max()) if counts.size else 0,
             "valid_cells": int(valid.sum()),
-            "max_magnitude_px_s2": max_mag,
+            f"{summary_prefix}_magnitude_bound": max_mag,
+            f"{summary_prefix}_bound_percentile": bound_percentile,
             "renderer": "matplotlib",
         }
 
@@ -421,7 +438,7 @@ def _render_vector_field(
             width = 1 + int(3 * counts[row, col] / max(1, max_count))
             _draw_arrow(draw, (cx, cy), (vx, vy), color=color, width=width)
 
-    title = f"Acceleration field, n={len(samples)}, grid={grid_cols}x{grid_rows}, min_count={min_count}"
+    title = f"{title}, n={len(samples)}, grid={grid_cols}x{grid_rows}, min_count={min_count}"
     draw.rectangle([(0, 0), (min(image_size[0], 760), 24)], fill=(248, 248, 248))
     draw.text((8, 6), title, fill=(20, 20, 20))
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,7 +450,8 @@ def _render_vector_field(
         "arrow_scale": float(arrow_scale),
         "max_count": max_count,
         "valid_cells": int(valid.sum()),
-        "max_magnitude_px_s2": max_mag,
+        f"{summary_prefix}_magnitude_bound": max_mag,
+        f"{summary_prefix}_bound_percentile": bound_percentile,
         "renderer": "pil",
     }
 
@@ -471,7 +489,14 @@ def main() -> None:
     parser.add_argument("--grid-cols", type=int, default=24)
     parser.add_argument("--grid-rows", type=int, default=14)
     parser.add_argument("--min-count", type=int, default=3)
-    parser.add_argument("--arrow-scale", type=float, default=None)
+    parser.add_argument("--accel-arrow-scale", type=float, default=None)
+    parser.add_argument("--velocity-arrow-scale", type=float, default=None)
+    parser.add_argument(
+        "--vector-bound-percentile",
+        type=float,
+        default=95.0,
+        help="Dataset percentile used as the color upper bound for velocity and acceleration magnitudes.",
+    )
     parser.add_argument("--max-output-width", type=int, default=1280)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/kalman_ml_acceleration_field"))
     args = parser.parse_args()
@@ -506,34 +531,63 @@ def main() -> None:
     arrays = _sample_arrays(samples)
     npz_path = output_dir / f"{args.split}_center_acceleration_samples.npz"
     csv_path = output_dir / f"{args.split}_center_acceleration_samples.csv"
-    png_path = output_dir / f"{args.split}_center_acceleration_field.png"
-    meta_path = output_dir / f"{args.split}_center_acceleration_summary.json"
+    accel_png_path = output_dir / f"{args.split}_center_acceleration_field.png"
+    velocity_png_path = output_dir / f"{args.split}_center_velocity_field.png"
+    meta_path = output_dir / f"{args.split}_center_motion_field_summary.json"
 
     np.savez_compressed(npz_path, **arrays)
     _write_csv(csv_path, samples)
     frame_size = tuple(int(value) for value in cfg["data"]["frame_size"])
-    vis_summary = _render_vector_field(
+    accel_vis_summary = _render_vector_field(
         samples=samples,
         frame_size=frame_size,
         grid_cols=int(args.grid_cols),
         grid_rows=int(args.grid_rows),
-        output_path=png_path,
+        output_path=accel_png_path,
+        x_attr="ax_px_s2",
+        y_attr="ay_px_s2",
+        title="Center acceleration field",
+        colorbar_label="mean acceleration magnitude (px/s^2)",
+        summary_prefix="accel",
         max_output_width=int(args.max_output_width),
         min_count=int(args.min_count),
-        arrow_scale=args.arrow_scale,
+        arrow_scale=args.accel_arrow_scale,
+        bound_percentile=float(args.vector_bound_percentile),
+    )
+    velocity_vis_summary = _render_vector_field(
+        samples=samples,
+        frame_size=frame_size,
+        grid_cols=int(args.grid_cols),
+        grid_rows=int(args.grid_rows),
+        output_path=velocity_png_path,
+        x_attr="vx_px_s",
+        y_attr="vy_px_s",
+        title="Center velocity field",
+        colorbar_label="mean velocity magnitude (px/s)",
+        summary_prefix="velocity",
+        max_output_width=int(args.max_output_width),
+        min_count=int(args.min_count),
+        arrow_scale=args.velocity_arrow_scale,
+        bound_percentile=float(args.vector_bound_percentile),
     )
     accel_mag = np.sqrt(arrays["ax_px_s2"] ** 2 + arrays["ay_px_s2"] ** 2)
+    velocity_mag = np.sqrt(arrays["vx_px_s"] ** 2 + arrays["vy_px_s"] ** 2)
     summary = {
         "num_folders": len(folders),
         "num_samples": len(samples),
         "split": args.split,
         "npz": str(npz_path),
         "csv": str(csv_path),
-        "png": str(png_path),
+        "acceleration_png": str(accel_png_path),
+        "velocity_png": str(velocity_png_path),
         "mean_accel_mag_px_s2": float(np.mean(accel_mag)),
         "median_accel_mag_px_s2": float(np.median(accel_mag)),
         "p95_accel_mag_px_s2": float(np.percentile(accel_mag, 95)),
-        **vis_summary,
+        "mean_velocity_mag_px_s": float(np.mean(velocity_mag)),
+        "median_velocity_mag_px_s": float(np.median(velocity_mag)),
+        "p95_velocity_mag_px_s": float(np.percentile(velocity_mag, 95)),
+        "acceleration_visualization": accel_vis_summary,
+        "velocity_visualization": velocity_vis_summary,
     }
     meta_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(summary, indent=2, sort_keys=True))
