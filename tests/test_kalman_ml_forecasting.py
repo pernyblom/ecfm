@@ -257,6 +257,34 @@ def test_kalman_residual_forecaster_can_use_center_velocity_filter_features() ->
     assert out["filter_state"].shape == (1, 8)
 
 
+def test_kalman_residual_forecaster_can_use_center_position_filter_features() -> None:
+    model = KalmanResidualForecaster(
+        representations=[],
+        image_sizes={},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        fusion_hidden_dim=16,
+        state_hidden_dim=8,
+        residual_hidden_dim=16,
+        use_filter_state_features=True,
+        filter_state_feature_mode="center_position",
+        filter_covariance_features="diag",
+    )
+    past = torch.tensor(
+        [[[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]]],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0]])
+    future_t = torch.tensor([[2.0]])
+
+    out = model({}, past, past_t, future_t, return_debug=True)
+
+    assert model.image_fusion[0].in_features == 4
+    assert out["boxes"].shape == (1, 1, 4)
+    assert out["filter_state"].shape == (1, 8)
+    assert out["filter_cov"].shape == (1, 8, 8)
+
+
 def test_kalman_residual_forecaster_covariance_uses_selected_velocity_state() -> None:
     model = KalmanResidualForecaster(
         representations=[],

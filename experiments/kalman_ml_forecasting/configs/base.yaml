@@ -62,6 +62,7 @@ model:
   # Which Kalman state entries to append, and which covariance entries to keep
   # when filter_covariance_features is enabled:
   # - full: [cx, cy, w, h, vx, vy, vw, vh]
+  # - center_position: [cx, cy]
   # - center_velocity: [vx, vy]
   # - velocities: [vx, vy, vw, vh]
   filter_state_feature_mode: full

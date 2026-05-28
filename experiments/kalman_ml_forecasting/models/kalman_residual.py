@@ -95,12 +95,14 @@ def _encoder_cfg_for_rep(
 def _filter_state_indices(mode: str) -> list[int]:
     if mode == "full":
         return list(range(8))
+    if mode == "center_position":
+        return [0, 1]
     if mode == "center_velocity":
         return [4, 5]
     if mode == "velocities":
         return [4, 5, 6, 7]
     raise ValueError(
-        "filter_state_feature_mode must be one of: full, center_velocity, velocities."
+        "filter_state_feature_mode must be one of: full, center_position, center_velocity, velocities."
     )
 
 
