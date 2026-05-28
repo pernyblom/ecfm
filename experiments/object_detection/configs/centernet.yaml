@@ -9,6 +9,8 @@ data:
   # auto uses RGB_YOLO for RGB-only training and Event_YOLO whenever an event branch is present.
   labels_subdir: auto
   # representations: ["xt_my", "yt_mx", "cstr3"]
+  # Add "event_frames" to read dataset-native frames from
+  # datasets/FRED/<folder>/Event/Frames when present.
   # Grid-split aliases such as xt_my_10x10 reuse the base xt_my image size unless
   # an explicit image_sizes entry is provided.
   # representations: ["cstr3", "xt_my", "xt_my_10x10", "rgb"]

@@ -37,6 +37,7 @@ _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 _DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
+_DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
 
 
 def _parse_frame_time_raw(name: str) -> Optional[int]:
@@ -51,6 +52,14 @@ def _parse_frame_time_raw(name: str) -> Optional[int]:
 
 def _is_dataset_rgb_rep(rep: str) -> bool:
     return rep.lower() in _DATASET_RGB_REPS
+
+
+def _is_dataset_event_frame_rep(rep: str) -> bool:
+    return rep.lower() in _DATASET_EVENT_FRAME_REPS
+
+
+def _is_dataset_native_rep(rep: str) -> bool:
+    return _is_dataset_rgb_rep(rep) or _is_dataset_event_frame_rep(rep)
 
 
 def _load_image(path: Path, size: Tuple[int, int]) -> torch.Tensor:
@@ -85,7 +94,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackKalmanForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 2
+    CACHE_VERSION = 3
 
     def __init__(
         self,
@@ -144,6 +153,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
+        self._folder_event_frame_indices: Dict[str, List[Tuple[float, Path]]] = {}
 
         if self.frame_size[0] <= 0 or self.frame_size[1] <= 0:
             raise ValueError("frame_size must contain positive width and height.")
@@ -180,6 +190,9 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def _dataset_rgb_dir(self, folder: str, rep: str) -> Path:
         dirname = _DATASET_RGB_REPS[rep.lower()]
         return self.labels_root / folder / dirname if self.folders is not None else self.labels_root / dirname
+
+    def _dataset_event_frames_dir(self, folder: str) -> Path:
+        return self.labels_root / folder / "Event" / "Frames" if self.folders is not None else self.labels_root / "Event" / "Frames"
 
     def _manifest_path(self, folder: str) -> Path:
         return self._images_dir(folder) / self.render_manifest_name
@@ -235,12 +248,54 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         after_t, after_path = rgb_index[idx]
         return before_path if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_path
 
+    def _build_event_frame_index(self, folder: str) -> List[Tuple[float, Path]]:
+        if folder in self._folder_event_frame_indices:
+            return self._folder_event_frame_indices[folder]
+        frames_dir = self._dataset_event_frames_dir(folder)
+        files = []
+        if frames_dir.exists():
+            files = [
+                path
+                for pattern in ("*.png", "*.jpg", "*.jpeg")
+                for path in sorted(frames_dir.glob(pattern))
+                if not path.name.startswith(".") and not path.name.startswith("._")
+            ]
+        out = []
+        for path in files:
+            time_raw = _parse_frame_time_raw(path.stem)
+            if time_raw is not None:
+                out.append((float(time_raw) * self.label_time_unit, path))
+        out.sort(key=lambda item: item[0])
+        self._folder_event_frame_indices[folder] = out
+        return out
+
+    def _find_event_frame(self, folder: str, stem: str, label_time_s: float) -> Optional[Path]:
+        frames_dir = self._dataset_event_frames_dir(folder)
+        for suffix in (".png", ".jpg", ".jpeg"):
+            candidate = frames_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                return candidate
+        frame_index = self._build_event_frame_index(folder)
+        if not frame_index:
+            return None
+        times = [t for t, _ in frame_index]
+        idx = int(np.searchsorted(times, label_time_s, side="left"))
+        if idx <= 0:
+            return frame_index[0][1]
+        if idx >= len(frame_index):
+            return frame_index[-1][1]
+        before_t, before_path = frame_index[idx - 1]
+        after_t, after_path = frame_index[idx]
+        return before_path if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_path
+
     def _resolve_input_path(self, folder: str, stem: str, rep: str, label_time_s: float) -> Optional[Path]:
         rendered_path = self._images_dir(folder) / f"{stem}_{rep}.png"
         if rendered_path.exists():
             return rendered_path
         if _is_dataset_rgb_rep(rep):
             return self._find_rgb_frame(folder, rep, label_time_s)
+        if _is_dataset_event_frame_rep(rep):
+            return self._find_event_frame(folder, stem, label_time_s)
         return None
 
     def _has_all_reps(self, folder: str, stem: str, label_time_s: float) -> bool:
@@ -262,6 +317,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
 
     def _validate_manifest_entry(self, folder: str, stem: str) -> None:
         if not self.verify_render_manifest:
+            return
+        if all(_is_dataset_native_rep(rep) for rep in self.representations):
             return
         manifest = self._load_render_manifest(folder)
         if manifest is None:

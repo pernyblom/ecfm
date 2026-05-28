@@ -30,6 +30,7 @@ _RGB_SOURCE_DIRS = {
     "rgb": "RGB",
     "padded_rgb": "PADDED_RGB",
 }
+_DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
 
 
 def _parse_rep_list(raw: str) -> List[str]:
@@ -42,6 +43,14 @@ def _parse_mode_list(raw: str) -> List[str]:
 
 def _is_dataset_rgb_rep(rep: str) -> bool:
     return rep.lower() in _RGB_SOURCE_DIRS
+
+
+def _is_dataset_event_frame_rep(rep: str) -> bool:
+    return rep.lower() in _DATASET_EVENT_FRAME_REPS
+
+
+def _is_dataset_native_rep(rep: str) -> bool:
+    return _is_dataset_rgb_rep(rep) or _is_dataset_event_frame_rep(rep)
 
 
 def _resolve_labels_subdir(raw: str, representations: List[str]) -> str:
@@ -60,25 +69,34 @@ def _resolve_model_input_path(
     rep: str,
     label_time_s: Optional[float],
     rgb_indices: Dict[str, List[Tuple[float, Path]]],
+    event_frame_indices: Dict[str, List[Tuple[float, Path]]],
     label_time_unit: float,
 ) -> Optional[Path]:
     rendered_path = images_dir / f"{stem}_{rep}.png"
     if rendered_path.exists():
         return rendered_path
-    if not _is_dataset_rgb_rep(rep):
-        return None
-    rgb_dir = dataset_folder_dir / _RGB_SOURCE_DIRS[rep.lower()]
-    for suffix in (".jpg", ".png", ".jpeg"):
-        candidate = rgb_dir / f"{stem}{suffix}"
-        if candidate.exists():
-            return candidate
-    if label_time_s is None:
-        return None
-    rgb_index = rgb_indices.get(rep.lower())
-    if rgb_index is None:
-        rgb_index = _build_rgb_index(rgb_dir, label_time_unit=label_time_unit)
-        rgb_indices[rep.lower()] = rgb_index
-    return _find_rgb_frame(rgb_index, label_time_s)
+    if _is_dataset_rgb_rep(rep):
+        rgb_dir = dataset_folder_dir / _RGB_SOURCE_DIRS[rep.lower()]
+        for suffix in (".jpg", ".png", ".jpeg"):
+            candidate = rgb_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                return candidate
+        if label_time_s is None:
+            return None
+        rgb_index = rgb_indices.get(rep.lower())
+        if rgb_index is None:
+            rgb_index = _build_rgb_index(rgb_dir, label_time_unit=label_time_unit)
+            rgb_indices[rep.lower()] = rgb_index
+        return _find_rgb_frame(rgb_index, label_time_s)
+    if _is_dataset_event_frame_rep(rep):
+        return _find_dataset_event_frame(
+            dataset_folder_dir=dataset_folder_dir,
+            stem=stem,
+            label_time_s=label_time_s,
+            event_frame_indices=event_frame_indices,
+            label_time_unit=label_time_unit,
+        )
+    return None
 
 
 def _load_input_tensor(path: Path, image_size: Tuple[int, int]) -> torch.Tensor:
@@ -97,6 +115,7 @@ def _find_frame_stems(
     required_reps: List[str],
     label_time_unit: float,
     rgb_indices: Dict[str, List[Tuple[float, Path]]],
+    event_frame_indices: Dict[str, List[Tuple[float, Path]]],
 ) -> List[str]:
     stems: List[str] = []
     for label_path in sorted(labels_dir.glob("*.txt"), key=lambda p: (_parse_frame_time(p.stem) or -1, p.name)):
@@ -110,6 +129,7 @@ def _find_frame_stems(
                 rep=rep,
                 label_time_s=label_time_s,
                 rgb_indices=rgb_indices,
+                event_frame_indices=event_frame_indices,
                 label_time_unit=label_time_unit,
             )
             is not None
@@ -170,6 +190,62 @@ def _find_rgb_frame(rgb_index: List[Tuple[float, Path]], label_time_s: float) ->
     return before_p if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_p
 
 
+def _build_event_frame_index(dataset_folder_dir: Path, *, label_time_unit: float) -> List[Tuple[float, Path]]:
+    frames_dir = dataset_folder_dir / "Event" / "Frames"
+    if not frames_dir.exists():
+        return []
+    files = [
+        path
+        for pattern in ("*.png", "*.jpg", "*.jpeg")
+        for path in sorted(frames_dir.glob(pattern))
+        if not path.name.startswith(".") and not path.name.startswith("._")
+    ]
+    out: List[Tuple[float, Path]] = []
+    for path in files:
+        time_s = _parse_frame_time_s(path.stem, label_time_unit=label_time_unit)
+        if time_s is not None:
+            out.append((time_s, path))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def _find_event_frame(event_frame_index: List[Tuple[float, Path]], label_time_s: float) -> Optional[Path]:
+    if not event_frame_index:
+        return None
+    times = [t for t, _ in event_frame_index]
+    idx = int(np.searchsorted(times, label_time_s, side="left"))
+    if idx <= 0:
+        return event_frame_index[0][1]
+    if idx >= len(event_frame_index):
+        return event_frame_index[-1][1]
+    before_t, before_p = event_frame_index[idx - 1]
+    after_t, after_p = event_frame_index[idx]
+    return before_p if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_p
+
+
+def _find_dataset_event_frame(
+    *,
+    dataset_folder_dir: Path,
+    stem: str,
+    label_time_s: Optional[float],
+    event_frame_indices: Dict[str, List[Tuple[float, Path]]],
+    label_time_unit: float,
+) -> Optional[Path]:
+    frames_dir = dataset_folder_dir / "Event" / "Frames"
+    for suffix in (".png", ".jpg", ".jpeg"):
+        candidate = frames_dir / f"{stem}{suffix}"
+        if candidate.exists():
+            return candidate
+    if label_time_s is None:
+        return None
+    key = str(frames_dir)
+    event_frame_index = event_frame_indices.get(key)
+    if event_frame_index is None:
+        event_frame_index = _build_event_frame_index(dataset_folder_dir, label_time_unit=label_time_unit)
+        event_frame_indices[key] = event_frame_index
+    return _find_event_frame(event_frame_index, label_time_s)
+
+
 def _load_background_image(
     *,
     rep: str,
@@ -180,12 +256,24 @@ def _load_background_image(
     label_time_unit: float,
     rgb_indices: Dict[str, List[Tuple[float, Path]]],
     rgb_source: str,
+    event_frame_indices: Dict[str, List[Tuple[float, Path]]] | None = None,
 ) -> Image.Image:
     rep_l = rep.lower()
     rendered_path = images_dir / f"{stem}_{rep}.png"
     use_rendered_rgb = rep_l == "rgb" and rgb_source == "auto"
-    if (not _is_dataset_rgb_rep(rep) or use_rendered_rgb) and rendered_path.exists():
+    if (not _is_dataset_native_rep(rep) or use_rendered_rgb) and rendered_path.exists():
         return Image.open(rendered_path).convert("RGB")
+    if _is_dataset_event_frame_rep(rep):
+        event_path = _find_dataset_event_frame(
+            dataset_folder_dir=dataset_folder_dir,
+            stem=stem,
+            label_time_s=label_time_s,
+            event_frame_indices={} if event_frame_indices is None else event_frame_indices,
+            label_time_unit=label_time_unit,
+        )
+        if event_path is not None and event_path.exists():
+            return Image.open(event_path).convert("RGB")
+        raise FileNotFoundError(f"Could not resolve event frame background for stem {stem}.")
     if not _is_dataset_rgb_rep(rep):
         raise FileNotFoundError(f"Missing rendered background image: {rendered_path}")
 
@@ -480,12 +568,13 @@ def main() -> None:
         if use_model
         else [rep for rep in reps if not _is_dataset_rgb_rep(rep)]
     )
-    requires_rendered_images = any(not _is_dataset_rgb_rep(rep) for rep in required_reps)
+    requires_rendered_images = any(not _is_dataset_native_rep(rep) for rep in required_reps)
     if requires_rendered_images and not images_dir.exists():
         raise FileNotFoundError(f"Missing rendered images directory: {images_dir}")
 
     label_time_unit = float(data_cfg.get("label_time_unit", 1e-6))
     rgb_indices: Dict[str, List[Tuple[float, Path]]] = {}
+    event_frame_indices: Dict[str, List[Tuple[float, Path]]] = {}
     stems = _find_frame_stems(
         images_dir=images_dir,
         dataset_folder_dir=dataset_folder_dir,
@@ -493,6 +582,7 @@ def main() -> None:
         required_reps=required_reps,
         label_time_unit=label_time_unit,
         rgb_indices=rgb_indices,
+        event_frame_indices=event_frame_indices,
     )
     if args.max_frames is not None:
         stems = stems[: max(0, int(args.max_frames))]
@@ -556,6 +646,7 @@ def main() -> None:
                     rep=model_rep,
                     label_time_s=parsed_label_time_s,
                     rgb_indices=rgb_indices,
+                    event_frame_indices=event_frame_indices,
                     label_time_unit=label_time_unit,
                 )
                 if input_path is None:
@@ -582,6 +673,7 @@ def main() -> None:
                 dataset_folder_dir=dataset_folder_dir,
                 label_time_unit=label_time_unit,
                 rgb_indices=rgb_indices,
+                event_frame_indices=event_frame_indices,
                 rgb_source=str(args.rgb_source),
             )
             vis = _draw_pred_overlay(

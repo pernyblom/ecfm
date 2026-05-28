@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.object_detection.data.dataset import _parse_frame_time, _read_yolo_boxes
+from experiments.object_detection.data.dataset import _parse_frame_time, _parse_frame_time_s, _read_yolo_boxes
 from experiments.object_detection.metrics import detection_scores
 from experiments.object_detection.models.factory import build_model
 from experiments.object_detection.render_sequence_video import (
@@ -19,27 +19,72 @@ from experiments.object_detection.render_sequence_video import (
     _gt_heatmap_for_rep,
     _infer_fps,
     _is_dataset_rgb_rep,
+    _is_dataset_native_rep,
     _load_background_image,
     _load_input_tensor,
     _overlay_heatmap,
     _parse_mode_list,
     _parse_rep_list,
     _pred_heatmap_for_rep,
+    _resolve_model_input_path,
     _write_video_cv2,
 )
 from experiments.object_detection.utils.config import load_config, resolve_representation_image_sizes
 
 
-def _find_image_stems(*, images_dir: Path, required_reps: List[str]) -> List[str]:
-    required_rendered_reps = [rep for rep in required_reps if not _is_dataset_rgb_rep(rep)]
+def _find_image_stems(
+    *,
+    images_dir: Path,
+    dataset_folder_dir: Path,
+    labels_dir: Optional[Path],
+    required_reps: List[str],
+    label_time_unit: float,
+    rgb_indices: Dict[str, list],
+    event_frame_indices: Dict[str, list],
+) -> List[str]:
+    required_rendered_reps = [rep for rep in required_reps if not _is_dataset_native_rep(rep)]
+    if not required_rendered_reps and labels_dir is not None:
+        stems = []
+        for label_path in sorted(labels_dir.glob("*.txt"), key=lambda p: (_parse_frame_time(p.stem) or -1, p.name)):
+            label_time_s = _parse_frame_time_s(label_path.stem, label_time_unit=label_time_unit)
+            if all(
+                _resolve_model_input_path(
+                    images_dir=images_dir,
+                    dataset_folder_dir=dataset_folder_dir,
+                    stem=label_path.stem,
+                    rep=rep,
+                    label_time_s=label_time_s,
+                    rgb_indices=rgb_indices,
+                    event_frame_indices=event_frame_indices,
+                    label_time_unit=label_time_unit,
+                )
+                is not None
+                for rep in required_reps
+            ):
+                stems.append(label_path.stem)
+        return stems
     if not required_rendered_reps:
-        raise ValueError("At least one rendered representation is required to discover frame stems.")
+        raise ValueError("At least one rendered representation or --labels-dir is required to discover frame stems.")
     first_rep = required_rendered_reps[0]
     suffix = f"_{first_rep}.png"
     stems: List[str] = []
     for path in images_dir.glob(f"*{suffix}"):
         stem = path.name[: -len(suffix)]
-        if all((images_dir / f"{stem}_{rep}.png").exists() for rep in required_rendered_reps):
+        label_time_s = _parse_frame_time_s(stem, label_time_unit=label_time_unit)
+        if all(
+            _resolve_model_input_path(
+                images_dir=images_dir,
+                dataset_folder_dir=dataset_folder_dir,
+                stem=stem,
+                rep=rep,
+                label_time_s=label_time_s,
+                rgb_indices=rgb_indices,
+                event_frame_indices=event_frame_indices,
+                label_time_unit=label_time_unit,
+            )
+            is not None
+            for rep in required_reps
+        ):
             stems.append(stem)
     stems.sort(key=lambda item: (_parse_frame_time(item) is None, _parse_frame_time(item) or 0, item))
     return stems
@@ -58,12 +103,27 @@ def render_detection_folder(args: argparse.Namespace) -> None:
     if "gt" in heatmap_modes and args.labels_dir is None:
         raise ValueError("--heatmaps includes gt, so --labels-dir is required.")
 
-    images_dir = args.input_dir
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Missing input representation folder: {images_dir}")
-
     required_reps = sorted(dict.fromkeys(list(data_cfg["representations"]) + reps))
-    stems = _find_image_stems(images_dir=images_dir, required_reps=required_reps)
+    required_rendered_reps = [rep for rep in required_reps if not _is_dataset_native_rep(rep)]
+    images_dir = args.input_dir
+    if required_rendered_reps and not images_dir.exists():
+        raise FileNotFoundError(f"Missing input representation folder: {images_dir}")
+    labels_dir = args.labels_dir
+    dataset_folder_dir = args.dataset_folder_dir
+    if dataset_folder_dir is None:
+        dataset_folder_dir = labels_dir.parent if labels_dir is not None else images_dir
+    label_time_unit = float(data_cfg.get("label_time_unit", 1e-6))
+    rgb_indices: Dict[str, list] = {}
+    event_frame_indices: Dict[str, list] = {}
+    stems = _find_image_stems(
+        images_dir=images_dir,
+        dataset_folder_dir=dataset_folder_dir,
+        labels_dir=labels_dir,
+        required_reps=required_reps,
+        label_time_unit=label_time_unit,
+        rgb_indices=rgb_indices,
+        event_frame_indices=event_frame_indices,
+    )
     if args.max_frames is not None:
         stems = stems[: max(0, int(args.max_frames))]
     if not stems:
@@ -84,11 +144,6 @@ def render_detection_folder(args: argparse.Namespace) -> None:
     fps = float(args.fps) if args.fps is not None else _infer_fps(stems)
     print(f"Rendering detections for {images_dir} with {len(stems)} frames at {fps:.3f} fps")
 
-    labels_dir = args.labels_dir
-    dataset_folder_dir = args.dataset_folder_dir
-    if dataset_folder_dir is None:
-        dataset_folder_dir = labels_dir.parent if labels_dir is not None else images_dir
-
     rep_frame_dirs: Dict[str, Path] = {}
     heatmap_frame_dirs: Dict[tuple[str, str], Path] = {}
     for rep in reps:
@@ -103,8 +158,20 @@ def render_detection_folder(args: argparse.Namespace) -> None:
     for idx, stem in enumerate(stems):
         model_inputs: Dict[str, torch.Tensor] = {}
         for model_rep in data_cfg["representations"]:
+            model_input_path = _resolve_model_input_path(
+                images_dir=images_dir,
+                dataset_folder_dir=dataset_folder_dir,
+                stem=stem,
+                rep=model_rep,
+                label_time_s=_parse_frame_time_s(stem, label_time_unit=label_time_unit),
+                rgb_indices=rgb_indices,
+                event_frame_indices=event_frame_indices,
+                label_time_unit=label_time_unit,
+            )
+            if model_input_path is None:
+                raise FileNotFoundError(f"Missing input image for {stem} representation '{model_rep}'.")
             model_inputs[model_rep] = _load_input_tensor(
-                images_dir / f"{stem}_{model_rep}.png",
+                model_input_path,
                 image_sizes[model_rep],
             ).unsqueeze(0).to(device)
 
@@ -129,8 +196,9 @@ def render_detection_folder(args: argparse.Namespace) -> None:
                 label_time_s=frame_time_s,
                 images_dir=images_dir,
                 dataset_folder_dir=dataset_folder_dir,
-                label_time_unit=float(data_cfg.get("label_time_unit", 1e-6)),
-                rgb_indices={},
+                label_time_unit=label_time_unit,
+                rgb_indices=rgb_indices,
+                event_frame_indices=event_frame_indices,
                 rgb_source=str(args.rgb_source),
             )
             vis = _draw_pred_overlay(

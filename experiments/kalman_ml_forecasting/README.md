@@ -32,6 +32,10 @@ Data
   leakage.
 - `rgb` and `padded_rgb` can be read directly from the FRED sequence folders if
   a rendered aligned PNG does not exist.
+- `event_frames` can read pre-rendered dataset frames directly from
+  `datasets/FRED/<folder>/Event/Frames`. This representation is only usable for
+  folders where that directory exists; with `filter_missing_representations:
+  true`, folders/samples without it are skipped.
 
 Render
 
@@ -120,7 +124,7 @@ python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiment
 ```
 
 Useful options:
-- `--backdrop-rep cstr3`, `xt_my`, `yt_mx`, `rgb`, or `padded_rgb`
+- `--backdrop-rep cstr3`, `xt_my`, `yt_mx`, `rgb`, `padded_rgb`, or `event_frames`
 - `--track-id 12 --track-id 25` to render only selected tracks
 - `--max-tracks 10` to cap a batch render
 - `--max-frames-per-track 200` to cap GIF length

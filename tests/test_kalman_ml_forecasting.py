@@ -185,3 +185,43 @@ def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:
     assert sample.past_boxes.shape == (2, 4)
     assert sample.future_boxes.shape == (1, 4)
     assert sample.frame_key == "seq/Video_0_frame_1000000"
+
+
+def test_track_kalman_dataset_uses_dataset_event_frames(tmp_path: Path) -> None:
+    labels = tmp_path / "labels" / "seq" / "Event_YOLO"
+    frames = tmp_path / "labels" / "seq" / "Event" / "Frames"
+    for t in [0, 1000000, 2000000, 3000000]:
+        stem = f"Video_0_frame_{t}"
+        _write_text(labels / f"{stem}.txt", "0 0.5 0.5 0.1 0.1\n")
+        _write_image(frames / f"{stem}.png")
+    _write_text(
+        tmp_path / "labels" / "seq" / "cleaned_tracks.txt",
+        "\n".join(
+            [
+                "0.0,1,10,20,4,6",
+                "1.0,1,12,22,4,6",
+                "2.0,1,14,24,4,6",
+                "3.0,1,16,26,4,6",
+            ]
+        ),
+    )
+
+    dataset = TrackKalmanForecastDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        frame_size=(100, 100),
+        representations=["event_frames"],
+        image_sizes={"event_frames": (8, 8)},
+        history_ms=1000.0,
+        forecast_ms=1000.0,
+        folders=["seq"],
+        label_time_unit=1e-6,
+        track_time_unit=1.0,
+        time_align="none",
+        verify_render_manifest=True,
+    )
+
+    assert len(dataset) == 2
+    sample = dataset[0]
+    assert sample.inputs["event_frames"].shape == (3, 8, 8)
+    assert Path(sample.input_paths["event_frames"]).parts[-3:] == ("Event", "Frames", "Video_0_frame_1000000.png")

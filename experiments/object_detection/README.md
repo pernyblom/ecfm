@@ -257,6 +257,10 @@ RGB-only training
   `data.images_root` if they exist. If not, it reads from the original FRED
   `RGB` or `PADDED_RGB` folder for that representation and chooses the nearest
   timestamped frame for each event label stem.
+- Set `data.representations` to include `event_frames` to read pre-rendered
+  dataset event images directly from `datasets/FRED/<folder>/Event/Frames`.
+  Only folders where that directory exists can contribute samples for this
+  representation.
 
 Training throughput notes
 - The dataset sample index is cached under `data.cache_dir`, so the first run
@@ -341,6 +345,11 @@ representation output folder. If not, it falls back to the original dataset
 panel. You can also request `padded_rgb` directly in `--reps`, for example
 `--reps "cstr3;padded_rgb"`. This does not change the representations used by
 the model itself.
+
+For `event_frames`, sequence and folder video rendering read directly from
+`datasets/FRED/<folder>/Event/Frames`. It can be used as a visual backdrop with
+`--reps event_frames` and as a model input when `data.representations` includes
+`event_frames`.
 
 Compose a 2x2 grid video
 

@@ -7,6 +7,8 @@ data:
   # auto uses RGB_YOLO for RGB-only training and Event_YOLO whenever an event branch is present.
   labels_subdir: auto
   representations: ["xt_my", "yt_mx", "cstr3"]
+  # Add "event_frames" to read dataset-native frames from
+  # datasets/FRED/<folder>/Event/Frames when present.
   # representations: ["cstr3"]
   # heatmap_representations: ["xt_my", "yt_mx"]  # Set to [] to disable heatmap heads and heatmap supervision.
   heatmap_representations: []

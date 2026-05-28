@@ -7,6 +7,8 @@ data:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
     val: datasets/FRED/dataset_splits/canonical/test_split.txt
   representations: ["xt_my", "yt_mx", "cstr3", "padded_rgb"]
+  # Add "event_frames" to read dataset-native frames from
+  # datasets/FRED/<folder>/Event/Frames when present.
   frame_size: [1280, 720]
   retain_spatial_dimensions: true
   temporal_bins: 224

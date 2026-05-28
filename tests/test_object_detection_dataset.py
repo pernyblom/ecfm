@@ -246,3 +246,30 @@ def test_mixed_event_rgb_manifest_validation_allows_dataset_rgb(tmp_path: Path) 
     )
 
     assert len(dataset) == 1
+
+
+def test_dataset_event_frames_representation_uses_event_frames_folder(tmp_path: Path) -> None:
+    _write_label(tmp_path / "labels" / "Event_YOLO" / "Video_0_frame_100000000.txt")
+    _write_image(tmp_path / "labels" / "Event" / "Frames" / "Video_0_frame_100000000.png")
+
+    dataset = FredDetectionDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        representations=["event_frames"],
+        heatmap_representations=[],
+        image_sizes={"event_frames": (8, 8)},
+        frame_size=(8, 8),
+        folders=[""],
+        labels_subdir="auto",
+        verify_render_manifest=True,
+        require_boxes=False,
+    )
+
+    assert dataset.labels_subdir == "Event_YOLO"
+    assert len(dataset) == 1
+    assert Path(dataset.samples[0]["input_paths"]["event_frames"]).parts[-3:] == (
+        "Event",
+        "Frames",
+        "Video_0_frame_100000000.png",
+    )
+    assert dataset[0].inputs["event_frames"].shape == (3, 8, 8)

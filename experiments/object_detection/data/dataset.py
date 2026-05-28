@@ -32,6 +32,7 @@ _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 _DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
+_DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
 
 
 def _parse_frame_time_s(name: str, *, label_time_unit: float) -> Optional[float]:
@@ -63,6 +64,14 @@ def _parse_frame_time(name: str) -> Optional[int]:
 
 def _is_dataset_rgb_rep(rep: str) -> bool:
     return rep.lower() in _DATASET_RGB_REPS
+
+
+def _is_dataset_event_frame_rep(rep: str) -> bool:
+    return rep.lower() in _DATASET_EVENT_FRAME_REPS
+
+
+def _is_dataset_native_rep(rep: str) -> bool:
+    return _is_dataset_rgb_rep(rep) or _is_dataset_event_frame_rep(rep)
 
 
 def _resolve_labels_subdir(labels_subdir: str, representations: List[str]) -> str:
@@ -180,7 +189,7 @@ def _box_iou_xywh_norm(a: Tuple[float, float, float, float], b: Tuple[float, flo
 
 
 class FredDetectionDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 8
+    CACHE_VERSION = 9
 
     def __init__(
         self,
@@ -241,6 +250,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         self._folder_available_stems: Dict[str, set[str]] = {}
         self._folder_tracks: Dict[str, Optional[dict]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
+        self._folder_event_frame_indices: Dict[str, List[Tuple[float, Path]]] = {}
 
         if not self.representations:
             raise ValueError("representations must not be empty.")
@@ -271,6 +281,9 @@ class FredDetectionDataset(torch.utils.data.Dataset):
     def _dataset_rgb_dir(self, folder: str, rep: str) -> Path:
         dirname = _DATASET_RGB_REPS[rep.lower()]
         return self.labels_root / folder / dirname if self.folders is not None else self.labels_root / dirname
+
+    def _dataset_event_frames_dir(self, folder: str) -> Path:
+        return self.labels_root / folder / "Event" / "Frames" if self.folders is not None else self.labels_root / "Event" / "Frames"
 
     def _parse_rgb_time(self, path: Path) -> Optional[float]:
         match = _RGB_TIME_RE.search(path.stem)
@@ -330,6 +343,48 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         after_t, after_path = rgb_index[idx]
         return before_path if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_path
 
+    def _build_event_frame_index(self, folder: str) -> List[Tuple[float, Path]]:
+        if folder in self._folder_event_frame_indices:
+            return self._folder_event_frame_indices[folder]
+        frames_dir = self._dataset_event_frames_dir(folder)
+        if not frames_dir.exists():
+            self._folder_event_frame_indices[folder] = []
+            return []
+        files = [
+            path
+            for pattern in ("*.png", "*.jpg", "*.jpeg")
+            for path in sorted(frames_dir.glob(pattern))
+            if not path.name.startswith(".") and not path.name.startswith("._")
+        ]
+        out: List[Tuple[float, Path]] = []
+        for path in files:
+            time_s = _parse_frame_time_s(path.stem, label_time_unit=self.label_time_unit)
+            if time_s is not None:
+                out.append((time_s, path))
+        out.sort(key=lambda item: item[0])
+        self._folder_event_frame_indices[folder] = out
+        return out
+
+    def _find_event_frame(self, folder: str, stem: str) -> Optional[Path]:
+        frames_dir = self._dataset_event_frames_dir(folder)
+        for suffix in (".png", ".jpg", ".jpeg"):
+            candidate = frames_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                return candidate
+        label_time_s = _parse_frame_time_s(stem, label_time_unit=self.label_time_unit)
+        frame_index = self._build_event_frame_index(folder)
+        if label_time_s is None or not frame_index:
+            return None
+        times = [t for t, _ in frame_index]
+        idx = int(np.searchsorted(times, label_time_s, side="left"))
+        if idx <= 0:
+            return frame_index[0][1]
+        if idx >= len(frame_index):
+            return frame_index[-1][1]
+        before_t, before_path = frame_index[idx - 1]
+        after_t, after_path = frame_index[idx]
+        return before_path if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_path
+
     def _resolve_input_path(self, folder: str, stem: str, rep: str) -> Optional[Path]:
         rendered_path = self._images_dir(folder) / f"{stem}_{rep}.png"
         if rendered_path.exists():
@@ -343,11 +398,15 @@ class FredDetectionDataset(torch.utils.data.Dataset):
             label_time_s = _parse_frame_time_s(stem, label_time_unit=self.label_time_unit)
             if label_time_s is not None:
                 return self._find_rgb_frame(folder, rep, label_time_s)
+        if _is_dataset_event_frame_rep(rep):
+            return self._find_event_frame(folder, stem)
         return None
 
     def _expected_input_path(self, folder: str, stem: str, rep: str) -> Path:
         if _is_dataset_rgb_rep(rep) and self.labels_subdir == "RGB_YOLO":
             return self._dataset_rgb_dir(folder, rep) / f"{stem}.jpg"
+        if _is_dataset_event_frame_rep(rep):
+            return self._dataset_event_frames_dir(folder) / f"{stem}.png"
         return self._images_dir(folder) / f"{stem}_{rep}.png"
 
     def _manifest_path(self, folder: str) -> Path:
@@ -369,6 +428,8 @@ class FredDetectionDataset(torch.utils.data.Dataset):
 
     def _validate_manifest_entry(self, folder: str, stem: str) -> None:
         if not self.verify_render_manifest:
+            return
+        if all(_is_dataset_native_rep(rep) for rep in self.representations):
             return
         manifest = self._load_render_manifest(folder)
         if manifest is None:
@@ -402,7 +463,7 @@ class FredDetectionDataset(torch.utils.data.Dataset):
         for rep in self.representations:
             rep_entry = rep_entries.get(rep)
             if rep_entry is None:
-                if _is_dataset_rgb_rep(rep):
+                if _is_dataset_rgb_rep(rep) or _is_dataset_event_frame_rep(rep):
                     continue
                 raise ValueError(f"Manifest representation '{rep}' missing for '{folder}/{stem}'.")
             expected_size = list(self.image_sizes[rep])

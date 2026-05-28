@@ -146,6 +146,38 @@ def _nearest_dataset_rgb(
     return min(parsed, key=lambda item: abs((item[1] - base) - frame_time_s))[0]
 
 
+def _nearest_dataset_event_frame(
+    labels_root: Path,
+    folder: str,
+    stem: str,
+    frame_time_s: float,
+    label_time_unit: float,
+):
+    if stem:
+        frames_dir = labels_root / folder / "Event" / "Frames" if folder else labels_root / "Event" / "Frames"
+        for suffix in (".png", ".jpg", ".jpeg"):
+            candidate = frames_dir / f"{stem}{suffix}"
+            if candidate.exists():
+                return candidate
+        if frames_dir.exists():
+            files = [
+                path
+                for pattern in ("*.png", "*.jpg", "*.jpeg")
+                for path in sorted(frames_dir.glob(pattern))
+                if not path.name.startswith(".") and not path.name.startswith("._")
+            ]
+            parsed = []
+            for path in files:
+                try:
+                    time_raw = int(path.stem.rsplit("_", 1)[-1])
+                except ValueError:
+                    continue
+                parsed.append((float(time_raw) * label_time_unit, path))
+            if parsed:
+                return min(parsed, key=lambda item: abs(item[0] - frame_time_s))[1]
+    return None
+
+
 def _load_backdrop(
     *,
     images_root: Path,
@@ -154,6 +186,7 @@ def _load_backdrop(
     frame_time_s: float,
     rep: str,
     frame_size: tuple[int, int],
+    label_time_unit: float = 1.0e-6,
 ):
     from PIL import Image
 
@@ -166,6 +199,10 @@ def _load_backdrop(
     rgb_path = _nearest_dataset_rgb(labels_root, folder, rep, frame_time_s)
     if rgb_path is not None and rgb_path.exists():
         return Image.open(rgb_path).convert("RGB").resize(frame_size, resample=Image.BILINEAR)
+    if rep.lower() in {"event_frames", "event_frame"}:
+        event_path = _nearest_dataset_event_frame(labels_root, folder, stem, frame_time_s, label_time_unit)
+        if event_path is not None and event_path.exists():
+            return Image.open(event_path).convert("RGB").resize(frame_size, resample=Image.BILINEAR)
     return None
 
 
@@ -304,6 +341,7 @@ def main() -> None:
                     frame_time_s=sample.frame_time_s,
                     rep=args.backdrop_rep,
                     frame_size=frame_size_t,
+                    label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
                 )
                 frames.append(
                     _render_forecast_overlay(
