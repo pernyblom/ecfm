@@ -152,6 +152,19 @@ The overlay colors are:
 - green: future ground truth boxes
 - cyan: optional Kalman or last-four extrapolation baseline
 
+Acceleration Field
+
+Estimate center acceleration at each forecast anchor by fitting a constant
+acceleration curve over the same history+future window used by forecasting:
+
+```bash
+python experiments/kalman_ml_forecasting/acceleration_field.py --config experiments/kalman_ml_forecasting/configs/base.yaml --split train --max-folders 20 --max-samples 5000 --grid-cols 24 --grid-rows 14
+```
+
+The script writes sample data as `.npz` and `.csv`, plus a binned vector-field
+PNG. If `matplotlib` is installed it uses a quiver plot; otherwise it falls back
+to a PIL renderer.
+
 Metrics
 - The trainer reports the learned model metrics, configured Kalman baseline
   metrics, and last-four extrapolation metrics in the same validation pass.
