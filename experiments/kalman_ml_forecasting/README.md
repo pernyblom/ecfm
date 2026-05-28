@@ -54,6 +54,9 @@ Evaluation protocol:
 - `train.eval_splits_each_epoch` controls non-training evaluation after each
   epoch. The default evaluates `train_eval`, a capped subset of
   `data.split_files.train`, and `val`.
+- To make `train_eval` a disjoint random holdout from `data.split_files.train`,
+  set `data.train_eval_split.enabled: true`. The split is folder-level: training
+  uses the remaining folders, and `train_eval` uses the held-out folders.
 - Best checkpoints are selected with `train.best_metric_split`,
   `train.best_metric`, and `train.best_metric_mode`.
 - To keep the test split untouched during training, set `data.split_files.val`

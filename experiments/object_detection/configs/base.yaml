@@ -7,6 +7,14 @@ data:
     # Set this to a held-out test split and enable train.run_test_on_best to
     # evaluate test only once from the best validation checkpoint.
     test:
+  # Optional random folder-level holdout from split_files.train. When enabled,
+  # the train dataset uses the remaining folders and train_eval uses the held-out
+  # folders, so per-epoch train_eval samples are not trained on.
+  train_eval_split:
+    enabled: false
+    eval_fraction: 0.1
+    eval_count:
+    seed: 123
   # auto uses RGB_YOLO for RGB-only training and Event_YOLO whenever an event branch is present.
   labels_subdir: auto
   representations: ["xt_my", "yt_mx", "cstr3"]

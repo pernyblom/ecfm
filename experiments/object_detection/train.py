@@ -64,13 +64,23 @@ def _collate(batch: List[DetectionSample]):
     )
 
 
-def _build_dataset(cfg: Dict, split: str, *, split_file_key: str | None = None) -> FredDetectionDataset:
+def _build_dataset(
+    cfg: Dict,
+    split: str,
+    *,
+    split_file_key: str | None = None,
+    folders_override: List[str] | None = None,
+) -> FredDetectionDataset:
     data_cfg = cfg["data"]
     split_files = data_cfg.get("split_files")
-    folders = None
     file_key = split_file_key or split
-    if split_files and split_files.get(file_key):
-        folders = _read_split_file(Path(split_files[file_key]))
+    folders = (
+        folders_override
+        if folders_override is not None
+        else _read_split_file(Path(split_files[file_key]))
+        if split_files and split_files.get(file_key)
+        else None
+    )
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
     image_sizes = resolve_representation_image_sizes(data_cfg)
     return FredDetectionDataset(
@@ -98,6 +108,36 @@ def _build_dataset(cfg: Dict, split: str, *, split_file_key: str | None = None) 
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
         show_build_progress=bool(data_cfg.get("show_build_progress", True)),
     )
+
+
+def _split_train_eval_folders(cfg: Dict) -> tuple[List[str] | None, List[str] | None]:
+    data_cfg = cfg["data"]
+    split_cfg = dict(data_cfg.get("train_eval_split") or {})
+    if not bool(split_cfg.get("enabled", False)):
+        return None, None
+    split_files = data_cfg.get("split_files") or {}
+    train_split = split_files.get("train")
+    if not train_split:
+        raise ValueError("data.train_eval_split.enabled requires data.split_files.train.")
+    folders = _read_split_file(Path(train_split))
+    if len(folders) < 2:
+        raise ValueError("data.train_eval_split.enabled requires at least two train folders.")
+    eval_count_raw = split_cfg.get("eval_count")
+    if eval_count_raw is None:
+        fraction = float(split_cfg.get("eval_fraction", 0.1))
+        if not 0.0 < fraction < 1.0:
+            raise ValueError("data.train_eval_split.eval_fraction must be between 0 and 1.")
+        eval_count = max(1, int(round(len(folders) * fraction)))
+    else:
+        eval_count = int(eval_count_raw)
+    eval_count = max(1, min(eval_count, len(folders) - 1))
+    generator = torch.Generator()
+    generator.manual_seed(int(split_cfg.get("seed", data_cfg.get("seed", 123))))
+    perm = torch.randperm(len(folders), generator=generator).tolist()
+    eval_idx = set(perm[:eval_count])
+    train_folders = [folder for idx, folder in enumerate(folders) if idx not in eval_idx]
+    eval_folders = [folder for idx, folder in enumerate(folders) if idx in eval_idx]
+    return train_folders, eval_folders
 
 
 def _weighted_mean_dict(rows: List[Dict[str, float]], weights: List[int]) -> Dict[str, float]:
@@ -450,13 +490,22 @@ def main() -> None:
     best_metric_split = str(train_cfg.get("best_metric_split", "val"))
     best_metric = str(train_cfg.get("best_metric", "loss"))
     best_metric_mode = str(train_cfg.get("best_metric_mode", "min"))
+    train_folders_override, train_eval_folders_override = _split_train_eval_folders(cfg)
     print("Building train dataset...")
-    train_set = _build_dataset(cfg, "train")
+    train_set = _build_dataset(cfg, "train", folders_override=train_folders_override)
     eval_sets = {}
     if "train_eval" in eval_splits_each_epoch:
-        source_split = str(cfg["data"].get("train_eval_source_split", "train"))
-        print(f"Building train_eval dataset from split_files.{source_split}...")
-        eval_sets["train_eval"] = _build_dataset(cfg, "train_eval", split_file_key=source_split)
+        if train_eval_folders_override is not None:
+            print("Building train_eval dataset from held-out train_eval_split folders...")
+            eval_sets["train_eval"] = _build_dataset(
+                cfg,
+                "train_eval",
+                folders_override=train_eval_folders_override,
+            )
+        else:
+            source_split = str(cfg["data"].get("train_eval_source_split", "train"))
+            print(f"Building train_eval dataset from split_files.{source_split}...")
+            eval_sets["train_eval"] = _build_dataset(cfg, "train_eval", split_file_key=source_split)
     if "val" in eval_splits_each_epoch or best_metric_split == "val":
         print("Building val dataset...")
         eval_sets["val"] = _build_dataset(cfg, "val")
