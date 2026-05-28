@@ -143,6 +143,13 @@ class KalmanResidualForecaster(nn.Module):
             )
         if self.initial_state_source not in {"last_four", "kalman_filter"}:
             raise ValueError("initial_state_source must be one of: last_four, kalman_filter.")
+        if not self.representations and not (
+            self.use_filter_state_features or self.filter_covariance_features != "none"
+        ):
+            raise ValueError(
+                "At least one representation is required unless filter state "
+                "or covariance features are enabled."
+            )
         self.encoders = nn.ModuleDict(
             {
                 rep: build_single_encoder(

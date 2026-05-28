@@ -160,6 +160,9 @@ Metrics
 
 Extension points
 - Add or remove branches with `data.representations`.
+- Use `data.representations: []` to train a residual model without image/CNN
+  inputs. This is only valid when `model.use_filter_state_features: true` or
+  `model.filter_covariance_features` is `diag`/`full`.
 - Use grid-split render aliases such as `xt_my_10x10` as in object detection.
 - Set `model.predict_size_residuals: false` to learn only center acceleration
   residuals while leaving size dynamics at constant velocity.

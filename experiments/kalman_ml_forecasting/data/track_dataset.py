@@ -159,8 +159,6 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             raise ValueError("frame_size must contain positive width and height.")
         if self.history_ms <= 0 or self.forecast_ms <= 0:
             raise ValueError("history_ms and forecast_ms must be > 0.")
-        if not self.representations:
-            raise ValueError("representations must not be empty.")
         missing_sizes = [rep for rep in self.representations if rep not in self.image_sizes]
         if missing_sizes:
             raise ValueError(f"Missing image sizes for representations: {missing_sizes}")

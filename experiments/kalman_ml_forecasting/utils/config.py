@@ -32,7 +32,7 @@ def _base_representation(rep: str) -> str:
 def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tuple[int, int]]:
     reps = list(data_cfg.get("representations", []))
     if not reps:
-        raise ValueError("data.representations must not be empty.")
+        return {}
 
     explicit_sizes = data_cfg.get("image_sizes")
     if explicit_sizes:
@@ -78,4 +78,3 @@ def read_split_file(path: Path) -> list[str]:
         if line:
             out.append(line.strip("/"))
     return out
-
