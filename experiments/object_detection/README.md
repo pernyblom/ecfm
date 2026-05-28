@@ -245,6 +245,17 @@ Train CenterNet:
 python experiments/object_detection/train.py --config experiments/object_detection/configs/centernet.yaml
 ```
 
+Training evaluation protocol:
+- `train.eval_splits_each_epoch` controls non-training evaluation after each
+  epoch. The default evaluates `train_eval`, a capped subset of
+  `data.split_files.train`, and `val`.
+- Best checkpoints are selected with `train.best_metric_split`,
+  `train.best_metric`, and `train.best_metric_mode`.
+- To reserve test evaluation for the selected model, set `data.split_files.val`
+  to a validation split and `data.split_files.test` to the held-out test split,
+  then enable `train.run_test_on_best: true`. The script reloads `best.pt` after
+  training and writes `train.test_metrics_json`.
+
 RGB-only training
 - Set `data.representations: ["rgb"]` or `["padded_rgb"]`.
 - With `data.labels_subdir: auto`, the dataset uses `RGB_YOLO` when all model

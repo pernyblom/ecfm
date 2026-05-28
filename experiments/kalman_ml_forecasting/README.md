@@ -50,6 +50,17 @@ Train
 python experiments/kalman_ml_forecasting/train.py --config experiments/kalman_ml_forecasting/configs/base.yaml
 ```
 
+Evaluation protocol:
+- `train.eval_splits_each_epoch` controls non-training evaluation after each
+  epoch. The default evaluates `train_eval`, a capped subset of
+  `data.split_files.train`, and `val`.
+- Best checkpoints are selected with `train.best_metric_split`,
+  `train.best_metric`, and `train.best_metric_mode`.
+- To keep the test split untouched during training, set `data.split_files.val`
+  to a validation split and `data.split_files.test` to the held-out test split,
+  then enable `train.run_test_on_best: true`. The script reloads `best.pt` after
+  training and writes `train.test_metrics_json`.
+
 Optimize Kalman Parameters
 
 Tune the Kalman filter trust parameters on the training split only:

@@ -57,10 +57,11 @@ def _collate(batch: List[KalmanForecastSample]) -> Batch:
     )
 
 
-def _build_dataset(cfg: Dict, split: str) -> TrackKalmanForecastDataset:
+def _build_dataset(cfg: Dict, split: str, *, split_file_key: str | None = None) -> TrackKalmanForecastDataset:
     data_cfg = cfg["data"]
     split_files = data_cfg.get("split_files")
-    folders = read_split_file(Path(split_files[split])) if split_files else None
+    file_key = split_file_key or split
+    folders = read_split_file(Path(split_files[file_key])) if split_files and split_files.get(file_key) else None
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
@@ -84,7 +85,7 @@ def _build_dataset(cfg: Dict, split: str) -> TrackKalmanForecastDataset:
         label_period_s=data_cfg.get("label_period_s"),
         max_tracks=data_cfg.get(f"max_tracks_{split}", data_cfg.get("max_tracks")),
         max_samples=max_samples,
-        seed=int(data_cfg.get("seed", 123)) + (0 if split == "train" else 1),
+        seed=int(data_cfg.get("seed", 123)) + {"train": 0, "train_eval": 1, "val": 2, "test": 3}.get(split, 4),
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
     )
@@ -181,6 +182,16 @@ def _save_checkpoint(path: Path, state: Dict) -> None:
     tmp.replace(path)
 
 
+def _metric_improved(value: float, best: float | None, *, mode: str) -> bool:
+    if best is None:
+        return True
+    if mode == "min":
+        return value < best
+    if mode == "max":
+        return value > best
+    raise ValueError(f"Unknown metric mode: {mode}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -188,14 +199,25 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    train_cfg = cfg["train"]
+    eval_splits_each_epoch = list(train_cfg.get("eval_splits_each_epoch", ["val"]))
+    best_metric_split = str(train_cfg.get("best_metric_split", "val"))
+    best_metric = str(train_cfg.get("best_metric", "loss"))
+    best_metric_mode = str(train_cfg.get("best_metric_mode", "min"))
     print("Building train dataset...")
     train_set = _build_dataset(cfg, "train")
-    print("Building val dataset...")
-    val_set = _build_dataset(cfg, "val")
+    eval_sets = {}
+    if "train_eval" in eval_splits_each_epoch:
+        source_split = str(cfg["data"].get("train_eval_source_split", "train"))
+        print(f"Building train_eval dataset from split_files.{source_split}...")
+        eval_sets["train_eval"] = _build_dataset(cfg, "train_eval", split_file_key=source_split)
+    if "val" in eval_splits_each_epoch or best_metric_split == "val":
+        print("Building val dataset...")
+        eval_sets["val"] = _build_dataset(cfg, "val")
     print(f"Train samples: {len(train_set)}")
-    print(f"Val samples: {len(val_set)}")
+    for name, dataset in eval_sets.items():
+        print(f"{name} samples: {len(dataset)}")
 
-    train_cfg = cfg["train"]
     device = torch.device(train_cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
     model = build_model(cfg, device)
     optimizer = torch.optim.AdamW(
@@ -204,7 +226,7 @@ def main() -> None:
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
     )
     start_epoch = 0
-    best_val = None
+    best_score = None
     resume = args.resume_checkpoint or train_cfg.get("resume_checkpoint")
     if resume:
         state = torch.load(Path(resume), map_location=device)
@@ -212,7 +234,7 @@ def main() -> None:
         if "optim" in state:
             optimizer.load_state_dict(state["optim"])
         start_epoch = int(state.get("epoch", -1)) + 1
-        best_val = state.get("best_val")
+        best_score = state.get("best_score", state.get("best_val"))
         print(f"Resumed {resume} at epoch {start_epoch}")
 
     train_loader = _make_loader(
@@ -221,12 +243,15 @@ def main() -> None:
         shuffle=True,
         train_cfg=train_cfg,
     )
-    val_loader = _make_loader(
-        val_set,
-        batch_size=int(train_cfg["batch_size"]),
-        shuffle=False,
-        train_cfg=train_cfg,
-    )
+    eval_loaders = {
+        name: _make_loader(
+            dataset,
+            batch_size=int(train_cfg["batch_size"]),
+            shuffle=False,
+            train_cfg=train_cfg,
+        )
+        for name, dataset in eval_sets.items()
+    }
 
     ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/kalman_ml_forecasting_ckpt"))
     metrics_jsonl = Path(train_cfg.get("metrics_jsonl", ckpt_dir / "metrics.jsonl"))
@@ -240,36 +265,95 @@ def main() -> None:
             cfg=cfg,
             train=True,
         )
+        eval_metrics = {}
         with torch.no_grad():
-            val_metrics = _run_epoch(
+            for split_name in eval_splits_each_epoch:
+                loader = eval_loaders.get(split_name)
+                if loader is None:
+                    continue
+                print(f"Running {split_name} evaluation")
+                eval_metrics[split_name] = _run_epoch(
+                    model=model,
+                    loader=loader,
+                    device=device,
+                    optimizer=optimizer,
+                    cfg=cfg,
+                    train=False,
+                )
+        print(f"train {json.dumps(train_metrics, sort_keys=True)}")
+        for split_name, metrics in eval_metrics.items():
+            print(f"{split_name} {json.dumps(metrics, sort_keys=True)}")
+        metrics_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_jsonl.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"epoch": epoch, "train": train_metrics, **eval_metrics}) + "\n")
+
+        selected_metrics = eval_metrics.get(best_metric_split)
+        if selected_metrics is None:
+            raise RuntimeError(f"Best metric split '{best_metric_split}' was not evaluated this epoch.")
+        metric_value = selected_metrics.get(best_metric)
+        state = {
+            "model": model.state_dict(),
+            "optim": optimizer.state_dict(),
+            "epoch": epoch,
+            "best_score": best_score,
+            "best_metric": best_metric,
+            "best_metric_split": best_metric_split,
+            "best_metric_mode": best_metric_mode,
+            "config": cfg,
+        }
+        if metric_value is not None and _metric_improved(float(metric_value), best_score, mode=best_metric_mode):
+            best_score = float(metric_value)
+            state["best_score"] = best_score
+            _save_checkpoint(ckpt_dir / "best.pt", state)
+        ckpt_every = int(train_cfg.get("checkpoint_every", 1))
+        if ckpt_every > 0 and (epoch + 1) % ckpt_every == 0:
+            _save_checkpoint(ckpt_dir / f"epoch_{epoch:03d}.pt", state)
+
+    if bool(train_cfg.get("run_test_on_best", False)):
+        split_files = cfg["data"].get("split_files") or {}
+        test_key = str(train_cfg.get("test_split_key", "test"))
+        if not split_files.get(test_key):
+            raise ValueError(f"train.run_test_on_best is true, but data.split_files.{test_key} is not configured.")
+        best_path = ckpt_dir / "best.pt"
+        if not best_path.exists():
+            raise FileNotFoundError(f"Cannot run test evaluation because best checkpoint is missing: {best_path}")
+        print(f"Loading best checkpoint for test evaluation: {best_path}")
+        state = torch.load(best_path, map_location=device)
+        model.load_state_dict(state["model"])
+        print(f"Building test dataset from split_files.{test_key}...")
+        test_set = _build_dataset(cfg, "test", split_file_key=test_key)
+        test_loader = _make_loader(
+            test_set,
+            batch_size=int(train_cfg["batch_size"]),
+            shuffle=False,
+            train_cfg=train_cfg,
+        )
+        with torch.no_grad():
+            test_metrics = _run_epoch(
                 model=model,
-                loader=val_loader,
+                loader=test_loader,
                 device=device,
                 optimizer=optimizer,
                 cfg=cfg,
                 train=False,
             )
-        print(f"train {json.dumps(train_metrics, sort_keys=True)}")
-        print(f"val   {json.dumps(val_metrics, sort_keys=True)}")
-        metrics_jsonl.parent.mkdir(parents=True, exist_ok=True)
-        with metrics_jsonl.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"epoch": epoch, "train": train_metrics, "val": val_metrics}) + "\n")
-
-        val_loss = val_metrics.get("loss")
-        state = {
-            "model": model.state_dict(),
-            "optim": optimizer.state_dict(),
-            "epoch": epoch,
-            "best_val": best_val,
-            "config": cfg,
-        }
-        if val_loss is not None and (best_val is None or val_loss < best_val):
-            best_val = val_loss
-            state["best_val"] = best_val
-            _save_checkpoint(ckpt_dir / "best.pt", state)
-        ckpt_every = int(train_cfg.get("checkpoint_every", 1))
-        if ckpt_every > 0 and (epoch + 1) % ckpt_every == 0:
-            _save_checkpoint(ckpt_dir / f"epoch_{epoch:03d}.pt", state)
+        print(f"test  {json.dumps(test_metrics, sort_keys=True)}")
+        test_metrics_json = Path(train_cfg.get("test_metrics_json", ckpt_dir / "best_test_metrics.json"))
+        test_metrics_json.parent.mkdir(parents=True, exist_ok=True)
+        test_metrics_json.write_text(
+            json.dumps(
+                {
+                    "checkpoint": str(best_path),
+                    "best_score": state.get("best_score"),
+                    "best_metric": state.get("best_metric"),
+                    "best_metric_split": state.get("best_metric_split"),
+                    "test": test_metrics,
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":
