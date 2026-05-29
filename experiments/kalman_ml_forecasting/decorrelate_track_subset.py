@@ -5,6 +5,7 @@ import csv
 import json
 from pathlib import Path
 import sys
+import time
 from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
@@ -99,6 +100,24 @@ def _decorrelation_score(
     }
 
 
+def _progress_iter(items, *, desc: str, enabled: bool):
+    if not enabled:
+        yield from items
+        return
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        total = len(items)
+        start = time.monotonic()
+        for idx, item in enumerate(items, start=1):
+            if idx == 1 or idx == total or idx % max(1, total // 20) == 0:
+                elapsed = time.monotonic() - start
+                print(f"{desc}: {idx}/{total} elapsed {elapsed:.1f}s")
+            yield item
+        return
+    yield from tqdm(items, desc=desc, unit="removal", dynamic_ncols=True)
+
+
 def _select_decorrelated_tracks(
     track_samples: dict[TrackKey, list[AccelSample]],
     *,
@@ -110,6 +129,7 @@ def _select_decorrelated_tracks(
     ridge_lambda: float,
     corr_weight: float,
     r2_weight: float,
+    show_progress: bool,
 ) -> tuple[list[TrackKey], dict[str, float]]:
     eligible = [
         key
@@ -129,7 +149,11 @@ def _select_decorrelated_tracks(
         corr_weight=corr_weight,
         r2_weight=r2_weight,
     )
-    while len(selected) > target_tracks:
+    removal_count = max(0, len(selected) - target_tracks)
+    if removal_count == 0:
+        return sorted(selected), current
+    removals = range(removal_count)
+    for _ in _progress_iter(removals, desc="Selecting decorrelated tracks", enabled=show_progress):
         candidates = list(selected)
         if 0 < greedy_candidates < len(candidates):
             candidates = [candidates[idx] for idx in rng.choice(len(candidates), size=greedy_candidates, replace=False)]
@@ -233,6 +257,7 @@ def main() -> None:
     parser.add_argument("--ridge-lambda", type=float, default=1.0e-3)
     parser.add_argument("--corr-weight", type=float, default=1.0)
     parser.add_argument("--r2-weight", type=float, default=1.0)
+    parser.add_argument("--no-progress", action="store_true", help="Disable selection progress output.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/kalman_ml_decorrelated_tracks"))
     parser.add_argument(
         "--write-filtered-tracks",
@@ -289,6 +314,7 @@ def main() -> None:
         ridge_lambda=float(args.ridge_lambda),
         corr_weight=float(args.corr_weight),
         r2_weight=float(args.r2_weight),
+        show_progress=not bool(args.no_progress),
     )
 
     output_dir = args.output_dir
