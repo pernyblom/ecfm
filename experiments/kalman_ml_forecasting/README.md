@@ -182,10 +182,20 @@ python experiments/kalman_ml_forecasting/decorrelate_track_subset.py --config ex
 The script reads all folders in the split, fits the same center
 constant-acceleration curves as the motion-field script, groups samples by
 `(folder, track_id)`, and greedily keeps a global subset with a lower score for
-a simple ridge-linear predictor from `[cx, cy, vx, vy]` to `[ax, ay]`. It writes
-a CSV manifest and a fine-grained split text file with `folder,track_id` rows.
-Use `--write-filtered-tracks` to also write per-folder filtered track files
-under the output directory without modifying the dataset.
+a simple ridge-linear predictor from configured motion features to `[ax, ay]`.
+The default `--feature-mode motion_priors` uses centered image position,
+velocity, distance-to-center, and speed so the selection penalizes the visible
+edge-toward-center and high-speed-toward-lower-speed trends. `--feature-mode
+centered` uses only centered position and velocity, while `raw` preserves the
+old normalized top-left-origin position features.
+
+Selection uses per-track sufficient statistics, so candidate removals no longer
+rebuild all sample arrays. Runtime is mostly controlled by
+`--greedy-candidates`: lower values are faster and more approximate, while `0`
+evaluates every remaining track at each removal step. The script writes a CSV
+manifest and a fine-grained split text file with `folder,track_id` rows. Use
+`--write-filtered-tracks` to also write per-folder filtered track files under
+the output directory without modifying the dataset.
 
 Metrics
 - The trainer reports the learned model metrics, configured Kalman baseline
