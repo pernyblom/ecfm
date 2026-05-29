@@ -77,13 +77,16 @@ def _build_dataset(
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
     decorrelation_cfg = dict(data_cfg.get("decorrelation") or {})
     decorrelation_splits_raw = decorrelation_cfg.get("splits", ["train"])
-    decorrelation_splits = (
-        {str(decorrelation_splits_raw)}
-        if isinstance(decorrelation_splits_raw, str)
-        else {str(item) for item in decorrelation_splits_raw}
-    )
-    if not bool(decorrelation_cfg.get("enabled", False)) or split not in decorrelation_splits:
+    if isinstance(decorrelation_splits_raw, str):
+        decorrelation_splits = {decorrelation_splits_raw}
+    else:
+        decorrelation_splits = {str(item) for item in decorrelation_splits_raw}
+    if not bool(decorrelation_cfg.get("enabled", False)) or (
+        "all" not in decorrelation_splits and split not in decorrelation_splits
+    ):
         decorrelation_cfg = {}
+    else:
+        decorrelation_cfg["_split_name"] = split
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),

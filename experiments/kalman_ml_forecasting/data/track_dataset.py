@@ -665,7 +665,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         sample_xy = np.einsum("ni,nj->nij", x, y)
         sample_yy = np.einsum("ni,nj->nij", y, y)
 
-        seed = int(cfg.get("seed", self.seed))
+        seed_raw = cfg.get("seed")
+        seed = self.seed if seed_raw is None else int(seed_raw)
         greedy_candidates = int(cfg.get("greedy_candidates", 64))
         ridge_lambda = float(cfg.get("ridge_lambda", 1.0e-3))
         corr_weight = float(cfg.get("corr_weight", 1.0))
@@ -719,8 +720,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             current_score = best_score
         before = len(self.samples)
         self.samples = [sample for sample, keep in zip(self.samples, selected) if bool(keep)]
+        split_name = cfg.get("_split_name")
+        split_text = f" for split '{split_name}'" if split_name else ""
         print(
-            "Applied Kalman ML sample decorrelation: "
+            f"Applied Kalman ML sample decorrelation{split_text}: "
             f"kept {len(self.samples)}/{before} samples "
             f"(feature_mode={cfg.get('feature_mode', 'motion_priors')}, greedy_candidates={greedy_candidates}, "
             f"score={before_score['score']:.6g}->{current_score['score']:.6g})."

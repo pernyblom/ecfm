@@ -179,7 +179,7 @@ drops individual forecast windows, not whole tracks:
 data:
   decorrelation:
     enabled: true
-    splits: ["train"]
+    splits: ["train", "train_eval", "val"]
     keep_fraction: 0.5
     feature_mode: motion_priors
     greedy_candidates: 64
@@ -194,6 +194,13 @@ edge-toward-center and high-speed-toward-lower-speed trends. `centered` uses
 only centered position and velocity, while `raw` preserves normalized
 top-left-origin position features. The sample cache key includes these settings,
 so changing them rebuilds the cached dataset.
+
+Each split listed in `splits` is decorrelated independently when that dataset is
+built, so `["train", "train_eval", "val"]` runs three separate selections on
+three separate sample pools. Use `["all"]` to apply the same rule to every
+constructed split. Leave `seed` blank to use the dataset seed, which is already
+offset by split; set it explicitly only when you want the same candidate
+sampling seed everywhere.
 
 The standalone script still exists for producing a coarse track-level manifest:
 

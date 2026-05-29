@@ -44,9 +44,9 @@ data:
   max_samples_test:
   filter_missing_representations: true
   # Optional sample-level decorrelation during dataset construction, applied
-  # after max_samples_* caps. This drops forecast windows, not whole tracks. It
-  # is intended for training splits so validation/test distributions remain
-  # untouched.
+  # after max_samples_* caps. This drops forecast windows, not whole tracks.
+  # Each configured split is decorrelated independently when its dataset is
+  # built. Use ["all"] to apply it to every constructed split.
   decorrelation:
     enabled: false
     splits: ["train"]
@@ -58,7 +58,8 @@ data:
     # motion_priors: centered position + velocity + distance-to-center + speed
     feature_mode: motion_priors
     greedy_candidates: 64
-    seed: 123
+    # Leave blank to use the dataset seed, which is already offset per split.
+    seed:
     ridge_lambda: 1.0e-3
     corr_weight: 1.0
     r2_weight: 1.0
