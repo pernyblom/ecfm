@@ -172,8 +172,30 @@ quiver plots; otherwise it falls back to a PIL renderer.
 
 Decorrelated Track Subsets
 
-Create a first-pass global track subset that reduces how easily fitted
-acceleration can be predicted from anchor position and velocity:
+For training, prefer sample-level decorrelation in the dataset config. This
+drops individual forecast windows, not whole tracks:
+
+```yaml
+data:
+  decorrelation:
+    enabled: true
+    splits: ["train"]
+    keep_fraction: 0.5
+    feature_mode: motion_priors
+    greedy_candidates: 64
+```
+
+After the normal `max_samples_*` cap is applied, the dataset fits the same
+center constant-acceleration curve for each remaining forecast window, then
+greedily removes samples so `[ax, ay]` is less predictable from the configured
+motion features. The default `motion_priors` mode uses centered image position,
+velocity, distance-to-center, and speed so the selection penalizes the visible
+edge-toward-center and high-speed-toward-lower-speed trends. `centered` uses
+only centered position and velocity, while `raw` preserves normalized
+top-left-origin position features. The sample cache key includes these settings,
+so changing them rebuilds the cached dataset.
+
+The standalone script still exists for producing a coarse track-level manifest:
 
 ```bash
 python experiments/kalman_ml_forecasting/decorrelate_track_subset.py --config experiments/kalman_ml_forecasting/configs/base.yaml --split train --keep-fraction 0.5 --output-dir outputs/kalman_ml_decorrelated_tracks
@@ -183,12 +205,6 @@ The script reads all folders in the split, fits the same center
 constant-acceleration curves as the motion-field script, groups samples by
 `(folder, track_id)`, and greedily keeps a global subset with a lower score for
 a simple ridge-linear predictor from configured motion features to `[ax, ay]`.
-The default `--feature-mode motion_priors` uses centered image position,
-velocity, distance-to-center, and speed so the selection penalizes the visible
-edge-toward-center and high-speed-toward-lower-speed trends. `--feature-mode
-centered` uses only centered position and velocity, while `raw` preserves the
-old normalized top-left-origin position features.
-
 Selection uses per-track sufficient statistics, so candidate removals no longer
 rebuild all sample arrays. Runtime is mostly controlled by
 `--greedy-candidates`: lower values are faster and more approximate, while `0`

@@ -75,6 +75,15 @@ def _build_dataset(
         else None
     )
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
+    decorrelation_cfg = dict(data_cfg.get("decorrelation") or {})
+    decorrelation_splits_raw = decorrelation_cfg.get("splits", ["train"])
+    decorrelation_splits = (
+        {str(decorrelation_splits_raw)}
+        if isinstance(decorrelation_splits_raw, str)
+        else {str(item) for item in decorrelation_splits_raw}
+    )
+    if not bool(decorrelation_cfg.get("enabled", False)) or split not in decorrelation_splits:
+        decorrelation_cfg = {}
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
@@ -100,6 +109,7 @@ def _build_dataset(
         seed=int(data_cfg.get("seed", 123)) + {"train": 0, "train_eval": 1, "val": 2, "test": 3}.get(split, 4),
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
+        sample_decorrelation=decorrelation_cfg,
     )
 
 

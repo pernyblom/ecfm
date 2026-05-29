@@ -43,6 +43,26 @@ data:
   max_samples_val: 5000
   max_samples_test:
   filter_missing_representations: true
+  # Optional sample-level decorrelation during dataset construction, applied
+  # after max_samples_* caps. This drops forecast windows, not whole tracks. It
+  # is intended for training splits so validation/test distributions remain
+  # untouched.
+  decorrelation:
+    enabled: false
+    splits: ["train"]
+    keep_fraction: 0.5
+    target_samples:
+    min_samples: 4
+    # raw: normalized image position + velocity
+    # centered: centered image position + velocity
+    # motion_priors: centered position + velocity + distance-to-center + speed
+    feature_mode: motion_priors
+    greedy_candidates: 64
+    seed: 123
+    ridge_lambda: 1.0e-3
+    corr_weight: 1.0
+    r2_weight: 1.0
+    progress: true
   seed: 123
   cache_dir: outputs/kalman_ml_forecasting_cache
 

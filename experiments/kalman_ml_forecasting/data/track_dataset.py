@@ -7,7 +7,8 @@ import json
 import pickle
 from pathlib import Path
 import re
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -38,6 +39,58 @@ _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 _DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
 _DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
+
+
+def _sample_motion_features(
+    *,
+    cx_norm: float,
+    cy_norm: float,
+    vx_px_s: float,
+    vy_px_s: float,
+    feature_mode: str,
+) -> list[float]:
+    dx = float(cx_norm) - 0.5
+    dy = float(cy_norm) - 0.5
+    vx = float(vx_px_s)
+    vy = float(vy_px_s)
+    if feature_mode == "raw":
+        return [float(cx_norm), float(cy_norm), vx, vy]
+    if feature_mode == "centered":
+        return [dx, dy, vx, vy]
+    if feature_mode == "motion_priors":
+        return [dx, dy, vx, vy, float(np.hypot(dx, dy)), float(np.hypot(vx, vy))]
+    raise ValueError("feature_mode must be one of: raw, centered, motion_priors.")
+
+
+def _fit_center_constant_acceleration(
+    times_s: np.ndarray,
+    centers_px: np.ndarray,
+    *,
+    anchor_time_s: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rel_t = times_s.astype(np.float64) - float(anchor_time_s)
+    design = np.stack([np.ones_like(rel_t), rel_t, 0.5 * rel_t * rel_t], axis=1)
+    coeff, *_ = np.linalg.lstsq(design, centers_px.astype(np.float64), rcond=None)
+    return coeff[0], coeff[1], coeff[2]
+
+
+def _progress_iter(items: Iterable[int], *, desc: str, enabled: bool):
+    if not enabled:
+        yield from items
+        return
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        items = list(items)
+        total = len(items)
+        start = time.monotonic()
+        for idx, item in enumerate(items, start=1):
+            if idx == 1 or idx == total or idx % max(1, total // 20) == 0:
+                elapsed = time.monotonic() - start
+                print(f"{desc}: {idx}/{total} elapsed {elapsed:.1f}s")
+            yield item
+        return
+    yield from tqdm(items, desc=desc, unit="removal", dynamic_ncols=True)
 
 
 def _parse_frame_time_raw(name: str) -> Optional[int]:
@@ -124,6 +177,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         cache_dir: Optional[Path] = None,
         filter_missing_representations: bool = True,
         require_representations: bool = True,
+        sample_decorrelation: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -150,6 +204,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self.filter_missing_representations = bool(filter_missing_representations)
         self.require_representations = bool(require_representations)
+        self.sample_decorrelation = dict(sample_decorrelation or {})
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
@@ -174,6 +229,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         else:
             self.samples = self._build_samples()
             self._apply_sample_limit()
+            self._apply_sample_decorrelation()
             self._save_cache()
 
     def _labels_dir(self, folder: str) -> Path:
@@ -498,6 +554,178 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 raise FileNotFoundError(f"Missing cached representation for {sample.get('anchor_stem')}")
         self.samples = kept
 
+    def _sample_decorrelation_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        feature_mode = str(self.sample_decorrelation.get("feature_mode", "motion_priors"))
+        frame_w, frame_h = self.frame_size
+        rows_x = []
+        rows_y = []
+        for sample in self.samples:
+            boxes = np.concatenate(
+                [
+                    np.asarray(sample["past_boxes"], dtype=np.float64),
+                    np.asarray(sample["future_boxes"], dtype=np.float64),
+                ],
+                axis=0,
+            )
+            times = np.concatenate(
+                [
+                    np.asarray(sample["past_times_s"], dtype=np.float64),
+                    np.asarray(sample["future_times_s"], dtype=np.float64),
+                ],
+                axis=0,
+            )
+            centers_px = np.stack([boxes[:, 0] * frame_w, boxes[:, 1] * frame_h], axis=1)
+            pos, vel, accel = _fit_center_constant_acceleration(
+                times,
+                centers_px,
+                anchor_time_s=float(sample["past_times_s"][-1]),
+            )
+            rows_x.append(
+                _sample_motion_features(
+                    cx_norm=float(pos[0] / frame_w),
+                    cy_norm=float(pos[1] / frame_h),
+                    vx_px_s=float(vel[0]),
+                    vy_px_s=float(vel[1]),
+                    feature_mode=feature_mode,
+                )
+            )
+            rows_y.append([float(accel[0]), float(accel[1])])
+        return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.float64)
+
+    @staticmethod
+    def _score_decorrelation_stats(
+        n: float,
+        sum_x: np.ndarray,
+        sum_y: np.ndarray,
+        sum_xx: np.ndarray,
+        sum_xy: np.ndarray,
+        sum_yy: np.ndarray,
+        *,
+        ridge_lambda: float,
+        corr_weight: float,
+        r2_weight: float,
+    ) -> dict[str, float]:
+        if n < 4:
+            return {
+                "score": float("inf"),
+                "samples": float(n),
+                "mean_abs_corr": float("inf"),
+                "mean_r2": float("inf"),
+            }
+        centered_xx = sum_xx - np.outer(sum_x, sum_x) / n
+        centered_xy = sum_xy - np.outer(sum_x, sum_y) / n
+        centered_yy = sum_yy - np.outer(sum_y, sum_y) / n
+        std_x = np.sqrt(np.maximum(np.diag(centered_xx) / n, 1.0e-18))
+        std_y = np.sqrt(np.maximum(np.diag(centered_yy) / n, 1.0e-18))
+        xtx = centered_xx / np.outer(std_x, std_x)
+        xty = centered_xy / np.outer(std_x, std_y)
+        yty = centered_yy / np.outer(std_y, std_y)
+        corr = np.abs(xty / max(1.0, n - 1.0))
+        ridge = float(ridge_lambda) * np.eye(xtx.shape[0], dtype=np.float64)
+        beta = np.linalg.solve(xtx + ridge, xty)
+        sse = np.diag(yty - 2.0 * beta.T @ xty + beta.T @ xtx @ beta)
+        sst = np.maximum(np.diag(yty), 1.0e-9)
+        r2 = 1.0 - sse / np.maximum(sst, 1.0e-9)
+        mean_abs_corr = float(np.mean(corr))
+        mean_r2 = float(np.mean(np.maximum(r2, 0.0)))
+        return {
+            "score": float(corr_weight * mean_abs_corr + r2_weight * mean_r2),
+            "samples": float(n),
+            "mean_abs_corr": mean_abs_corr,
+            "mean_r2": mean_r2,
+        }
+
+    def _apply_sample_decorrelation(self) -> None:
+        cfg = self.sample_decorrelation
+        if not bool(cfg.get("enabled", False)):
+            return
+        if not self.samples:
+            return
+        keep_fraction = cfg.get("keep_fraction", 1.0)
+        target_samples_raw = cfg.get("target_samples")
+        if target_samples_raw is None:
+            if not 0.0 < float(keep_fraction) <= 1.0:
+                raise ValueError("data.decorrelation.keep_fraction must be in (0, 1].")
+            target_samples = max(1, int(round(len(self.samples) * float(keep_fraction))))
+        else:
+            target_samples = int(target_samples_raw)
+        min_samples = int(cfg.get("min_samples", 4))
+        target_samples = max(min_samples, min(target_samples, len(self.samples)))
+        if target_samples >= len(self.samples):
+            return
+
+        x, y = self._sample_decorrelation_arrays()
+        n = float(x.shape[0])
+        sum_x = x.sum(axis=0)
+        sum_y = y.sum(axis=0)
+        sum_xx = x.T @ x
+        sum_xy = x.T @ y
+        sum_yy = y.T @ y
+        sample_xx = np.einsum("ni,nj->nij", x, x)
+        sample_xy = np.einsum("ni,nj->nij", x, y)
+        sample_yy = np.einsum("ni,nj->nij", y, y)
+
+        seed = int(cfg.get("seed", self.seed))
+        greedy_candidates = int(cfg.get("greedy_candidates", 64))
+        ridge_lambda = float(cfg.get("ridge_lambda", 1.0e-3))
+        corr_weight = float(cfg.get("corr_weight", 1.0))
+        r2_weight = float(cfg.get("r2_weight", 1.0))
+        show_progress = bool(cfg.get("progress", True))
+        rng = np.random.default_rng(seed)
+        before_score = self._score_decorrelation_stats(
+            n,
+            sum_x,
+            sum_y,
+            sum_xx,
+            sum_xy,
+            sum_yy,
+            ridge_lambda=ridge_lambda,
+            corr_weight=corr_weight,
+            r2_weight=r2_weight,
+        )
+        current_score = before_score
+        selected = np.ones(len(self.samples), dtype=bool)
+        removals = range(len(self.samples) - target_samples)
+        for _ in _progress_iter(removals, desc="Decorrelating Kalman ML samples", enabled=show_progress):
+            candidates = np.nonzero(selected)[0]
+            if 0 < greedy_candidates < candidates.size:
+                candidates = rng.choice(candidates, size=greedy_candidates, replace=False)
+            best_idx = None
+            best_score = None
+            for idx in candidates:
+                score = self._score_decorrelation_stats(
+                    n - 1.0,
+                    sum_x - x[idx],
+                    sum_y - y[idx],
+                    sum_xx - sample_xx[idx],
+                    sum_xy - sample_xy[idx],
+                    sum_yy - sample_yy[idx],
+                    ridge_lambda=ridge_lambda,
+                    corr_weight=corr_weight,
+                    r2_weight=r2_weight,
+                )
+                if best_score is None or score["score"] < best_score["score"]:
+                    best_idx = int(idx)
+                    best_score = score
+            if best_idx is None:
+                break
+            selected[best_idx] = False
+            n -= 1.0
+            sum_x -= x[best_idx]
+            sum_y -= y[best_idx]
+            sum_xx -= sample_xx[best_idx]
+            sum_xy -= sample_xy[best_idx]
+            sum_yy -= sample_yy[best_idx]
+            current_score = best_score
+        before = len(self.samples)
+        self.samples = [sample for sample, keep in zip(self.samples, selected) if bool(keep)]
+        print(
+            "Applied Kalman ML sample decorrelation: "
+            f"kept {len(self.samples)}/{before} samples "
+            f"(feature_mode={cfg.get('feature_mode', 'motion_priors')}, greedy_candidates={greedy_candidates}, "
+            f"score={before_score['score']:.6g}->{current_score['score']:.6g})."
+        )
+
     def _apply_sample_limit(self) -> None:
         if self.max_samples is None or self.max_samples <= 0 or len(self.samples) <= self.max_samples:
             return
@@ -529,6 +757,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "max_tracks": self.max_tracks,
             "max_samples": self.max_samples,
             "require_representations": self.require_representations,
+            "sample_decorrelation": self.sample_decorrelation,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,
         }
