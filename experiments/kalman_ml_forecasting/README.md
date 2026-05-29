@@ -170,6 +170,23 @@ Use `--velocity-bin-min` and `--velocity-bin-max` to force the same velocity
 axis bounds when comparing two splits. If `matplotlib` is installed it uses
 quiver plots; otherwise it falls back to a PIL renderer.
 
+Decorrelated Track Subsets
+
+Create a first-pass global track subset that reduces how easily fitted
+acceleration can be predicted from anchor position and velocity:
+
+```bash
+python experiments/kalman_ml_forecasting/decorrelate_track_subset.py --config experiments/kalman_ml_forecasting/configs/base.yaml --split train --keep-fraction 0.5 --output-dir outputs/kalman_ml_decorrelated_tracks
+```
+
+The script reads all folders in the split, fits the same center
+constant-acceleration curves as the motion-field script, groups samples by
+`(folder, track_id)`, and greedily keeps a global subset with a lower score for
+a simple ridge-linear predictor from `[cx, cy, vx, vy]` to `[ax, ay]`. It writes
+a CSV manifest and a fine-grained split text file with `folder,track_id` rows.
+Use `--write-filtered-tracks` to also write per-folder filtered track files
+under the output directory without modifying the dataset.
+
 Metrics
 - The trainer reports the learned model metrics, configured Kalman baseline
   metrics, and last-four extrapolation metrics in the same validation pass.
