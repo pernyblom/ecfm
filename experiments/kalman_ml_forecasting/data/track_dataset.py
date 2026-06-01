@@ -554,11 +554,12 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 raise FileNotFoundError(f"Missing cached representation for {sample.get('anchor_stem')}")
         self.samples = kept
 
-    def _sample_decorrelation_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+    def _sample_decorrelation_arrays(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         feature_mode = str(self.sample_decorrelation.get("feature_mode", "motion_priors"))
         frame_w, frame_h = self.frame_size
         rows_x = []
         rows_y = []
+        rows_vel = []
         for sample in self.samples:
             boxes = np.concatenate(
                 [
@@ -590,7 +591,51 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 )
             )
             rows_y.append([float(accel[0]), float(accel[1])])
-        return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.float64)
+            rows_vel.append([float(vel[0]), float(vel[1])])
+        return (
+            np.asarray(rows_x, dtype=np.float64),
+            np.asarray(rows_y, dtype=np.float64),
+            np.asarray(rows_vel, dtype=np.float64),
+        )
+
+    @staticmethod
+    def _decorrelation_motion_summary(accel: np.ndarray, velocity: np.ndarray, selected: np.ndarray) -> dict[str, float]:
+        accel = np.asarray(accel, dtype=np.float64)[selected]
+        velocity = np.asarray(velocity, dtype=np.float64)[selected]
+        if accel.size == 0:
+            return {
+                "abs_accel_mean": float("nan"),
+                "abs_accel_median": float("nan"),
+                "abs_accel_p90": float("nan"),
+                "turning_accel_mean": float("nan"),
+                "turning_accel_median": float("nan"),
+                "turning_accel_p90": float("nan"),
+                "turning_fraction_mean": float("nan"),
+            }
+        abs_accel = np.linalg.norm(accel, axis=1)
+        speed = np.linalg.norm(velocity, axis=1)
+        cross = velocity[:, 0] * accel[:, 1] - velocity[:, 1] * accel[:, 0]
+        turning_accel = np.divide(
+            np.abs(cross),
+            speed,
+            out=np.zeros_like(abs_accel),
+            where=speed > 1.0e-9,
+        )
+        turning_fraction = np.divide(
+            turning_accel,
+            abs_accel,
+            out=np.zeros_like(abs_accel),
+            where=abs_accel > 1.0e-9,
+        )
+        return {
+            "abs_accel_mean": float(np.mean(abs_accel)),
+            "abs_accel_median": float(np.median(abs_accel)),
+            "abs_accel_p90": float(np.percentile(abs_accel, 90.0)),
+            "turning_accel_mean": float(np.mean(turning_accel)),
+            "turning_accel_median": float(np.median(turning_accel)),
+            "turning_accel_p90": float(np.percentile(turning_accel, 90.0)),
+            "turning_fraction_mean": float(np.mean(turning_fraction)),
+        }
 
     @staticmethod
     def _score_decorrelation_stats(
@@ -654,7 +699,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         if target_samples >= len(self.samples):
             return
 
-        x, y = self._sample_decorrelation_arrays()
+        x, y, velocity = self._sample_decorrelation_arrays()
         n = float(x.shape[0])
         sum_x = x.sum(axis=0)
         sum_y = y.sum(axis=0)
@@ -686,6 +731,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         )
         current_score = before_score
         selected = np.ones(len(self.samples), dtype=bool)
+        before_motion = self._decorrelation_motion_summary(y, velocity, selected)
         removals = range(len(self.samples) - target_samples)
         for _ in _progress_iter(removals, desc="Decorrelating Kalman ML samples", enabled=show_progress):
             candidates = np.nonzero(selected)[0]
@@ -719,6 +765,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             sum_yy -= sample_yy[best_idx]
             current_score = best_score
         before = len(self.samples)
+        after_motion = self._decorrelation_motion_summary(y, velocity, selected)
         self.samples = [sample for sample, keep in zip(self.samples, selected) if bool(keep)]
         split_name = cfg.get("_split_name")
         split_text = f" for split '{split_name}'" if split_name else ""
@@ -726,7 +773,17 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             f"Applied Kalman ML sample decorrelation{split_text}: "
             f"kept {len(self.samples)}/{before} samples "
             f"(feature_mode={cfg.get('feature_mode', 'motion_priors')}, greedy_candidates={greedy_candidates}, "
-            f"score={before_score['score']:.6g}->{current_score['score']:.6g})."
+            f"score={before_score['score']:.6g}->{current_score['score']:.6g}, "
+            f"|a| mean/median/p90={before_motion['abs_accel_mean']:.3g}/"
+            f"{before_motion['abs_accel_median']:.3g}/{before_motion['abs_accel_p90']:.3g}->"
+            f"{after_motion['abs_accel_mean']:.3g}/{after_motion['abs_accel_median']:.3g}/"
+            f"{after_motion['abs_accel_p90']:.3g}, "
+            f"turning |a_perp| mean/median/p90={before_motion['turning_accel_mean']:.3g}/"
+            f"{before_motion['turning_accel_median']:.3g}/{before_motion['turning_accel_p90']:.3g}->"
+            f"{after_motion['turning_accel_mean']:.3g}/{after_motion['turning_accel_median']:.3g}/"
+            f"{after_motion['turning_accel_p90']:.3g}, "
+            f"turning_fraction_mean={before_motion['turning_fraction_mean']:.3g}->"
+            f"{after_motion['turning_fraction_mean']:.3g})."
         )
 
     def _apply_sample_limit(self) -> None:

@@ -202,6 +202,10 @@ constructed split. Leave `seed` blank to use the dataset seed, which is already
 offset by split; set it explicitly only when you want the same candidate
 sampling seed everywhere.
 
+The decorrelation log reports the score before/after, absolute fitted
+acceleration magnitude `|a|`, and turning acceleration `|a_perp|`, where
+`a_perp` is the acceleration component perpendicular to fitted velocity.
+
 The standalone script still exists for producing a coarse track-level manifest:
 
 ```bash
