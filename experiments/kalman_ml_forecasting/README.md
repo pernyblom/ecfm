@@ -42,9 +42,9 @@ Data
   true`, folders/samples without it are skipped.
 - `data.spatial_cutout` can mask inputs around the box at the final history
   time. `box_scale`/`box_fraction` uses the current box size times `scale`;
-  `fixed_pixels`/`fixed` uses `size_px`. The tensor size is unchanged: `xt*`
-  cuts only the x axis, `yt*` cuts only the y axis, and temporal axes keep their
-  full length.
+  `fixed_pixels`/`fixed` uses `size_px` and returns real cropped tensors of
+  that size. `xt*` cuts only the x axis, `yt*` cuts only the y axis, and
+  temporal axes keep their full length.
 
 Render
 
@@ -61,8 +61,8 @@ python experiments/kalman_ml_forecasting/train.py --config experiments/kalman_ml
 
 Inspect Spatial Cutouts
 
-Write the actual representation tensors that training would see after
-`data.spatial_cutout` is applied:
+Write source-pixel crops for the configured `data.spatial_cutout` without
+stretching them to the frame aspect ratio:
 
 ```bash
 python experiments/kalman_ml_forecasting/inspect_spatial_cutouts.py --config experiments/kalman_ml_forecasting/configs/base.yaml --folder 8 --count 16 --include-original --draw-anchor-box

@@ -134,6 +134,91 @@ def _size_pair_from_config(value: Any, *, name: str) -> tuple[float, float]:
     return scalar, scalar
 
 
+def _spatial_cutout_mode(cfg: Dict[str, Any]) -> str:
+    return str(cfg.get("mode", "none")).lower()
+
+
+def _fixed_spatial_cutout_size(cfg: Dict[str, Any]) -> tuple[int, int] | None:
+    mode = _spatial_cutout_mode(cfg)
+    if mode not in {"fixed", "fixed_pixels", "fixed_px"}:
+        return None
+    size_value = cfg.get("size_px", cfg.get("fixed_size_px", cfg.get("size", None)))
+    if size_value is None:
+        raise ValueError("data.spatial_cutout fixed mode requires size_px or fixed_size_px.")
+    cut_w, cut_h = _size_pair_from_config(size_value, name="data.spatial_cutout.size_px")
+    cut_w_i = max(1, int(round(cut_w)))
+    cut_h_i = max(1, int(round(cut_h)))
+    return cut_w_i, cut_h_i
+
+
+def _crop_array_with_padding(
+    arr: np.ndarray,
+    *,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+    fill: float,
+) -> np.ndarray:
+    width = max(1, int(width))
+    height = max(1, int(height))
+    out = np.full((height, width, arr.shape[2]), float(fill), dtype=arr.dtype)
+    src_left = max(0, int(left))
+    src_top = max(0, int(top))
+    src_right = min(arr.shape[1], int(left) + width)
+    src_bottom = min(arr.shape[0], int(top) + height)
+    if src_right <= src_left or src_bottom <= src_top:
+        return out
+    dst_left = src_left - int(left)
+    dst_top = src_top - int(top)
+    out[
+        dst_top : dst_top + (src_bottom - src_top),
+        dst_left : dst_left + (src_right - src_left),
+        :,
+    ] = arr[src_top:src_bottom, src_left:src_right, :]
+    return out
+
+
+def _fixed_spatial_cutout_array(
+    arr: np.ndarray,
+    *,
+    rep: str,
+    anchor_box: np.ndarray,
+    cfg: Dict[str, Any],
+) -> np.ndarray | None:
+    fixed_size = _fixed_spatial_cutout_size(cfg)
+    if fixed_size is None:
+        return None
+    cut_w, cut_h = fixed_size
+    img_h, img_w = int(arr.shape[0]), int(arr.shape[1])
+    cx = float(anchor_box[0]) * img_w
+    cy = float(anchor_box[1]) * img_h
+    base_rep = _base_representation_name(rep).lower()
+    if base_rep.startswith("xt"):
+        width = cut_w
+        height = img_h
+        left = int(round(cx - width / 2.0))
+        top = 0
+    elif base_rep.startswith("yt"):
+        width = img_w
+        height = cut_h
+        left = 0
+        top = int(round(cy - height / 2.0))
+    else:
+        width = cut_w
+        height = cut_h
+        left = int(round(cx - width / 2.0))
+        top = int(round(cy - height / 2.0))
+    return _crop_array_with_padding(
+        arr,
+        left=left,
+        top=top,
+        width=width,
+        height=height,
+        fill=float(cfg.get("fill", cfg.get("fill_value", 0.0))),
+    )
+
+
 def _spatial_cutout_bounds(
     *,
     rep: str,
@@ -207,9 +292,24 @@ def _load_image(
     spatial_cutout: Dict[str, Any],
 ) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    fixed_cutout = _fixed_spatial_cutout_array(
+        arr,
+        rep=rep,
+        anchor_box=anchor_box,
+        cfg=spatial_cutout,
+    )
+    if fixed_cutout is not None:
+        arr = fixed_cutout
+        if (arr.shape[1], arr.shape[0]) != (size[0], size[1]):
+            raise ValueError(
+                f"Fixed spatial cutout for representation '{rep}' produced "
+                f"{arr.shape[1]}x{arr.shape[0]}, but resolved image size is {size[0]}x{size[1]}."
+            )
+        return torch.from_numpy(arr).permute(2, 0, 1)
     if img.size != (size[0], size[1]):
         img = img.resize(size, resample=Image.BILINEAR)
-    arr = np.asarray(img, dtype=np.float32) / 255.0
+        arr = np.asarray(img, dtype=np.float32) / 255.0
     bounds = _spatial_cutout_bounds(
         rep=rep,
         image_size=size,
