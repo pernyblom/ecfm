@@ -116,6 +116,22 @@ def _build_dataset(
     )
 
 
+def _split_file_label(cfg: Dict, key: str) -> str:
+    split_files = cfg["data"].get("split_files") or {}
+    value = split_files.get(key)
+    return str(value) if value else "<not configured>"
+
+
+def _max_samples_label(cfg: Dict, split: str) -> str:
+    data_cfg = cfg["data"]
+    value = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
+    return "all available samples" if value is None else f"at most {int(value)} samples"
+
+
+def _folder_count_label(folders: List[str] | None) -> str:
+    return "all configured folders" if folders is None else f"{len(folders)} folders"
+
+
 def _split_train_eval_folders(cfg: Dict) -> tuple[List[str] | None, List[str] | None]:
     data_cfg = cfg["data"]
     split_cfg = dict(data_cfg.get("train_eval_split") or {})
@@ -144,6 +160,83 @@ def _split_train_eval_folders(cfg: Dict) -> tuple[List[str] | None, List[str] | 
     train_folders = [folder for idx, folder in enumerate(folders) if idx not in eval_idx]
     eval_folders = [folder for idx, folder in enumerate(folders) if idx in eval_idx]
     return train_folders, eval_folders
+
+
+def _print_dataset_role(
+    *,
+    name: str,
+    purpose: str,
+    source: str,
+    max_samples: str,
+    folders: List[str] | None,
+    sample_count: int | None = None,
+) -> None:
+    count_text = "" if sample_count is None else f", built samples={sample_count}"
+    print(
+        f"Data role: {name} | {purpose} | source={source} | "
+        f"{_folder_count_label(folders)} | {max_samples}{count_text}"
+    )
+
+
+def _print_training_plan(
+    *,
+    cfg: Dict,
+    eval_splits_each_epoch: List[str],
+    best_metric_split: str,
+    best_metric: str,
+    best_metric_mode: str,
+    train_folders_override: List[str] | None,
+    train_eval_folders_override: List[str] | None,
+) -> None:
+    data_cfg = cfg["data"]
+    train_cfg = cfg["train"]
+    print("Training/evaluation data plan")
+    print(
+        f"- train: optimizer updates only; source=data.split_files.train "
+        f"({_split_file_label(cfg, 'train')}); {_max_samples_label(cfg, 'train')}"
+    )
+    split_cfg = dict(data_cfg.get("train_eval_split") or {})
+    if train_eval_folders_override is not None:
+        requested = (
+            f"eval_count={split_cfg.get('eval_count')}"
+            if split_cfg.get("eval_count") is not None
+            else f"eval_fraction={float(split_cfg.get('eval_fraction', 0.1)):.4g}"
+        )
+        print(
+            f"- train_eval: per-epoch evaluation only; disjoint folder holdout from train "
+            f"({requested}, seed={int(split_cfg.get('seed', data_cfg.get('seed', 123)))})"
+        )
+        print(
+            f"  train folders used for optimizer: {len(train_folders_override or [])}; "
+            f"train_eval held-out folders: {len(train_eval_folders_override)}; "
+            f"{_max_samples_label(cfg, 'train_eval')}"
+        )
+    elif "train_eval" in eval_splits_each_epoch:
+        source_split = str(data_cfg.get("train_eval_source_split", "train"))
+        print(
+            f"- train_eval: per-epoch evaluation only; source=data.split_files.{source_split} "
+            f"({_split_file_label(cfg, source_split)}); {_max_samples_label(cfg, 'train_eval')}"
+        )
+        if source_split == "train":
+            print("  note: train_eval samples come from the train split unless data.train_eval_split.enabled is true.")
+    else:
+        print("- train_eval: disabled for per-epoch evaluation.")
+    if "val" in eval_splits_each_epoch or best_metric_split == "val":
+        print(
+            f"- val: per-epoch evaluation and/or checkpoint selection; source=data.split_files.val "
+            f"({_split_file_label(cfg, 'val')}); {_max_samples_label(cfg, 'val')}"
+        )
+    else:
+        print("- val: not built because it is not requested for per-epoch evaluation or checkpoint selection.")
+    print(f"- best checkpoint: selected by {best_metric_split}.{best_metric} ({best_metric_mode})")
+    if bool(train_cfg.get("run_test_on_best", False)):
+        test_key = str(train_cfg.get("test_split_key", "test"))
+        print(
+            f"- test: final evaluation only after training; source=data.split_files.{test_key} "
+            f"({_split_file_label(cfg, test_key)}); {_max_samples_label(cfg, 'test')}"
+        )
+    else:
+        print("- test: disabled; set train.run_test_on_best=true to evaluate best.pt once after training.")
 
 
 def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) -> DataLoader:
@@ -260,12 +353,21 @@ def main() -> None:
     best_metric = str(train_cfg.get("best_metric", "loss"))
     best_metric_mode = str(train_cfg.get("best_metric_mode", "min"))
     train_folders_override, train_eval_folders_override = _split_train_eval_folders(cfg)
-    print("Building train dataset...")
+    _print_training_plan(
+        cfg=cfg,
+        eval_splits_each_epoch=eval_splits_each_epoch,
+        best_metric_split=best_metric_split,
+        best_metric=best_metric,
+        best_metric_mode=best_metric_mode,
+        train_folders_override=train_folders_override,
+        train_eval_folders_override=train_eval_folders_override,
+    )
+    print("Building train dataset for optimizer updates...")
     train_set = _build_dataset(cfg, "train", folders_override=train_folders_override)
     eval_sets = {}
     if "train_eval" in eval_splits_each_epoch:
         if train_eval_folders_override is not None:
-            print("Building train_eval dataset from held-out train_eval_split folders...")
+            print("Building train_eval dataset for per-epoch evaluation from held-out train_eval_split folders...")
             eval_sets["train_eval"] = _build_dataset(
                 cfg,
                 "train_eval",
@@ -273,14 +375,45 @@ def main() -> None:
             )
         else:
             source_split = str(cfg["data"].get("train_eval_source_split", "train"))
-            print(f"Building train_eval dataset from split_files.{source_split}...")
+            print(
+                f"Building train_eval dataset for per-epoch evaluation from split_files.{source_split}..."
+            )
             eval_sets["train_eval"] = _build_dataset(cfg, "train_eval", split_file_key=source_split)
     if "val" in eval_splits_each_epoch or best_metric_split == "val":
-        print("Building val dataset...")
+        print("Building val dataset for per-epoch evaluation/checkpoint selection...")
         eval_sets["val"] = _build_dataset(cfg, "val")
-    print(f"Train samples: {len(train_set)}")
+    _print_dataset_role(
+        name="train",
+        purpose="optimizer updates",
+        source=f"data.split_files.train ({_split_file_label(cfg, 'train')})",
+        max_samples=_max_samples_label(cfg, "train"),
+        folders=train_folders_override,
+        sample_count=len(train_set),
+    )
     for name, dataset in eval_sets.items():
-        print(f"{name} samples: {len(dataset)}")
+        if name == "train_eval" and train_eval_folders_override is not None:
+            source = "held-out folders from data.split_files.train"
+            folders = train_eval_folders_override
+        elif name == "train_eval":
+            source_split = str(cfg["data"].get("train_eval_source_split", "train"))
+            source = f"data.split_files.{source_split} ({_split_file_label(cfg, source_split)})"
+            folders = None
+        else:
+            source = f"data.split_files.{name} ({_split_file_label(cfg, name)})"
+            folders = None
+        purpose = (
+            "per-epoch evaluation; not used for optimizer updates"
+            if name != best_metric_split
+            else f"per-epoch evaluation and best checkpoint selection by {best_metric}"
+        )
+        _print_dataset_role(
+            name=name,
+            purpose=purpose,
+            source=source,
+            max_samples=_max_samples_label(cfg, name),
+            folders=folders,
+            sample_count=len(dataset),
+        )
 
     device = torch.device(train_cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
     model = build_model(cfg, device)
@@ -321,6 +454,7 @@ def main() -> None:
     metrics_jsonl = Path(train_cfg.get("metrics_jsonl", ckpt_dir / "metrics.jsonl"))
     for epoch in range(start_epoch, int(train_cfg["epochs"])):
         print(f"Epoch {epoch}/{int(train_cfg['epochs']) - 1}")
+        print("Running train phase: optimizer updates on the train dataset.")
         train_metrics = _run_epoch(
             model=model,
             loader=train_loader,
@@ -335,7 +469,15 @@ def main() -> None:
                 loader = eval_loaders.get(split_name)
                 if loader is None:
                     continue
-                print(f"Running {split_name} evaluation")
+                role = (
+                    f"checkpoint selection candidate ({best_metric})"
+                    if split_name == best_metric_split
+                    else "monitoring only"
+                )
+                print(
+                    f"Running {split_name} evaluation: no optimizer updates; role={role}; "
+                    f"samples={len(loader.dataset)}"
+                )
                 eval_metrics[split_name] = _run_epoch(
                     model=model,
                     loader=loader,
@@ -355,6 +497,17 @@ def main() -> None:
         if selected_metrics is None:
             raise RuntimeError(f"Best metric split '{best_metric_split}' was not evaluated this epoch.")
         metric_value = selected_metrics.get(best_metric)
+        if metric_value is None:
+            print(
+                f"Best-checkpoint metric {best_metric_split}.{best_metric} was not present; "
+                "best.pt will not be updated this epoch."
+            )
+        else:
+            print(
+                f"Best-checkpoint metric this epoch: {best_metric_split}.{best_metric}="
+                f"{float(metric_value):.6g} ({best_metric_mode}); current best="
+                f"{'none' if best_score is None else f'{float(best_score):.6g}'}"
+            )
         state = {
             "model": model.state_dict(),
             "optim": optimizer.state_dict(),
@@ -369,9 +522,13 @@ def main() -> None:
             best_score = float(metric_value)
             state["best_score"] = best_score
             _save_checkpoint(ckpt_dir / "best.pt", state)
+            print(f"Updated best checkpoint: {ckpt_dir / 'best.pt'}")
+        elif metric_value is not None:
+            print("Best checkpoint unchanged.")
         ckpt_every = int(train_cfg.get("checkpoint_every", 1))
         if ckpt_every > 0 and (epoch + 1) % ckpt_every == 0:
             _save_checkpoint(ckpt_dir / f"epoch_{epoch:03d}.pt", state)
+            print(f"Wrote periodic checkpoint: {ckpt_dir / f'epoch_{epoch:03d}.pt'}")
 
     if bool(train_cfg.get("run_test_on_best", False)):
         split_files = cfg["data"].get("split_files") or {}
@@ -384,8 +541,19 @@ def main() -> None:
         print(f"Loading best checkpoint for test evaluation: {best_path}")
         state = torch.load(best_path, map_location=device)
         model.load_state_dict(state["model"])
-        print(f"Building test dataset from split_files.{test_key}...")
+        print(
+            f"Building test dataset for final-only evaluation from split_files.{test_key} "
+            f"({_split_file_label(cfg, test_key)}); {_max_samples_label(cfg, 'test')}..."
+        )
         test_set = _build_dataset(cfg, "test", split_file_key=test_key)
+        _print_dataset_role(
+            name="test",
+            purpose="final evaluation only from best.pt; not used for training or checkpoint selection",
+            source=f"data.split_files.{test_key} ({_split_file_label(cfg, test_key)})",
+            max_samples=_max_samples_label(cfg, "test"),
+            folders=None,
+            sample_count=len(test_set),
+        )
         test_loader = _make_loader(
             test_set,
             batch_size=int(train_cfg["batch_size"]),
@@ -393,6 +561,7 @@ def main() -> None:
             train_cfg=train_cfg,
         )
         with torch.no_grad():
+            print(f"Running final test evaluation: no optimizer updates; samples={len(test_set)}")
             test_metrics = _run_epoch(
                 model=model,
                 loader=test_loader,
