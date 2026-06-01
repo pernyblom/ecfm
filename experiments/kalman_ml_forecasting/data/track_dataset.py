@@ -274,6 +274,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         render_manifest_name: str = "render_manifest.json",
         window_tolerance_ms: float = 5.0,
         label_period_s: Optional[float] = None,
+        min_track_duration_ms: Optional[float] = None,
         max_tracks: Optional[int] = None,
         max_samples: Optional[int] = None,
         seed: int = 123,
@@ -302,6 +303,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.render_manifest_name = str(render_manifest_name)
         self.window_tolerance_ms = float(window_tolerance_ms)
         self.label_period_s = None if label_period_s is None else float(label_period_s)
+        self.min_track_duration_ms = None if min_track_duration_ms is None else float(min_track_duration_ms)
         self.max_tracks = max_tracks
         self.max_samples = max_samples
         self.seed = int(seed)
@@ -319,6 +321,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             raise ValueError("frame_size must contain positive width and height.")
         if self.history_ms <= 0 or self.forecast_ms <= 0:
             raise ValueError("history_ms and forecast_ms must be > 0.")
+        if self.min_track_duration_ms is not None and self.min_track_duration_ms <= 0:
+            raise ValueError("min_track_duration_ms must be > 0 when set.")
         missing_sizes = [rep for rep in self.representations if rep not in self.image_sizes]
         if missing_sizes:
             raise ValueError(f"Missing image sizes for representations: {missing_sizes}")
@@ -558,6 +562,13 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         future_steps = max(1, int(round((self.forecast_ms / 1000.0) / label_period_s)))
         return history_steps, future_steps
 
+    def _eligibility_window(self, *, history_steps: int, future_steps: int, label_period_s: float) -> int:
+        prediction_window = int(history_steps) + int(future_steps) + 1
+        if self.min_track_duration_ms is None:
+            return prediction_window
+        min_duration_steps = max(1, int(round((self.min_track_duration_ms / 1000.0) / label_period_s)))
+        return max(prediction_window, min_duration_steps + 1)
+
     def _align_track_times(self, track_times: np.ndarray, label_times: np.ndarray) -> np.ndarray:
         times = track_times.copy()
         if self.time_align == "start":
@@ -574,6 +585,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def _build_samples(self) -> list[dict]:
         samples: list[dict] = []
         skipped_missing = 0
+        skipped_short_tracks = 0
+        skipped_short_tracklets = 0
         missing_by_rep: Counter = Counter()
         frame_w, frame_h = self.frame_size
         for folder, frames in self.frames_by_folder.items():
@@ -585,6 +598,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             label_period_s = self._resolve_label_period_s(frames)
             history_steps, future_steps = self._window_spec(label_period_s)
             window = history_steps + future_steps + 1
+            eligibility_window = self._eligibility_window(
+                history_steps=history_steps,
+                future_steps=future_steps,
+                label_period_s=label_period_s,
+            )
             label_times = np.asarray([f.time_s for f in frames], dtype=np.float64)
             label_stems = [f.stem for f in frames]
             for track_id, rows in tracks.items():
@@ -599,6 +617,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     continue
                 idxs = np.nonzero(mask)[0]
                 query_times = label_times[idxs]
+                if self.min_track_duration_ms is not None:
+                    usable_duration_s = float(query_times[-1] - query_times[0]) if query_times.size >= 2 else 0.0
+                    if usable_duration_s < self.min_track_duration_ms / 1000.0:
+                        skipped_short_tracks += 1
+                        continue
                 xs = np.interp(query_times, times, np.asarray([x for _, x, _, _, _ in rows], dtype=np.float64))
                 ys = np.interp(query_times, times, np.asarray([y for _, _, y, _, _ in rows], dtype=np.float64))
                 ws = np.interp(query_times, times, np.asarray([w for _, _, _, w, _ in rows], dtype=np.float64))
@@ -608,7 +631,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     axis=-1,
                 )
                 stems = [label_stems[i] for i in idxs]
-                for start in range(0, len(stems) - window + 1):
+                prediction_candidates = max(0, len(stems) - window + 1)
+                eligible_candidates = max(0, len(stems) - eligibility_window + 1)
+                skipped_short_tracklets += max(0, prediction_candidates - eligible_candidates)
+                for start in range(0, eligible_candidates):
                     end = start + window
                     anchor_idx = history_steps
                     anchor_stem = stems[start + anchor_idx]
@@ -646,6 +672,16 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         if skipped_missing:
             rep_summary = ", ".join(f"{rep}={count}" for rep, count in sorted(missing_by_rep.items()))
             print(f"Warning: skipped {skipped_missing} Kalman ML samples with missing representations: {rep_summary}")
+        if skipped_short_tracks:
+            print(
+                f"Skipped {skipped_short_tracks} Kalman ML tracks shorter than "
+                f"data.min_track_duration_ms={self.min_track_duration_ms:.6g}."
+            )
+        if skipped_short_tracklets:
+            print(
+                f"Skipped {skipped_short_tracklets} Kalman ML tracklets shorter than "
+                f"data.min_track_duration_ms={self.min_track_duration_ms:.6g}."
+            )
         return samples
 
     def _filter_cached_missing_representations(self) -> None:
@@ -919,6 +955,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "render_manifest_name": self.render_manifest_name,
             "window_tolerance_ms": self.window_tolerance_ms,
             "label_period_s": self.label_period_s,
+            "min_track_duration_ms": self.min_track_duration_ms,
             "max_tracks": self.max_tracks,
             "max_samples": self.max_samples,
             "require_representations": self.require_representations,

@@ -107,6 +107,7 @@ def _build_dataset(
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),
         window_tolerance_ms=float(data_cfg.get("window_tolerance_ms", 5.0)),
         label_period_s=data_cfg.get("label_period_s"),
+        min_track_duration_ms=data_cfg.get("min_track_duration_ms"),
         max_tracks=data_cfg.get(f"max_tracks_{split}", data_cfg.get("max_tracks")),
         max_samples=max_samples,
         seed=int(data_cfg.get("seed", 123)) + {"train": 0, "train_eval": 1, "val": 2, "test": 3}.get(split, 4),
@@ -141,6 +142,11 @@ def _spatial_cutout_label(cfg: Dict) -> str:
         size = cutout_cfg.get("size_px", cutout_cfg.get("fixed_size_px", cutout_cfg.get("size", "<missing>")))
         return f"{mode}, size_px={size}, centered on final history box"
     return f"{mode} (will be validated by dataset loader)"
+
+
+def _min_track_duration_label(cfg: Dict) -> str:
+    value = cfg["data"].get("min_track_duration_ms")
+    return "disabled" if value is None else f"{float(value):.4g} ms usable labeled duration per track/tracklet"
 
 
 def _folder_count_label(folders: List[str] | None) -> str:
@@ -256,6 +262,7 @@ def _print_training_plan(
         "- spatial cutout: "
         f"{_spatial_cutout_label(cfg)}; xt* cuts x only, yt* cuts y only, temporal axes are unchanged"
     )
+    print(f"- minimum track duration filter: {_min_track_duration_label(cfg)}")
 
 
 def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) -> DataLoader:

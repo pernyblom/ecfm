@@ -66,6 +66,7 @@ def _build_dataset(
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),
         window_tolerance_ms=float(data_cfg.get("window_tolerance_ms", 5.0)),
         label_period_s=data_cfg.get("label_period_s"),
+        min_track_duration_ms=data_cfg.get("min_track_duration_ms"),
         max_tracks=data_cfg.get("max_tracks"),
         max_samples=max_samples,
         seed=int(data_cfg.get("seed", 123)),

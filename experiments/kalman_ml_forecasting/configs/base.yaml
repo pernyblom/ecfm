@@ -48,6 +48,11 @@ data:
   window_tolerance_ms: 5.0
   history_ms: 400.0
   forecast_ms: 800.0
+  # Optional minimum usable labeled duration. This filters whole tracks and
+  # forecast-window candidates, so it can require e.g. 1.2 s tracklets even when
+  # history_ms + forecast_ms is shorter. The emitted past/future tensors still
+  # use history_ms and forecast_ms.
+  min_track_duration_ms:
   label_period_s:
   max_tracks:
   max_samples_train: 20000

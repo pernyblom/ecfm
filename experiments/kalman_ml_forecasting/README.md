@@ -28,6 +28,10 @@ Data
   `Event_YOLO`.
 - Each sample uses one anchor image at time `t`, past boxes up to `t`, and
   future boxes after `t`.
+- Set `data.min_track_duration_ms`, for example `1200.0`, to require both whole
+  tracks and forecast-window candidates to span at least that long. This keeps
+  the selected anchor samples stable when reducing `forecast_ms`; the emitted
+  tensors still use the configured `history_ms` and `forecast_ms`.
 - Event windows should be rendered with `--window-mode trailing` to avoid future
   leakage.
 - `rgb` and `padded_rgb` can be read directly from the FRED sequence folders if
