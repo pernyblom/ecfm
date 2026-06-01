@@ -74,6 +74,8 @@ Useful limits:
 - `--max-samples 200 --count 16` caps dataset construction and output count.
 - `--track-id 12` filters to one or more tracks.
 - `--representation xt_my --representation cstr3` writes only selected reps.
+- `--representation event_frames` can inspect dataset-native event frames even
+  when they are not listed in the training config representations.
 
 Evaluation protocol:
 - `train.eval_splits_each_epoch` controls non-training evaluation after each

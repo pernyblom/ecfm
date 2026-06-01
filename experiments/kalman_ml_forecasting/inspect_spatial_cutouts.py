@@ -43,8 +43,11 @@ def _build_dataset(
     *,
     folders: List[str] | None,
     max_samples: int | None,
+    representations: List[str] | None = None,
 ) -> TrackKalmanForecastDataset:
-    data_cfg = cfg["data"]
+    data_cfg = dict(cfg["data"])
+    if representations is not None:
+        data_cfg["representations"] = list(representations)
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
@@ -277,11 +280,14 @@ def main() -> None:
     data_cfg = cfg["data"]
     cutout_cfg = dict(data_cfg.get("spatial_cutout") or {})
     folders = _select_folders(args, cfg)
-    dataset = _build_dataset(cfg, folders=folders, max_samples=args.max_samples)
     reps = list(args.representation or data_cfg["representations"])
-    missing_reps = [rep for rep in reps if rep not in data_cfg["representations"]]
-    if missing_reps:
-        raise ValueError(f"Requested representations are not in data.representations: {missing_reps}")
+    dataset_reps = list(dict.fromkeys(list(data_cfg["representations"]) + reps))
+    dataset = _build_dataset(
+        cfg,
+        folders=folders,
+        max_samples=args.max_samples,
+        representations=dataset_reps,
+    )
     indices = _sample_indices(dataset, args)
     if not indices:
         raise RuntimeError("No samples selected.")
