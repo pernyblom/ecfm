@@ -113,6 +113,7 @@ def _build_dataset(
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
         sample_decorrelation=decorrelation_cfg,
+        spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
     )
 
 
@@ -126,6 +127,20 @@ def _max_samples_label(cfg: Dict, split: str) -> str:
     data_cfg = cfg["data"]
     value = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
     return "all available samples" if value is None else f"at most {int(value)} samples"
+
+
+def _spatial_cutout_label(cfg: Dict) -> str:
+    cutout_cfg = dict(cfg["data"].get("spatial_cutout") or {})
+    mode = str(cutout_cfg.get("mode", "none")).lower()
+    if mode in {"none", "disabled", "off", "false"}:
+        return "disabled"
+    if mode in {"box_scale", "box_fraction", "box"}:
+        scale = cutout_cfg.get("scale", cutout_cfg.get("box_scale", cutout_cfg.get("fraction", 1.0)))
+        return f"{mode}, scale={float(scale):.4g}, centered on final history box"
+    if mode in {"fixed", "fixed_pixels", "fixed_px"}:
+        size = cutout_cfg.get("size_px", cutout_cfg.get("fixed_size_px", cutout_cfg.get("size", "<missing>")))
+        return f"{mode}, size_px={size}, centered on final history box"
+    return f"{mode} (will be validated by dataset loader)"
 
 
 def _folder_count_label(folders: List[str] | None) -> str:
@@ -237,6 +252,10 @@ def _print_training_plan(
         )
     else:
         print("- test: disabled; set train.run_test_on_best=true to evaluate best.pt once after training.")
+    print(
+        "- spatial cutout: "
+        f"{_spatial_cutout_label(cfg)}; xt* cuts x only, yt* cuts y only, temporal axes are unchanged"
+    )
 
 
 def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) -> DataLoader:

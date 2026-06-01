@@ -72,6 +72,7 @@ def _build_train_dataset(cfg: Dict[str, Any], *, max_samples: int | None) -> Tra
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         filter_missing_representations=False,
         require_representations=False,
+        spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
     )
 
 

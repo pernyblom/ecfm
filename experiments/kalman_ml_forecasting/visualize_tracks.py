@@ -233,6 +233,7 @@ def _build_dataset(cfg: Dict, folder: str) -> TrackKalmanForecastDataset:
         seed=int(data_cfg.get("seed", 123)),
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
+        spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
     )
 
 

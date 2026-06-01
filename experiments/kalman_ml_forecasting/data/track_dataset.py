@@ -41,6 +41,11 @@ _DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
 _DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
 
 
+def _base_representation_name(rep: str) -> str:
+    match = re.match(r"^(?P<base>.+)_\d+x\d+$", str(rep), flags=re.IGNORECASE)
+    return match.group("base") if match is not None else str(rep)
+
+
 def _sample_motion_features(
     *,
     cx_norm: float,
@@ -115,11 +120,109 @@ def _is_dataset_native_rep(rep: str) -> bool:
     return _is_dataset_rgb_rep(rep) or _is_dataset_event_frame_rep(rep)
 
 
-def _load_image(path: Path, size: Tuple[int, int]) -> torch.Tensor:
+def _size_pair_from_config(value: Any, *, name: str) -> tuple[float, float]:
+    if isinstance(value, dict):
+        if "width" in value or "height" in value:
+            return float(value.get("width", value.get("x", 0.0))), float(value.get("height", value.get("y", 0.0)))
+        if "x" in value or "y" in value:
+            return float(value.get("x", 0.0)), float(value.get("y", 0.0))
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise ValueError(f"{name} must be a number or a two-item [width, height] value.")
+        return float(value[0]), float(value[1])
+    scalar = float(value)
+    return scalar, scalar
+
+
+def _spatial_cutout_bounds(
+    *,
+    rep: str,
+    image_size: Tuple[int, int],
+    frame_size: Tuple[float, float],
+    anchor_box: np.ndarray,
+    cfg: Dict[str, Any],
+) -> tuple[int, int, int, int] | None:
+    mode = str(cfg.get("mode", "none")).lower()
+    if mode in {"none", "disabled", "off", "false"}:
+        return None
+    if mode in {"box_fraction", "box_scale", "box"}:
+        scale = float(cfg.get("scale", cfg.get("box_scale", cfg.get("fraction", 1.0))))
+        if scale <= 0.0:
+            raise ValueError("data.spatial_cutout scale/fraction must be > 0.")
+        cut_w_px = float(anchor_box[2]) * float(frame_size[0]) * scale
+        cut_h_px = float(anchor_box[3]) * float(frame_size[1]) * scale
+    elif mode in {"fixed", "fixed_pixels", "fixed_px"}:
+        size_value = cfg.get("size_px", cfg.get("fixed_size_px", cfg.get("size", None)))
+        if size_value is None:
+            raise ValueError("data.spatial_cutout fixed mode requires size_px or fixed_size_px.")
+        cut_w_px, cut_h_px = _size_pair_from_config(size_value, name="data.spatial_cutout.size_px")
+    else:
+        raise ValueError(
+            "data.spatial_cutout.mode must be one of: none, box_scale, box_fraction, fixed_pixels, fixed."
+        )
+
+    min_size_px = float(cfg.get("min_size_px", 1.0))
+    cut_w_px = max(min_size_px, cut_w_px)
+    cut_h_px = max(min_size_px, cut_h_px)
+    frame_w, frame_h = float(frame_size[0]), float(frame_size[1])
+    img_w, img_h = int(image_size[0]), int(image_size[1])
+    cx_px = float(anchor_box[0]) * frame_w
+    cy_px = float(anchor_box[1]) * frame_h
+    base_rep = _base_representation_name(rep).lower()
+
+    x0, x1 = 0, img_w
+    y0, y1 = 0, img_h
+    if base_rep.startswith("xt"):
+        center = cx_px / frame_w * img_w
+        half = cut_w_px / frame_w * img_w / 2.0
+        x0, x1 = int(np.floor(center - half)), int(np.ceil(center + half))
+    elif base_rep.startswith("yt"):
+        center = cy_px / frame_h * img_h
+        half = cut_h_px / frame_h * img_h / 2.0
+        y0, y1 = int(np.floor(center - half)), int(np.ceil(center + half))
+    else:
+        center_x = cx_px / frame_w * img_w
+        center_y = cy_px / frame_h * img_h
+        half_w = cut_w_px / frame_w * img_w / 2.0
+        half_h = cut_h_px / frame_h * img_h / 2.0
+        x0, x1 = int(np.floor(center_x - half_w)), int(np.ceil(center_x + half_w))
+        y0, y1 = int(np.floor(center_y - half_h)), int(np.ceil(center_y + half_h))
+
+    x0 = max(0, min(img_w, x0))
+    x1 = max(0, min(img_w, x1))
+    y0 = max(0, min(img_h, y0))
+    y1 = max(0, min(img_h, y1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return x0, y0, x1, y1
+
+
+def _load_image(
+    path: Path,
+    size: Tuple[int, int],
+    *,
+    rep: str,
+    frame_size: Tuple[float, float],
+    anchor_box: np.ndarray,
+    spatial_cutout: Dict[str, Any],
+) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
     if img.size != (size[0], size[1]):
         img = img.resize(size, resample=Image.BILINEAR)
     arr = np.asarray(img, dtype=np.float32) / 255.0
+    bounds = _spatial_cutout_bounds(
+        rep=rep,
+        image_size=size,
+        frame_size=frame_size,
+        anchor_box=anchor_box,
+        cfg=spatial_cutout,
+    )
+    if bounds is not None:
+        x0, y0, x1, y1 = bounds
+        fill = float(spatial_cutout.get("fill", spatial_cutout.get("fill_value", 0.0)))
+        cut = np.full_like(arr, fill)
+        cut[y0:y1, x0:x1, :] = arr[y0:y1, x0:x1, :]
+        arr = cut
     return torch.from_numpy(arr).permute(2, 0, 1)
 
 
@@ -178,6 +281,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         filter_missing_representations: bool = True,
         require_representations: bool = True,
         sample_decorrelation: Optional[Dict[str, Any]] = None,
+        spatial_cutout: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -205,6 +309,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.filter_missing_representations = bool(filter_missing_representations)
         self.require_representations = bool(require_representations)
         self.sample_decorrelation = dict(sample_decorrelation or {})
+        self.spatial_cutout = dict(spatial_cutout or {})
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
@@ -855,7 +960,14 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> KalmanForecastSample:
         sample = self.samples[idx]
         inputs = {
-            rep: _load_image(Path(path), self.image_sizes[rep])
+            rep: _load_image(
+                Path(path),
+                self.image_sizes[rep],
+                rep=rep,
+                frame_size=self.frame_size,
+                anchor_box=np.asarray(sample["past_boxes"], dtype=np.float32)[-1],
+                spatial_cutout=self.spatial_cutout,
+            )
             for rep, path in sample["input_paths"].items()
         }
         folder = sample["folder"]

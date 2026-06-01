@@ -18,6 +18,18 @@ data:
     eval_count:
     seed: 123
   representations: ["xt_my", "yt_mx", "cstr3", "padded_rgb"]
+  # Optional fixed-shape spatial masking around the final history box, just
+  # before prediction starts. The model input size stays unchanged; pixels
+  # outside the cutout are filled. For xt* representations only the x axis is
+  # cut and the temporal axis is kept intact. For yt* representations only the
+  # y axis is cut and the temporal axis is kept intact. Other representations
+  # use both spatial axes.
+  spatial_cutout:
+    mode: none  # none, box_scale/box_fraction, fixed_pixels/fixed
+    scale: 1.0  # used by box_scale; 1.0 means the current box size
+    size_px: [256, 256]  # used by fixed_pixels
+    min_size_px: 1
+    fill: 0.0
   # Add "event_frames" to read dataset-native frames from
   # datasets/FRED/<folder>/Event/Frames when present.
   # Set [] to isolate filter-state/covariance inputs; this requires

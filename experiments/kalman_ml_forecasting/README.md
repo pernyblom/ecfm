@@ -36,6 +36,11 @@ Data
   `datasets/FRED/<folder>/Event/Frames`. This representation is only usable for
   folders where that directory exists; with `filter_missing_representations:
   true`, folders/samples without it are skipped.
+- `data.spatial_cutout` can mask inputs around the box at the final history
+  time. `box_scale`/`box_fraction` uses the current box size times `scale`;
+  `fixed_pixels`/`fixed` uses `size_px`. The tensor size is unchanged: `xt*`
+  cuts only the x axis, `yt*` cuts only the y axis, and temporal axes keep their
+  full length.
 
 Render
 
