@@ -55,6 +55,22 @@ Train
 python experiments/kalman_ml_forecasting/train.py --config experiments/kalman_ml_forecasting/configs/base.yaml
 ```
 
+Inspect Spatial Cutouts
+
+Write the actual representation tensors that training would see after
+`data.spatial_cutout` is applied:
+
+```bash
+python experiments/kalman_ml_forecasting/inspect_spatial_cutouts.py --config experiments/kalman_ml_forecasting/configs/base.yaml --folder 8 --count 16 --include-original --draw-anchor-box
+```
+
+Useful limits:
+- `--folder 8` or repeated `--folder` limits inspection to specific folders.
+- `--split train --max-folders 1` selects folders from a configured split.
+- `--max-samples 200 --count 16` caps dataset construction and output count.
+- `--track-id 12` filters to one or more tracks.
+- `--representation xt_my --representation cstr3` writes only selected reps.
+
 Evaluation protocol:
 - `train.eval_splits_each_epoch` controls non-training evaluation after each
   epoch. The default evaluates `train_eval`, a capped subset of
