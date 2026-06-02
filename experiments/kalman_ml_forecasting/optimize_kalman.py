@@ -26,6 +26,7 @@ from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
     resolve_representation_image_sizes,
+    resolve_representation_source_image_sizes,
 )
 
 
@@ -52,6 +53,7 @@ def _build_train_dataset(cfg: Dict[str, Any], *, max_samples: int | None) -> Tra
         frame_size=tuple(data_cfg["frame_size"]),
         representations=list(data_cfg["representations"]),
         image_sizes=resolve_representation_image_sizes(data_cfg),
+        source_image_sizes=resolve_representation_source_image_sizes(data_cfg),
         history_ms=float(data_cfg.get("history_ms", 400.0)),
         forecast_ms=float(data_cfg.get("forecast_ms", 800.0)),
         folders=folders,

@@ -19,6 +19,7 @@ from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
     resolve_representation_image_sizes,
+    resolve_representation_source_image_sizes,
 )
 
 
@@ -54,6 +55,7 @@ def _build_dataset(
         frame_size=tuple(data_cfg["frame_size"]),
         representations=list(data_cfg["representations"]),
         image_sizes=resolve_representation_image_sizes(data_cfg),
+        source_image_sizes=resolve_representation_source_image_sizes(data_cfg),
         history_ms=float(data_cfg.get("history_ms", 400.0)),
         forecast_ms=float(data_cfg.get("forecast_ms", 800.0)),
         folders=folders,
@@ -101,8 +103,11 @@ def _base_representation_name(rep: str) -> str:
     return match.group("base") if match is not None else str(rep)
 
 
-def _load_original(path: str) -> Image.Image:
-    return Image.open(path).convert("RGB")
+def _load_original(path: str, source_size: tuple[int, int]) -> Image.Image:
+    img = Image.open(path).convert("RGB")
+    if img.size != source_size:
+        img = img.resize(source_size, resample=Image.BILINEAR)
+    return img
 
 
 def _crop_with_padding(
@@ -292,6 +297,7 @@ def main() -> None:
     if not indices:
         raise RuntimeError("No samples selected.")
 
+    source_image_sizes = resolve_representation_source_image_sizes({**data_cfg, "representations": dataset_reps})
     args.output_dir.mkdir(parents=True, exist_ok=True)
     print(
         f"Writing spatial cutout inspection: samples={len(indices)}, reps={reps}, "
@@ -327,7 +333,7 @@ def main() -> None:
         for rep in reps:
             if rep not in meta["input_paths"]:
                 continue
-            original_img = _load_original(meta["input_paths"][rep])
+            original_img = _load_original(meta["input_paths"][rep], source_image_sizes[rep])
             cutout_img, crop = _spatial_cutout_image(
                 original_img,
                 rep=rep,

@@ -66,7 +66,7 @@ def _apply_fixed_spatial_cutout_sizes(
     return out
 
 
-def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tuple[int, int]]:
+def resolve_representation_source_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tuple[int, int]]:
     reps = list(data_cfg.get("representations", []))
     if not reps:
         return {}
@@ -82,12 +82,12 @@ def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tu
         missing = [rep for rep in reps if rep not in resolved]
         if missing:
             raise ValueError(f"Missing image_sizes entries for representations: {missing}")
-        return _apply_fixed_spatial_cutout_sizes({rep: resolved[rep] for rep in reps}, data_cfg)
+        return {rep: resolved[rep] for rep in reps}
 
     legacy_size = data_cfg.get("image_size")
     if legacy_size is not None and not bool(data_cfg.get("retain_spatial_dimensions", False)):
         size = _normalize_size(legacy_size)
-        return _apply_fixed_spatial_cutout_sizes({rep: size for rep in reps}, data_cfg)
+        return {rep: size for rep in reps}
 
     frame_size_raw = data_cfg.get("frame_size")
     if frame_size_raw is None:
@@ -105,7 +105,11 @@ def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tu
             resolved[rep] = (temporal_bins, frame_h)
         else:
             resolved[rep] = (frame_w, frame_h)
-    return _apply_fixed_spatial_cutout_sizes(resolved, data_cfg)
+    return resolved
+
+
+def resolve_representation_image_sizes(data_cfg: Dict[str, Any]) -> Dict[str, tuple[int, int]]:
+    return _apply_fixed_spatial_cutout_sizes(resolve_representation_source_image_sizes(data_cfg), data_cfg)
 
 
 def read_split_file(path: Path) -> list[str]:

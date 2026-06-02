@@ -286,12 +286,15 @@ def _load_image(
     path: Path,
     size: Tuple[int, int],
     *,
+    source_size: Tuple[int, int],
     rep: str,
     frame_size: Tuple[float, float],
     anchor_box: np.ndarray,
     spatial_cutout: Dict[str, Any],
 ) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
+    if img.size != (source_size[0], source_size[1]):
+        img = img.resize(source_size, resample=Image.BILINEAR)
     arr = np.asarray(img, dtype=np.float32) / 255.0
     fixed_cutout = _fixed_spatial_cutout_array(
         arr,
@@ -362,6 +365,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         image_sizes: Dict[str, Tuple[int, int]],
         history_ms: float,
         forecast_ms: float,
+        source_image_sizes: Optional[Dict[str, Tuple[int, int]]] = None,
         folders: Optional[List[str]] = None,
         labels_subdir: str = "Event_YOLO",
         tracks_file: str = "cleaned_tracks.txt",
@@ -389,6 +393,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.frame_size = (float(frame_size[0]), float(frame_size[1]))
         self.representations = list(representations)
         self.image_sizes = {str(k): (int(v[0]), int(v[1])) for k, v in image_sizes.items()}
+        self.source_image_sizes = {
+            str(k): (int(v[0]), int(v[1]))
+            for k, v in dict(source_image_sizes or image_sizes).items()
+        }
         self.history_ms = float(history_ms)
         self.forecast_ms = float(forecast_ms)
         self.folders = folders
@@ -426,6 +434,9 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         missing_sizes = [rep for rep in self.representations if rep not in self.image_sizes]
         if missing_sizes:
             raise ValueError(f"Missing image sizes for representations: {missing_sizes}")
+        missing_source_sizes = [rep for rep in self.representations if rep not in self.source_image_sizes]
+        if missing_source_sizes:
+            raise ValueError(f"Missing source image sizes for representations: {missing_source_sizes}")
         if self.image_window_mode not in {"trailing", "center", "leading"}:
             raise ValueError(f"Unknown image_window_mode: {self.image_window_mode}")
 
@@ -1041,6 +1052,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "frame_size": self.frame_size,
             "representations": self.representations,
             "image_sizes": self.image_sizes,
+            "source_image_sizes": self.source_image_sizes,
             "history_ms": self.history_ms,
             "forecast_ms": self.forecast_ms,
             "folders": self.folders,
@@ -1100,6 +1112,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             rep: _load_image(
                 Path(path),
                 self.image_sizes[rep],
+                source_size=self.source_image_sizes[rep],
                 rep=rep,
                 frame_size=self.frame_size,
                 anchor_box=np.asarray(sample["past_boxes"], dtype=np.float32)[-1],
