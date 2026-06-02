@@ -50,7 +50,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Free FRED dataset storage by removing Event/Frames folders and removing "
-            "Event/events.raw only when Event/output_events.npz exists."
+            "Event/events.raw only when Event/output_events.npz exists, or remove "
+            "specific event-storage artifacts with --mode."
         )
     )
     parser.add_argument(
@@ -58,6 +59,15 @@ def main() -> None:
         type=Path,
         default=Path("datasets/FRED"),
         help="Root path of FRED dataset (default: datasets/FRED).",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["frames-and-raw", "output-npz"],
+        default="frames-and-raw",
+        help=(
+            "Cleanup mode. frames-and-raw keeps existing behavior. output-npz removes "
+            "Folder/Event/output_events.npz files only."
+        ),
     )
     parser.add_argument(
         "--execute",
@@ -82,6 +92,7 @@ def main() -> None:
 
     frames_dirs = 0
     raw_files = 0
+    npz_files = 0
     frame_files = 0
     bytes_to_free = 0
 
@@ -92,17 +103,22 @@ def main() -> None:
         npz_path = event_dir / "output_events.npz"
 
         targets: list[tuple[Path, int, int, str]] = []
-        if frames_dir.exists():
+        if args.mode == "frames-and-raw" and frames_dir.exists():
             size, count = _folder_size(frames_dir)
             targets.append((frames_dir, size, count, "frames"))
             frames_dirs += 1
             frame_files += count
             bytes_to_free += size
 
-        if raw_path.exists() and npz_path.exists():
+        if args.mode == "frames-and-raw" and raw_path.exists() and npz_path.exists():
             size = _file_size(raw_path)
             targets.append((raw_path, size, 1, "raw-with-npz"))
             raw_files += 1
+            bytes_to_free += size
+        elif args.mode == "output-npz" and npz_path.exists():
+            size = _file_size(npz_path)
+            targets.append((npz_path, size, 1, "output-npz"))
+            npz_files += 1
             bytes_to_free += size
 
         for path, size, count, reason in targets:
@@ -113,10 +129,13 @@ def main() -> None:
                 _remove_path(path)
 
     action = "Freed" if args.execute else "Would free"
-    print(
-        f"{action} {_format_bytes(bytes_to_free)} from {frames_dirs} Frames folders "
-        f"({frame_files} files) and {raw_files} raw files."
-    )
+    if args.mode == "output-npz":
+        print(f"{action} {_format_bytes(bytes_to_free)} from {npz_files} output_events.npz files.")
+    else:
+        print(
+            f"{action} {_format_bytes(bytes_to_free)} from {frames_dirs} Frames folders "
+            f"({frame_files} files) and {raw_files} raw files."
+        )
     if not args.execute:
         print("Dry run only. Re-run with --execute to delete these paths.")
 
