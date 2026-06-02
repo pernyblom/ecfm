@@ -59,3 +59,23 @@ python scripts\generate_config_sweep.py --base-config experiments\kalman_ml_fore
 
 The spec supports `grid`, static `overrides`, output path `templates`, and a
 launcher `command` using `{config}`.
+
+After runs finish, collect configs and results into table-ready records:
+
+```powershell
+python scripts\sweep_results.py --sweep-dir outputs\kalman_ml_sweeps\example --output-csv outputs\kalman_ml_sweeps\example\results.csv
+```
+
+From Python:
+
+```python
+from pathlib import Path
+from scripts.sweep_results import sweep_dataframe, load_sweep_runs
+
+df = sweep_dataframe(sweep_dir=Path("outputs/kalman_ml_sweeps/example"))
+print(df[["name", "test.loss", "test.fde_center_px", "config.data.representations"]])
+
+runs = load_sweep_runs(sweep_dir=Path("outputs/kalman_ml_sweeps/example"))
+print(runs[0].config)
+print(runs[0].test_results)
+```
