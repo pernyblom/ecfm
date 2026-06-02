@@ -266,6 +266,9 @@ Extension points
   inputs. This is only valid when `model.use_filter_state_features: true` or
   `model.filter_covariance_features` is `diag`/`full`.
 - Use grid-split render aliases such as `xt_my_10x10` as in object detection.
+- Control MLP width/depth with `model.fusion_hidden_dim`,
+  `model.fusion_layers`, `model.state_hidden_dim`, `model.state_layers`,
+  `model.residual_hidden_dim`, and `model.residual_layers`.
 - Set `model.predict_size_residuals: false` to learn only center acceleration
   residuals while leaving size dynamics at constant velocity.
 - Set `model.initial_state_source: kalman_filter` to start the learned residual

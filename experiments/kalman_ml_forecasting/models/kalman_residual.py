@@ -106,6 +106,29 @@ def _filter_state_indices(mode: str) -> list[int]:
     )
 
 
+def _make_mlp(
+    *,
+    input_dim: int,
+    hidden_dim: int,
+    output_dim: int,
+    hidden_layers: int,
+    final_activation: bool = False,
+) -> nn.Sequential:
+    hidden_layers = int(hidden_layers)
+    if hidden_layers < 0:
+        raise ValueError(f"hidden_layers must be >= 0, got {hidden_layers}.")
+    layers: list[nn.Module] = []
+    in_dim = int(input_dim)
+    for _ in range(hidden_layers):
+        layers.append(nn.Linear(in_dim, int(hidden_dim)))
+        layers.append(nn.ReLU(inplace=True))
+        in_dim = int(hidden_dim)
+    layers.append(nn.Linear(in_dim, int(output_dim)))
+    if final_activation:
+        layers.append(nn.ReLU(inplace=True))
+    return nn.Sequential(*layers)
+
+
 class KalmanResidualForecaster(nn.Module):
     """Constant-velocity Kalman-style rollout with image-conditioned residuals.
 
@@ -128,8 +151,11 @@ class KalmanResidualForecaster(nn.Module):
         backbone_cfg: Dict,
         history_steps: int,
         fusion_hidden_dim: int = 256,
+        fusion_layers: int = 1,
         state_hidden_dim: int = 128,
+        state_layers: int = 2,
         residual_hidden_dim: int = 256,
+        residual_layers: int = 2,
         residual_scale: float = 1.0,
         predict_size_residuals: bool = True,
         use_filter_state_features: bool = False,
@@ -160,6 +186,12 @@ class KalmanResidualForecaster(nn.Module):
             )
         if self.initial_state_source not in {"last_four", "kalman_filter"}:
             raise ValueError("initial_state_source must be one of: last_four, kalman_filter.")
+        if int(fusion_layers) < 1:
+            raise ValueError("fusion_layers must be >= 1.")
+        if int(state_layers) < 1:
+            raise ValueError("state_layers must be >= 1.")
+        if int(residual_layers) < 0:
+            raise ValueError("residual_layers must be >= 0.")
         if not self.representations and not (
             self.use_filter_state_features or self.filter_covariance_features != "none"
         ):
@@ -189,23 +221,27 @@ class KalmanResidualForecaster(nn.Module):
             fused_dim += filter_state_dim
         elif self.filter_covariance_features == "full":
             fused_dim += filter_state_dim * filter_state_dim
-        self.image_fusion = nn.Sequential(
-            nn.Linear(fused_dim, fusion_hidden_dim),
-            nn.ReLU(inplace=True),
+        self.image_fusion = _make_mlp(
+            input_dim=fused_dim,
+            hidden_dim=fusion_hidden_dim,
+            output_dim=fusion_hidden_dim,
+            hidden_layers=max(0, int(fusion_layers) - 1),
+            final_activation=True,
         )
-        self.history_encoder = nn.Sequential(
-            nn.Linear(self.history_steps * 5, state_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(state_hidden_dim, state_hidden_dim),
-            nn.ReLU(inplace=True),
+        self.history_encoder = _make_mlp(
+            input_dim=self.history_steps * 5,
+            hidden_dim=state_hidden_dim,
+            output_dim=state_hidden_dim,
+            hidden_layers=max(0, int(state_layers) - 1),
+            final_activation=True,
         )
         residual_out_dim = 4 if self.predict_size_residuals else 2
-        self.residual_head = nn.Sequential(
-            nn.Linear(fusion_hidden_dim + state_hidden_dim + 9, residual_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(residual_hidden_dim, residual_hidden_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(residual_hidden_dim, residual_out_dim),
+        self.residual_head = _make_mlp(
+            input_dim=fusion_hidden_dim + state_hidden_dim + 9,
+            hidden_dim=residual_hidden_dim,
+            output_dim=residual_out_dim,
+            hidden_layers=int(residual_layers),
+            final_activation=False,
         )
 
     def _history_features(self, past_boxes: torch.Tensor, past_times_s: torch.Tensor) -> torch.Tensor:

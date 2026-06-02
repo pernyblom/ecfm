@@ -94,8 +94,11 @@ model:
   # dataset history window has fewer samples, the model pads with the earliest box.
   history_steps: 12
   fusion_hidden_dim: 256
+  fusion_layers: 1
   state_hidden_dim: 128
+  state_layers: 2
   residual_hidden_dim: 256
+  residual_layers: 2
   residual_scale: 1.0
   predict_size_residuals: true
   # Rollout initial state: "last_four" keeps the paper-style linear fit,
