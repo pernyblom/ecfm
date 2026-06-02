@@ -48,3 +48,14 @@ Convert a name-sorted slice of an image folder to MP4 or GIF:
 python scripts\images_to_media.py --image-dir outputs\frames --output outputs\clip.mp4 --start-index 100 --frame-count 300 --fps 30
 python scripts\images_to_media.py --image-dir outputs\frames --output outputs\clip.gif --start-index 100 --frame-count 90 --fps 12
 ```
+
+## Config Sweeps
+Generate expanded YAML configs, a manifest, and `run_all.ps1`/`run_all.sh`
+from a base config plus a grid spec:
+
+```powershell
+python scripts\generate_config_sweep.py --base-config experiments\kalman_ml_forecasting\configs\base.yaml --spec experiments\kalman_ml_forecasting\configs\sweep_example.yaml --output-dir outputs\kalman_ml_sweeps\example
+```
+
+The spec supports `grid`, static `overrides`, output path `templates`, and a
+launcher `command` using `{config}`.
