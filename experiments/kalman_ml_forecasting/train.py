@@ -297,6 +297,10 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     kalman_cfg = kalman_config_from_dict(cfg.get("kalman"))
     model.train(mode=train)
     rows: List[Dict[str, float]] = []
+    accumulation_steps = int(train_cfg.get("accumulation_steps", 1)) if train else 1
+    if accumulation_steps < 1:
+        raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
+    num_batches = len(loader)
     for step, batch in enumerate(loader):
         inputs = {k: v.to(device, non_blocking=True) for k, v in batch.inputs.items()}
         past_boxes = batch.past_boxes.to(device, non_blocking=True)
@@ -316,13 +320,17 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
             if residual_weight > 0:
                 loss = loss + residual_weight * out["residual_accel"].square().mean()
             if train:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    model.parameters(),
-                    float(train_cfg.get("grad_clip_norm", 10.0)),
-                )
-                optimizer.step()
+                accumulation_idx = step % accumulation_steps
+                accumulation_window = min(accumulation_steps, num_batches - step + accumulation_idx)
+                if accumulation_idx == 0:
+                    optimizer.zero_grad(set_to_none=True)
+                (loss / accumulation_window).backward()
+                if accumulation_idx == accumulation_window - 1:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        float(train_cfg.get("grad_clip_norm", 10.0)),
+                    )
+                    optimizer.step()
         with torch.no_grad():
             metrics = summarize_forecast_metrics(pred.detach(), future_boxes, frame_size)
             kalman_boxes = kalman_cv_forecast(
@@ -447,6 +455,14 @@ def main() -> None:
         model.parameters(),
         lr=float(train_cfg["lr"]),
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
+    )
+    accumulation_steps = int(train_cfg.get("accumulation_steps", 1))
+    if accumulation_steps < 1:
+        raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
+    print(
+        f"Batch size: {int(train_cfg['batch_size'])} "
+        f"(effective {int(train_cfg['batch_size']) * accumulation_steps} "
+        f"with accumulation_steps={accumulation_steps})"
     )
     start_epoch = 0
     best_score = None
