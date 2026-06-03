@@ -520,33 +520,59 @@ def _select_folders(args: argparse.Namespace, cfg: Dict) -> List[str]:
     return folders
 
 
-def _resolve_velocity_bounds(
-    samples: List[AccelSample],
+def _resolve_axis_bounds(
+    values: np.ndarray,
     *,
-    velocity_bin_min: Optional[float],
-    velocity_bin_max: Optional[float],
+    axis_min: Optional[float],
+    axis_max: Optional[float],
     percentile: float,
 ) -> tuple[float, float]:
-    if velocity_bin_min is not None and velocity_bin_max is not None:
-        return float(velocity_bin_min), float(velocity_bin_max)
-    values = np.concatenate(
-        [
-            np.asarray([sample.vx_px_s for sample in samples], dtype=np.float64),
-            np.asarray([sample.vy_px_s for sample in samples], dtype=np.float64),
-        ]
-    )
+    if values.size == 0:
+        raise ValueError("Cannot resolve bounds from an empty value array.")
     percentile = max(0.0, min(100.0, float(percentile)))
     auto_min = float(np.percentile(values, 100.0 - percentile))
     auto_max = float(np.percentile(values, percentile))
-    if velocity_bin_min is not None:
-        auto_min = float(velocity_bin_min)
-    if velocity_bin_max is not None:
-        auto_max = float(velocity_bin_max)
+    if axis_min is not None:
+        auto_min = float(axis_min)
+    if axis_max is not None:
+        auto_max = float(axis_max)
     if auto_max <= auto_min:
         pad = max(1.0, abs(auto_min) * 0.05)
         auto_min -= pad
         auto_max += pad
     return auto_min, auto_max
+
+
+def _resolve_velocity_bounds(
+    samples: List[AccelSample],
+    *,
+    velocity_bin_min: Optional[float],
+    velocity_bin_max: Optional[float],
+    velocity_bin_x_min: Optional[float],
+    velocity_bin_x_max: Optional[float],
+    velocity_bin_y_min: Optional[float],
+    velocity_bin_y_max: Optional[float],
+    percentile: float,
+) -> tuple[float, float, float, float]:
+    x_min = velocity_bin_x_min if velocity_bin_x_min is not None else velocity_bin_min
+    x_max = velocity_bin_x_max if velocity_bin_x_max is not None else velocity_bin_max
+    y_min = velocity_bin_y_min if velocity_bin_y_min is not None else velocity_bin_min
+    y_max = velocity_bin_y_max if velocity_bin_y_max is not None else velocity_bin_max
+    vx_values = np.asarray([sample.vx_px_s for sample in samples], dtype=np.float64)
+    vy_values = np.asarray([sample.vy_px_s for sample in samples], dtype=np.float64)
+    resolved_x_min, resolved_x_max = _resolve_axis_bounds(
+        vx_values,
+        axis_min=x_min,
+        axis_max=x_max,
+        percentile=percentile,
+    )
+    resolved_y_min, resolved_y_max = _resolve_axis_bounds(
+        vy_values,
+        axis_min=y_min,
+        axis_max=y_max,
+        percentile=percentile,
+    )
+    return resolved_x_min, resolved_x_max, resolved_y_min, resolved_y_max
 
 
 def main() -> None:
@@ -580,14 +606,52 @@ def main() -> None:
         dest="velocity_bin_min",
         type=float,
         default=None,
-        help="Lower velocity axis bound for the velocity-to-acceleration field, in px/s.",
+        help=(
+            "Lower velocity axis bound applied to both axes for the velocity-to-acceleration "
+            "field, in px/s. Axis-specific flags override this."
+        ),
     )
     parser.add_argument(
         "--velocity-bin-max",
         dest="velocity_bin_max",
         type=float,
         default=None,
-        help="Upper velocity axis bound for the velocity-to-acceleration field, in px/s.",
+        help=(
+            "Upper velocity axis bound applied to both axes for the velocity-to-acceleration "
+            "field, in px/s. Axis-specific flags override this."
+        ),
+    )
+    parser.add_argument(
+        "--velocity-bin-x-min",
+        "--velocity-bin-horizontal-min",
+        dest="velocity_bin_x_min",
+        type=float,
+        default=None,
+        help="Lower horizontal velocity axis bound for vx bins, in px/s.",
+    )
+    parser.add_argument(
+        "--velocity-bin-x-max",
+        "--velocity-bin-horizontal-max",
+        dest="velocity_bin_x_max",
+        type=float,
+        default=None,
+        help="Upper horizontal velocity axis bound for vx bins, in px/s.",
+    )
+    parser.add_argument(
+        "--velocity-bin-y-min",
+        "--velocity-bin-vertical-min",
+        dest="velocity_bin_y_min",
+        type=float,
+        default=None,
+        help="Lower vertical velocity axis bound for vy bins, in px/s.",
+    )
+    parser.add_argument(
+        "--velocity-bin-y-max",
+        "--velocity-bin-vertical-max",
+        dest="velocity_bin_y_max",
+        type=float,
+        default=None,
+        help="Upper vertical velocity axis bound for vy bins, in px/s.",
     )
     parser.add_argument(
         "--velocity-bin-bound-percentile",
@@ -598,12 +662,21 @@ def main() -> None:
     parser.add_argument("--max-output-width", type=int, default=1280)
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/kalman_ml_acceleration_field"))
     args = parser.parse_args()
-    if (
+    combined_invalid = (
         args.velocity_bin_min is not None
         and args.velocity_bin_max is not None
         and float(args.velocity_bin_max) <= float(args.velocity_bin_min)
-    ):
+    )
+    x_min = args.velocity_bin_x_min if args.velocity_bin_x_min is not None else args.velocity_bin_min
+    x_max = args.velocity_bin_x_max if args.velocity_bin_x_max is not None else args.velocity_bin_max
+    y_min = args.velocity_bin_y_min if args.velocity_bin_y_min is not None else args.velocity_bin_min
+    y_max = args.velocity_bin_y_max if args.velocity_bin_y_max is not None else args.velocity_bin_max
+    if combined_invalid:
         raise ValueError("--velocity-bin-max must be greater than --velocity-bin-min.")
+    if x_min is not None and x_max is not None and float(x_max) <= float(x_min):
+        raise ValueError("--velocity-bin-x-max must be greater than --velocity-bin-x-min.")
+    if y_min is not None and y_max is not None and float(y_max) <= float(y_min):
+        raise ValueError("--velocity-bin-y-max must be greater than --velocity-bin-y-min.")
 
     cfg = load_config(args.config)
     folders = _select_folders(args, cfg)
@@ -666,10 +739,14 @@ def main() -> None:
         bound_percentile=float(args.vector_bound_percentile),
         invert_y=True,
     )
-    velocity_min, velocity_max = _resolve_velocity_bounds(
+    velocity_x_min, velocity_x_max, velocity_y_min, velocity_y_max = _resolve_velocity_bounds(
         samples,
         velocity_bin_min=args.velocity_bin_min,
         velocity_bin_max=args.velocity_bin_max,
+        velocity_bin_x_min=args.velocity_bin_x_min,
+        velocity_bin_x_max=args.velocity_bin_x_max,
+        velocity_bin_y_min=args.velocity_bin_y_min,
+        velocity_bin_y_max=args.velocity_bin_y_max,
         percentile=float(args.velocity_bin_bound_percentile),
     )
     velocity_vis_summary = _render_vector_field(
@@ -681,10 +758,10 @@ def main() -> None:
         bin_y_attr="vy_px_s",
         x_attr="ax_px_s2",
         y_attr="ay_px_s2",
-        x_min=velocity_min,
-        x_max=velocity_max,
-        y_min=velocity_min,
-        y_max=velocity_max,
+        x_min=velocity_x_min,
+        x_max=velocity_x_max,
+        y_min=velocity_y_min,
+        y_max=velocity_y_max,
         x_label="vx at anchor (px/s)",
         y_label="vy at anchor (px/s, image-down positive)",
         title="Center velocity to acceleration field",
