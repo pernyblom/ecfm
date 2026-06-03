@@ -194,13 +194,16 @@ The script writes sample data as `.npz` and `.csv`, plus two PNGs:
 - center velocity bins -> mean center acceleration
 
 Use `--velocity-bin-min` and `--velocity-bin-max` to force the same velocity
-axis bounds on both axes when comparing two splits. Use
+axis bounds on both axes when comparing two splits. Use `--velocity-bin-abs`
+to set mirrored bounds on both axes, for example `--velocity-bin-abs 1200`
+means `[-1200, 1200]`. Use
 `--velocity-bin-x-min`/`--velocity-bin-x-max` or the aliases
 `--velocity-bin-horizontal-min`/`--velocity-bin-horizontal-max` to set the
 horizontal `vx` range separately, and `--velocity-bin-y-min`/`--velocity-bin-y-max`
 or `--velocity-bin-vertical-min`/`--velocity-bin-vertical-max` for the vertical
-`vy` range. If `matplotlib` is installed it uses quiver plots; otherwise it
-falls back to a PIL renderer.
+`vy` range. The shorter mirrored axis forms are `--velocity-bin-x-abs` and
+`--velocity-bin-y-abs`, with horizontal/vertical aliases. If `matplotlib` is
+installed it uses quiver plots; otherwise it falls back to a PIL renderer.
 
 Decorrelated Track Subsets
 

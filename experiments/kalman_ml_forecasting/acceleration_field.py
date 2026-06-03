@@ -548,16 +548,30 @@ def _resolve_velocity_bounds(
     *,
     velocity_bin_min: Optional[float],
     velocity_bin_max: Optional[float],
+    velocity_bin_abs: Optional[float],
     velocity_bin_x_min: Optional[float],
     velocity_bin_x_max: Optional[float],
+    velocity_bin_x_abs: Optional[float],
     velocity_bin_y_min: Optional[float],
     velocity_bin_y_max: Optional[float],
+    velocity_bin_y_abs: Optional[float],
     percentile: float,
 ) -> tuple[float, float, float, float]:
-    x_min = velocity_bin_x_min if velocity_bin_x_min is not None else velocity_bin_min
-    x_max = velocity_bin_x_max if velocity_bin_x_max is not None else velocity_bin_max
-    y_min = velocity_bin_y_min if velocity_bin_y_min is not None else velocity_bin_min
-    y_max = velocity_bin_y_max if velocity_bin_y_max is not None else velocity_bin_max
+    shared_min = velocity_bin_min
+    shared_max = velocity_bin_max
+    if velocity_bin_abs is not None:
+        if shared_min is None:
+            shared_min = -abs(float(velocity_bin_abs))
+        if shared_max is None:
+            shared_max = abs(float(velocity_bin_abs))
+    x_abs_min = -abs(float(velocity_bin_x_abs)) if velocity_bin_x_abs is not None else shared_min
+    x_abs_max = abs(float(velocity_bin_x_abs)) if velocity_bin_x_abs is not None else shared_max
+    y_abs_min = -abs(float(velocity_bin_y_abs)) if velocity_bin_y_abs is not None else shared_min
+    y_abs_max = abs(float(velocity_bin_y_abs)) if velocity_bin_y_abs is not None else shared_max
+    x_min = velocity_bin_x_min if velocity_bin_x_min is not None else x_abs_min
+    x_max = velocity_bin_x_max if velocity_bin_x_max is not None else x_abs_max
+    y_min = velocity_bin_y_min if velocity_bin_y_min is not None else y_abs_min
+    y_max = velocity_bin_y_max if velocity_bin_y_max is not None else y_abs_max
     vx_values = np.asarray([sample.vx_px_s for sample in samples], dtype=np.float64)
     vy_values = np.asarray([sample.vy_px_s for sample in samples], dtype=np.float64)
     resolved_x_min, resolved_x_max = _resolve_axis_bounds(
@@ -622,6 +636,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--velocity-bin-abs",
+        "--velocity-bin-mirrored",
+        dest="velocity_bin_abs",
+        type=float,
+        default=None,
+        help=(
+            "Symmetric velocity bound applied to both axes, in px/s. For example 1200 "
+            "means [-1200, 1200]. Axis-specific flags override this."
+        ),
+    )
+    parser.add_argument(
         "--velocity-bin-x-min",
         "--velocity-bin-horizontal-min",
         dest="velocity_bin_x_min",
@@ -636,6 +661,16 @@ def main() -> None:
         type=float,
         default=None,
         help="Upper horizontal velocity axis bound for vx bins, in px/s.",
+    )
+    parser.add_argument(
+        "--velocity-bin-x-abs",
+        "--velocity-bin-horizontal-abs",
+        "--velocity-bin-x-mirrored",
+        "--velocity-bin-horizontal-mirrored",
+        dest="velocity_bin_x_abs",
+        type=float,
+        default=None,
+        help="Symmetric horizontal velocity bound for vx bins, in px/s.",
     )
     parser.add_argument(
         "--velocity-bin-y-min",
@@ -654,6 +689,16 @@ def main() -> None:
         help="Upper vertical velocity axis bound for vy bins, in px/s.",
     )
     parser.add_argument(
+        "--velocity-bin-y-abs",
+        "--velocity-bin-vertical-abs",
+        "--velocity-bin-y-mirrored",
+        "--velocity-bin-vertical-mirrored",
+        dest="velocity_bin_y_abs",
+        type=float,
+        default=None,
+        help="Symmetric vertical velocity bound for vy bins, in px/s.",
+    )
+    parser.add_argument(
         "--velocity-bin-bound-percentile",
         type=float,
         default=99.0,
@@ -667,10 +712,25 @@ def main() -> None:
         and args.velocity_bin_max is not None
         and float(args.velocity_bin_max) <= float(args.velocity_bin_min)
     )
-    x_min = args.velocity_bin_x_min if args.velocity_bin_x_min is not None else args.velocity_bin_min
-    x_max = args.velocity_bin_x_max if args.velocity_bin_x_max is not None else args.velocity_bin_max
-    y_min = args.velocity_bin_y_min if args.velocity_bin_y_min is not None else args.velocity_bin_min
-    y_max = args.velocity_bin_y_max if args.velocity_bin_y_max is not None else args.velocity_bin_max
+    for name in ("velocity_bin_abs", "velocity_bin_x_abs", "velocity_bin_y_abs"):
+        value = getattr(args, name)
+        if value is not None and float(value) <= 0.0:
+            raise ValueError(f"--{name.replace('_', '-')} must be greater than 0.")
+    shared_min = args.velocity_bin_min
+    shared_max = args.velocity_bin_max
+    if args.velocity_bin_abs is not None:
+        if shared_min is None:
+            shared_min = -abs(float(args.velocity_bin_abs))
+        if shared_max is None:
+            shared_max = abs(float(args.velocity_bin_abs))
+    x_abs_min = -abs(float(args.velocity_bin_x_abs)) if args.velocity_bin_x_abs is not None else shared_min
+    x_abs_max = abs(float(args.velocity_bin_x_abs)) if args.velocity_bin_x_abs is not None else shared_max
+    y_abs_min = -abs(float(args.velocity_bin_y_abs)) if args.velocity_bin_y_abs is not None else shared_min
+    y_abs_max = abs(float(args.velocity_bin_y_abs)) if args.velocity_bin_y_abs is not None else shared_max
+    x_min = args.velocity_bin_x_min if args.velocity_bin_x_min is not None else x_abs_min
+    x_max = args.velocity_bin_x_max if args.velocity_bin_x_max is not None else x_abs_max
+    y_min = args.velocity_bin_y_min if args.velocity_bin_y_min is not None else y_abs_min
+    y_max = args.velocity_bin_y_max if args.velocity_bin_y_max is not None else y_abs_max
     if combined_invalid:
         raise ValueError("--velocity-bin-max must be greater than --velocity-bin-min.")
     if x_min is not None and x_max is not None and float(x_max) <= float(x_min):
@@ -743,10 +803,13 @@ def main() -> None:
         samples,
         velocity_bin_min=args.velocity_bin_min,
         velocity_bin_max=args.velocity_bin_max,
+        velocity_bin_abs=args.velocity_bin_abs,
         velocity_bin_x_min=args.velocity_bin_x_min,
         velocity_bin_x_max=args.velocity_bin_x_max,
+        velocity_bin_x_abs=args.velocity_bin_x_abs,
         velocity_bin_y_min=args.velocity_bin_y_min,
         velocity_bin_y_max=args.velocity_bin_y_max,
+        velocity_bin_y_abs=args.velocity_bin_y_abs,
         percentile=float(args.velocity_bin_bound_percentile),
     )
     velocity_vis_summary = _render_vector_field(
