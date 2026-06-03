@@ -1,0 +1,14 @@
+\section{Discussion}
+
+The standard split may reward models for exploiting correlations between anchor state and future acceleration. A residual model with broad image context can use both visual evidence and non-causal or split-specific priors. Spatial cutouts and decorrelation are therefore complementary tests: cutouts restrict the visible spatial context, while decorrelation reduces direct predictability of acceleration from simple motion features.
+
+When interpreting results, we will separate three cases:
+\begin{itemize}
+  \item if residual models outperform the optimized Kalman baseline before and after decorrelation, the evidence supports genuine learned dynamics or useful visual conditioning;
+  \item if gains vanish after decorrelation, the original improvement was likely driven by motion-prior correlations;
+  \item if cutout models retain gains while full-context models degrade, local target evidence may be more reliable than global context.
+\end{itemize}
+
+The decorrelated split is not a replacement for a new independently collected test set. It removes a defined class of linear motion-prior shortcuts while preserving the same source data, so remaining correlations and nonlinear shortcuts may still exist. We therefore report the correlation score before and after selection alongside forecasting metrics.
+
+\todo{Fill with actual observations once Tables~\ref{tab:standard-results}--\ref{tab:decorrelated-results} are populated.}

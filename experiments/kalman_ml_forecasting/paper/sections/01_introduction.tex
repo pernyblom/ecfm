@@ -1,0 +1,22 @@
+\section{Introduction}
+
+Forecasting the future image-plane location of an observed UAV is useful for event-camera tracking, interception, sensor scheduling, and downstream recognition. The setting is challenging because the target can be small, fast, and partially represented by sparse events rather than dense RGB frames. Pure kinematic extrapolation is stable but cannot react to visual evidence about maneuvers. Conversely, an unconstrained neural predictor can exploit dataset shortcuts and produce physically implausible rollouts.
+
+We investigate a hybrid approach: a constant-velocity Kalman model supplies a strong kinematic baseline, while a learned residual model predicts acceleration corrections conditioned on event representations, optional RGB, and the recent box history. The study is organized around three questions:
+
+\begin{enumerate}
+  \item How strong is an optimized Kalman filter when its process and measurement uncertainty parameters are tuned on the training split?
+  \item Which visual representations contribute forecast information beyond kinematics: CSTR2/CSTR3, XT, YT, dataset event frames, RGB, and spatial cutouts around the anchor box?
+  \item Do observed gains persist after reducing correlations between future acceleration and simple motion priors such as image position, velocity, distance-to-center, and speed?
+\end{enumerate}
+
+Our planned contributions are:
+
+\begin{itemize}
+  \item a reproducible residual Kalman forecasting benchmark on FRED UAV tracks using normalized box states and event/RGB representations;
+  \item an ablation study over representation combinations and spatial cutout policies;
+  \item a correlation analysis showing when future acceleration can be predicted from non-visual motion priors; and
+  \item a sample-level decorrelation method based on greedy removal under a ridge-linear predictability score.
+\end{itemize}
+
+\todo{Tighten after final results: claim only what the completed experiments support.}

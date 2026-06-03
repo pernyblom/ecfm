@@ -1,0 +1,46 @@
+\documentclass[10pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\state}{\mathbf{x}}
+\newcommand{\obs}{\mathbf{z}}
+\newcommand{\cov}{\mathbf{P}}
+\newcommand{\kalman}{\mathcal{K}}
+\newcommand{\repr}{\mathcal{R}}
+\newcommand{\loss}{\mathcal{L}}
+\newcommand{\bbox}{\mathbf{b}}
+
+\title{Event-Conditioned Residual Kalman Forecasting for UAV Bounding Boxes}
+\author{
+  \todo{Author names and affiliations}
+}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study short-horizon forecasting of UAV bounding boxes from event-camera-derived representations and optional RGB context. The system combines a constant-velocity Kalman filter with a learned residual dynamics model that predicts acceleration corrections from rendered event views, RGB frames, and track history. We first evaluate a backpropagation-optimized Kalman filter as a physics-style baseline, then test image-conditioned residual models with different combinations of CSTR, XT/YT, event-frame, and RGB inputs, including spatial cutouts around the forecast anchor. Finally, we analyze correlations between apparent motion priors and fitted future acceleration, identify split bias in the forecasting data, and evaluate a greedy decorrelation procedure that removes samples for which acceleration is linearly predictable from position and velocity. \todo{Replace with final quantitative headline.}
+\end{abstract}
+
+\input{sections/01_introduction}
+\input{sections/02_related_work}
+\input{sections/03_problem_setup}
+\input{sections/04_method}
+\input{sections/05_experiments}
+\input{sections/06_discussion}
+\input{sections/07_conclusion}
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}

@@ -1,0 +1,41 @@
+\section{Problem Setup}
+
+\subsection{State and Forecast Target}
+
+Each sample is anchored at label time $t_0$. The observed history contains boxes up to and including $t_0$, and the target is the sequence of future boxes after $t_0$. A box is represented in normalized center-size coordinates
+\begin{equation}
+  \bbox_t = [c^x_t, c^y_t, w_t, h_t]^\top \in [0,1]^4,
+\end{equation}
+where coordinates are normalized by the frame size. The model state augments the box with first-order velocity:
+\begin{equation}
+  \state_t =
+  [c^x_t, c^y_t, w_t, h_t, v^x_t, v^y_t, v^w_t, v^h_t]^\top.
+\end{equation}
+
+The default configuration uses a $400$ ms history window and an $800$ ms forecast window. Samples are generated from track-aligned FRED labels in \texttt{Event\_YOLO} and \texttt{cleaned\_tracks.txt}. Tracks and forecast-window candidates may be filtered by a minimum duration. Event inputs use trailing render windows to avoid future leakage.
+
+\subsection{Inputs}
+
+Let $\repr$ denote the configured set of rendered or dataset-native representations. The planned ablations include:
+\begin{itemize}
+  \item \textbf{CSTR2/CSTR3}: compact event representations rendered over the trailing event window;
+  \item \textbf{XT/YT}: time-space projections, including aliases such as \texttt{xt\_my} and \texttt{yt\_mx};
+  \item \textbf{event frames}: dataset-native frames from \texttt{Event/Frames} when available;
+  \item \textbf{RGB}: \texttt{rgb} or \texttt{padded\_rgb} frames aligned to the anchor time; and
+  \item \textbf{spatial cutouts}: masks or fixed crops around the final history box.
+\end{itemize}
+
+For XT inputs, spatial cutouts affect the $x$ axis only while preserving the temporal axis. For YT inputs, cutouts affect the $y$ axis only. Other image-like inputs use both spatial axes.
+
+\subsection{Metrics}
+
+Predictions are evaluated against future boxes using:
+\begin{align}
+  \mathrm{ADE}_{center} &= \frac{1}{T}\sum_{k=1}^{T}
+  \left\|\hat{\mathbf{c}}_{t_k} - \mathbf{c}_{t_k}\right\|_2, \\
+  \mathrm{FDE}_{center} &= 
+  \left\|\hat{\mathbf{c}}_{t_T} - \mathbf{c}_{t_T}\right\|_2,
+\end{align}
+reported in pixels. We also report bounding-box ADE/FDE in pixels and mean IoU over the forecast horizon.
+
+\todo{State exact train/validation/test folders once the final split policy is frozen.}

@@ -1,0 +1,93 @@
+\section{Experiments}
+
+\subsection{Protocol}
+
+We use the optimized Kalman filter as the primary baseline and compare it against image-conditioned residual models. Unless otherwise noted, models use a $400$ ms history window, an $800$ ms forecast horizon, normalized boxes, a batch size of $32$, AdamW training with learning rate $10^{-3}$, weight decay $10^{-4}$, Smooth L1 loss, gradient clipping at norm $10$, and validation-based checkpoint selection.
+
+\subsection{Stage 1: Standard Split Without Decorrelation}
+
+The first stage evaluates the canonical split without sample decorrelation. The baseline is the backpropagation-optimized Kalman filter. We then train residual models with representation combinations designed to isolate input families:
+
+\begin{itemize}
+  \item no image inputs, using Kalman/filter-state features only where configured;
+  \item CSTR2 only and CSTR3 only;
+  \item XT only, YT only, and XT+YT;
+  \item event frames only;
+  \item RGB or padded RGB only;
+  \item event representations plus RGB;
+  \item full representation sets such as XT+YT+CSTR3+RGB; and
+  \item the same combinations with spatial cutouts around the anchor box.
+\end{itemize}
+
+\begin{table}[t]
+  \centering
+  \caption{Standard-split forecasting results before decorrelation. Lower is better for ADE/FDE; higher is better for mIoU.}
+  \label{tab:standard-results}
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{lcccccc}
+    \toprule
+    Method & Inputs & Cutout & ADE-C $\downarrow$ & FDE-C $\downarrow$ & ADE-BB $\downarrow$ & mIoU $\uparrow$ \\
+    \midrule
+    Last-four CV & boxes & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Optimized Kalman & boxes & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & CSTR2 & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & CSTR3 & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & XT & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & YT & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & XT+YT & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & event frames & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & RGB & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & XT+YT+CSTR3+RGB & none & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & XT+YT+CSTR3+RGB & fixed crop & \todo{} & \todo{} & \todo{} & \todo{} \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{Stage 2: Correlation Results}
+
+We compute acceleration-field summaries on train, validation, and held-out test splits. For each split, we report mean absolute Pearson correlation and ridge-linear $R^2$ from motion-prior features to fitted center acceleration. We also visualize acceleration as a function of image position and velocity bins.
+
+\begin{table}[t]
+  \centering
+  \caption{Motion-prior predictability of fitted future acceleration before decorrelation.}
+  \label{tab:correlation}
+  \begin{tabular}{lcccc}
+    \toprule
+    Split & Samples & Feature mode & Mean $|\rho|$ $\downarrow$ & Mean $R^2$ $\downarrow$ \\
+    \midrule
+    Train & \todo{} & motion priors & \todo{} & \todo{} \\
+    Validation & \todo{} & motion priors & \todo{} & \todo{} \\
+    Test & \todo{} & motion priors & \todo{} & \todo{} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Stage 3: Decorrelated Split}
+
+After identifying motion-prior correlations, we apply sample-level decorrelation independently to the configured splits. The default setting keeps $50\%$ of capped samples and uses the motion-prior feature mode. We repeat the strongest non-decorrelated representation combinations and compare them to the optimized Kalman baseline on the same decorrelated sample pool.
+
+\begin{table}[t]
+  \centering
+  \caption{Forecasting results on the decorrelated sample split.}
+  \label{tab:decorrelated-results}
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{lcccccc}
+    \toprule
+    Method & Inputs & Keep frac. & ADE-C $\downarrow$ & FDE-C $\downarrow$ & ADE-BB $\downarrow$ & mIoU $\uparrow$ \\
+    \midrule
+    Last-four CV & boxes & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Optimized Kalman & boxes & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & \todo{best non-RGB} & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & \todo{best RGB/event combo} & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & \todo{best cutout combo} & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    \bottomrule
+  \end{tabular}
+  }
+\end{table}
+
+\subsection{Implementation Details}
+
+The default residual network uses one encoder per representation, concatenated pooled features, a fusion MLP, a history MLP over twelve box-time samples, and a residual MLP. Kalman trust parameters are initialized from the base configuration and optimized in log standard-deviation space. Evaluation reports learned model metrics, Kalman metrics with the \texttt{kalman\_} prefix, and last-four extrapolation metrics with the \texttt{last4\_} prefix.
+
+\todo{Add hardware, training time, random seeds, number of runs, and standard deviations.}

@@ -1,0 +1,88 @@
+\section{Method}
+
+\subsection{Optimized Kalman Baseline}
+
+The baseline is a constant-velocity Kalman filter over $\state_t$. For a time step $\Delta t$, the transition matrix is
+\begin{equation}
+  \mathbf{F}(\Delta t) =
+  \begin{bmatrix}
+    \mathbf{I}_4 & \Delta t \mathbf{I}_4 \\
+    \mathbf{0}_4 & \mathbf{I}_4
+  \end{bmatrix},
+  \qquad
+  \state_{t+\Delta t} = \mathbf{F}(\Delta t)\state_t + \boldsymbol{\epsilon}_q.
+\end{equation}
+The measurement is the observed normalized box:
+\begin{equation}
+  \obs_t = \mathbf{H}\state_t + \boldsymbol{\epsilon}_r,
+  \qquad
+  \mathbf{H} = [\mathbf{I}_4 \; \mathbf{0}_4].
+\end{equation}
+The filter is initialized fresh for each sample, filters only the observed history window, and then rolls forward without future measurements. Initial, process, and measurement standard deviations are optimized on the training split. The primary optimized baseline uses differentiable backpropagation through the filter with log-space standard-deviation parameters and a weighted objective such as
+\begin{equation}
+  J = \mathrm{FDE}_{center} + \lambda_{ade}\mathrm{ADE}_{center}
+      - \lambda_{iou}\mathrm{mIoU}.
+\end{equation}
+
+\subsection{Last-Four Linear Extrapolator}
+
+For comparison, we also report a paper-style linear extrapolator. It estimates velocity for each box channel by a least-squares line fit over the last four observed boxes and then rolls forward with constant velocity:
+\begin{equation}
+  \hat{\bbox}_{t_k} = \bbox_{t_0} + \hat{\mathbf{v}}(t_k - t_0).
+\end{equation}
+
+\subsection{Residual Kalman Forecaster}
+
+The learned model predicts acceleration residuals rather than boxes directly. It begins from either the last-four linear-fit state or the final filtered Kalman state. At forecast step $k$, the residual head predicts
+\begin{equation}
+  \mathbf{a}_k = f_\theta(\phi_\repr, \phi_h, \state_k, \Delta t_k),
+\end{equation}
+where $\phi_\repr$ is the fused image representation feature and $\phi_h$ encodes recent box history. The rollout is
+\begin{align}
+  \bbox_{k+1} &= \bbox_k + \mathbf{v}_k \Delta t_k
+    + \frac{1}{2}\mathbf{a}_k \Delta t_k^2, \\
+  \mathbf{v}_{k+1} &= \mathbf{v}_k + \mathbf{a}_k \Delta t_k.
+\end{align}
+The predicted box channels are clamped to $[0,1]$. A configuration option can restrict residual prediction to center acceleration only, leaving width and height under constant-velocity dynamics.
+
+\subsection{Network Structure}
+
+Each representation $r \in \repr$ has its own CNN encoder. The default encoder configuration uses a ResNet-18 style backbone with three input channels and a $128$-dimensional pooled output. Per-representation pooled features are concatenated and passed through an image-fusion MLP:
+\begin{equation}
+  \phi_\repr = g_\theta\left([\mathrm{enc}_r(\mathbf{I}^r)]_{r\in\repr}\right).
+\end{equation}
+The default fusion hidden dimension is $256$.
+
+The history encoder receives the last $N_h=12$ history samples. Each sample contributes four normalized box values and one relative timestamp, giving an input dimension of $12 \times 5$. The history MLP outputs a $128$-dimensional feature. The residual head receives the concatenation of the fused image feature, history feature, current $8$-D state, and scalar $\Delta t$, and outputs either $4$ acceleration channels or $2$ center-only acceleration channels.
+
+Optional Kalman state and covariance features can be appended to the image-fusion input. Supported state subsets are full state, center position, center velocity, and all velocity channels. Covariance features can be omitted, diagonal-only, or a flattened selected covariance submatrix.
+
+\subsection{Spatial Cutouts}
+
+Spatial cutouts test whether the model uses local target evidence or global scene/motion shortcuts. For each anchor, inputs can be masked or cropped around the final history box. A box-scaled cutout uses the current box size multiplied by a scale factor, while a fixed-pixel cutout returns tensors of a configured size, e.g. $256 \times 256$. The fill value outside the retained region is fixed.
+
+\subsection{Correlation Analysis}
+
+To expose motion-prior bias, we fit a constant-acceleration curve to the center positions over each history-plus-future sample window:
+\begin{equation}
+  \mathbf{c}(t) \approx \mathbf{c}_0 + \mathbf{v}_0(t-t_0)
+  + \frac{1}{2}\mathbf{a}(t-t_0)^2.
+\end{equation}
+This yields anchor position $\mathbf{c}_0$, velocity $\mathbf{v}_0$, and future acceleration $\mathbf{a}=[a_x,a_y]^\top$. We then measure how predictable $\mathbf{a}$ is from motion-prior features:
+\begin{equation}
+  \mathbf{x}_{prior} =
+  [c^x_0-0.5, c^y_0-0.5, v^x_0, v^y_0,
+   \|\mathbf{c}_0-[0.5,0.5]\|_2, \|\mathbf{v}_0\|_2].
+\end{equation}
+
+\subsection{Greedy Decorrelation}
+
+The decorrelation method drops samples after the normal dataset cap is applied. For a candidate subset $S$, sufficient statistics are accumulated for standardized prior features $X_S$ and fitted accelerations $Y_S$. The score combines mean absolute Pearson correlation and ridge-linear predictability:
+\begin{equation}
+  \mathrm{score}(S) =
+  \alpha \cdot \mathrm{mean}\left(|\mathrm{corr}(X_S,Y_S)|\right)
+  + \beta \cdot \mathrm{mean}\left(\max(R^2,0)\right).
+\end{equation}
+At each greedy step, the algorithm samples a candidate set of removable examples and removes the one that most reduces the score, stopping when the target keep fraction is reached. The default feature mode uses centered position, velocity, distance-to-center, and speed; the default keep fraction is $0.5$.
+
+The standalone script also supports a coarser track-level variant that selects complete tracks using the same score and per-track sufficient statistics.
