@@ -22,6 +22,7 @@ from experiments.kalman_ml_forecasting.data.track_dataset import (
 from experiments.kalman_ml_forecasting.metrics import summarize_forecast_metrics
 from experiments.kalman_ml_forecasting.models.factory import build_model
 from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_cv_forecast, kalman_config_from_dict
+from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
@@ -151,6 +152,16 @@ def _min_track_duration_label(cfg: Dict) -> str:
     return "disabled" if value is None else f"{float(value):.4g} ms usable labeled duration per track/tracklet"
 
 
+def _is_kalman_baseline_only(cfg: Dict) -> bool:
+    data_cfg = cfg["data"]
+    model_cfg = cfg["model"]
+    return (
+        not list(data_cfg.get("representations", []))
+        and not bool(model_cfg.get("use_filter_state_features", False))
+        and str(model_cfg.get("filter_covariance_features", "none")).lower() == "none"
+    )
+
+
 def _folder_count_label(folders: List[str] | None) -> str:
     return "all configured folders" if folders is None else f"{len(folders)} folders"
 
@@ -213,9 +224,10 @@ def _print_training_plan(
 ) -> None:
     data_cfg = cfg["data"]
     train_cfg = cfg["train"]
+    train_role = "Kalman baseline evaluation only" if _is_kalman_baseline_only(cfg) else "optimizer updates only"
     print("Training/evaluation data plan")
     print(
-        f"- train: optimizer updates only; source=data.split_files.train "
+        f"- train: {train_role}; source=data.split_files.train "
         f"({_split_file_label(cfg, 'train')}); {_max_samples_label(cfg, 'train')}"
     )
     split_cfg = dict(data_cfg.get("train_eval_split") or {})
@@ -265,6 +277,11 @@ def _print_training_plan(
         f"{_spatial_cutout_label(cfg)}; xt* cuts x only, yt* cuts y only, temporal axes are unchanged"
     )
     print(f"- minimum track duration filter: {_min_track_duration_label(cfg)}")
+    if _is_kalman_baseline_only(cfg):
+        print(
+            "WARNING: no representations, filter-state features, or covariance features are enabled. "
+            "Running configured Kalman filter baseline only; no ML model will be trained."
+        )
 
 
 def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) -> DataLoader:
@@ -359,6 +376,42 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     return _mean_rows(rows)
 
 
+def _run_baseline_epoch(*, loader, device: torch.device, cfg: Dict) -> Dict[str, float]:
+    train_cfg = cfg["train"]
+    frame_size = tuple(cfg["data"]["frame_size"])
+    loss_fn = nn.SmoothL1Loss(beta=float(train_cfg.get("smooth_l1_beta", 0.05)))
+    kalman_cfg = kalman_config_from_dict(cfg.get("kalman"))
+    rows: List[Dict[str, float]] = []
+    for step, batch in enumerate(loader):
+        past_boxes = batch.past_boxes.to(device, non_blocking=True)
+        future_boxes = batch.future_boxes.to(device, non_blocking=True)
+        past_times_s = batch.past_times_s.to(device, non_blocking=True)
+        future_times_s = batch.future_times_s.to(device, non_blocking=True)
+        with torch.no_grad():
+            kalman_boxes = kalman_cv_forecast(
+                past_boxes,
+                past_times_s,
+                future_times_s,
+                kalman_cfg,
+            )
+            loss = loss_fn(kalman_boxes, future_boxes)
+            metrics = summarize_forecast_metrics(kalman_boxes.detach(), future_boxes, frame_size)
+            last4_boxes = last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
+            last4_metrics = summarize_forecast_metrics(last4_boxes.detach(), future_boxes, frame_size)
+            row = {"loss": float(loss.item()), **metrics}
+            row.update({f"kalman_{key}": value for key, value in list(row.items())})
+            row.update({f"last4_{key}": value for key, value in last4_metrics.items()})
+            rows.append(row)
+        if step % int(train_cfg.get("log_every", 20)) == 0:
+            print(
+                f"baseline step {step} loss {row['loss']:.4f} "
+                f"ADE_C {row['ade_center_px']:.2f} FDE_C {row['fde_center_px']:.2f} "
+                f"mIoU {row['miou']:.4f} "
+                f"LAST4_ADE_C {row['last4_ade_center_px']:.2f}"
+            )
+    return _mean_rows(rows)
+
+
 def _save_checkpoint(path: Path, state: Dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp")
@@ -398,7 +451,9 @@ def main() -> None:
         train_folders_override=train_folders_override,
         train_eval_folders_override=train_eval_folders_override,
     )
-    print("Building train dataset for optimizer updates...")
+    baseline_only = _is_kalman_baseline_only(cfg)
+    train_purpose = "Kalman baseline evaluation" if baseline_only else "optimizer updates"
+    print(f"Building train dataset for {train_purpose}...")
     train_set = _build_dataset(cfg, "train", folders_override=train_folders_override)
     eval_sets = {}
     if "train_eval" in eval_splits_each_epoch:
@@ -420,7 +475,7 @@ def main() -> None:
         eval_sets["val"] = _build_dataset(cfg, "val")
     _print_dataset_role(
         name="train",
-        purpose="optimizer updates",
+        purpose=train_purpose,
         source=f"data.split_files.train ({_split_file_label(cfg, 'train')})",
         max_samples=_max_samples_label(cfg, "train"),
         folders=train_folders_override,
@@ -452,15 +507,121 @@ def main() -> None:
         )
 
     device = torch.device(train_cfg.get("device", "cpu") if torch.cuda.is_available() else "cpu")
+    accumulation_steps = int(train_cfg.get("accumulation_steps", 1))
+    if accumulation_steps < 1:
+        raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
+    train_loader = _make_loader(
+        train_set,
+        batch_size=int(train_cfg["batch_size"]),
+        shuffle=not _is_kalman_baseline_only(cfg),
+        train_cfg=train_cfg,
+    )
+    eval_loaders = {
+        name: _make_loader(
+            dataset,
+            batch_size=int(train_cfg["batch_size"]),
+            shuffle=False,
+            train_cfg=train_cfg,
+        )
+        for name, dataset in eval_sets.items()
+    }
+
+    ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/kalman_ml_forecasting_ckpt"))
+    metrics_jsonl = Path(train_cfg.get("metrics_jsonl", ckpt_dir / "metrics.jsonl"))
+    if baseline_only:
+        resume = args.resume_checkpoint or train_cfg.get("resume_checkpoint")
+        if resume:
+            print(f"WARNING: ignoring resume checkpoint in Kalman baseline-only mode: {resume}")
+        print(f"Batch size: {int(train_cfg['batch_size'])} (baseline evaluation only; no optimizer steps)")
+        print("Running Kalman baseline on train dataset.")
+        train_metrics = _run_baseline_epoch(loader=train_loader, device=device, cfg=cfg)
+        eval_metrics = {}
+        for split_name in eval_splits_each_epoch:
+            loader = eval_loaders.get(split_name)
+            if loader is None:
+                continue
+            role = (
+                f"baseline selection metric source ({best_metric})"
+                if split_name == best_metric_split
+                else "monitoring only"
+            )
+            print(f"Running {split_name} Kalman baseline evaluation; role={role}; samples={len(loader.dataset)}")
+            eval_metrics[split_name] = _run_baseline_epoch(loader=loader, device=device, cfg=cfg)
+        print(f"train {json.dumps(train_metrics, sort_keys=True)}")
+        for split_name, metrics in eval_metrics.items():
+            print(f"{split_name} {json.dumps(metrics, sort_keys=True)}")
+        selected_metrics = eval_metrics.get(best_metric_split)
+        if selected_metrics is None:
+            raise RuntimeError(f"Best metric split '{best_metric_split}' was not evaluated in baseline-only mode.")
+        metric_value = selected_metrics.get(best_metric)
+        best_score = None if metric_value is None else float(metric_value)
+        metrics_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_jsonl.open("a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "epoch": 0,
+                        "baseline_only": True,
+                        "train": train_metrics,
+                        **eval_metrics,
+                    }
+                )
+                + "\n"
+            )
+        if metric_value is not None:
+            print(f"Baseline selection metric: {best_metric_split}.{best_metric}={float(metric_value):.6g}")
+        if bool(train_cfg.get("run_test_on_best", False)):
+            split_files = cfg["data"].get("split_files") or {}
+            test_key = str(train_cfg.get("test_split_key", "test"))
+            if not split_files.get(test_key):
+                raise ValueError(f"train.run_test_on_best is true, but data.split_files.{test_key} is not configured.")
+            print(
+                f"Building test dataset for final-only baseline evaluation from split_files.{test_key} "
+                f"({_split_file_label(cfg, test_key)}); {_max_samples_label(cfg, 'test')}..."
+            )
+            test_set = _build_dataset(cfg, "test", split_file_key=test_key)
+            _print_dataset_role(
+                name="test",
+                purpose="final Kalman baseline evaluation only; no ML model or checkpoint",
+                source=f"data.split_files.{test_key} ({_split_file_label(cfg, test_key)})",
+                max_samples=_max_samples_label(cfg, "test"),
+                folders=None,
+                sample_count=len(test_set),
+            )
+            test_loader = _make_loader(
+                test_set,
+                batch_size=int(train_cfg["batch_size"]),
+                shuffle=False,
+                train_cfg=train_cfg,
+            )
+            print(f"Running final test Kalman baseline evaluation; samples={len(test_set)}")
+            test_metrics = _run_baseline_epoch(loader=test_loader, device=device, cfg=cfg)
+            print(f"test  {json.dumps(test_metrics, sort_keys=True)}")
+            test_metrics_json = Path(train_cfg.get("test_metrics_json", ckpt_dir / "best_test_metrics.json"))
+            test_metrics_json.parent.mkdir(parents=True, exist_ok=True)
+            test_metrics_json.write_text(
+                json.dumps(
+                    {
+                        "checkpoint": None,
+                        "baseline_only": True,
+                        "best_score": best_score,
+                        "best_metric": best_metric,
+                        "best_metric_split": best_metric_split,
+                        "test": test_metrics,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        return
+
     model = build_model(cfg, device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(train_cfg["lr"]),
         weight_decay=float(train_cfg.get("weight_decay", 0.0)),
     )
-    accumulation_steps = int(train_cfg.get("accumulation_steps", 1))
-    if accumulation_steps < 1:
-        raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
     print(
         f"Batch size: {int(train_cfg['batch_size'])} "
         f"(effective {int(train_cfg['batch_size']) * accumulation_steps} "
@@ -477,25 +638,6 @@ def main() -> None:
         start_epoch = int(state.get("epoch", -1)) + 1
         best_score = state.get("best_score", state.get("best_val"))
         print(f"Resumed {resume} at epoch {start_epoch}")
-
-    train_loader = _make_loader(
-        train_set,
-        batch_size=int(train_cfg["batch_size"]),
-        shuffle=True,
-        train_cfg=train_cfg,
-    )
-    eval_loaders = {
-        name: _make_loader(
-            dataset,
-            batch_size=int(train_cfg["batch_size"]),
-            shuffle=False,
-            train_cfg=train_cfg,
-        )
-        for name, dataset in eval_sets.items()
-    }
-
-    ckpt_dir = Path(train_cfg.get("checkpoint_dir", "outputs/kalman_ml_forecasting_ckpt"))
-    metrics_jsonl = Path(train_cfg.get("metrics_jsonl", ckpt_dir / "metrics.jsonl"))
     for epoch in range(start_epoch, int(train_cfg["epochs"])):
         print(f"Epoch {epoch}/{int(train_cfg['epochs']) - 1}")
         print("Running train phase: optimizer updates on the train dataset.")
