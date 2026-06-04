@@ -280,6 +280,11 @@ Extension points
 - Control MLP width/depth with `model.fusion_hidden_dim`,
   `model.fusion_layers`, `model.state_hidden_dim`, `model.state_layers`,
   `model.residual_hidden_dim`, and `model.residual_layers`.
+- Set `model.history_feature_mode` to control the direct box-history feature
+  passed to the learned residual head: `raw` uses normalized absolute boxes,
+  `relative` subtracts the final history box before encoding, and `none`
+  removes this history feature block entirely. The rollout state is still
+  initialized from history according to `model.initial_state_source`.
 - Set `model.predict_size_residuals: false` to learn only center acceleration
   residuals while leaving size dynamics at constant velocity.
 - Set `model.initial_state_source: kalman_filter` to start the learned residual

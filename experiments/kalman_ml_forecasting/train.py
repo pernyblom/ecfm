@@ -224,6 +224,7 @@ def _print_training_plan(
 ) -> None:
     data_cfg = cfg["data"]
     train_cfg = cfg["train"]
+    model_cfg = cfg.get("model", {})
     train_role = "Kalman baseline evaluation only" if _is_kalman_baseline_only(cfg) else "optimizer updates only"
     print("Training/evaluation data plan")
     print(
@@ -276,6 +277,7 @@ def _print_training_plan(
         "- spatial cutout: "
         f"{_spatial_cutout_label(cfg)}; xt* cuts x only, yt* cuts y only, temporal axes are unchanged"
     )
+    print(f"- model box-history feature mode: {str(model_cfg.get('history_feature_mode', 'raw')).lower()}")
     print(f"- minimum track duration filter: {_min_track_duration_label(cfg)}")
     if _is_kalman_baseline_only(cfg):
         print(

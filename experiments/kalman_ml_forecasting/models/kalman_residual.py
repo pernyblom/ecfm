@@ -152,6 +152,7 @@ class KalmanResidualForecaster(nn.Module):
         history_steps: int,
         fusion_hidden_dim: int = 256,
         fusion_layers: int = 1,
+        history_feature_mode: str = "raw",
         state_hidden_dim: int = 128,
         state_layers: int = 2,
         residual_hidden_dim: int = 256,
@@ -172,6 +173,7 @@ class KalmanResidualForecaster(nn.Module):
             str(rep): (int(size[0]), int(size[1])) for rep, size in dict(image_sizes).items()
         }
         self.history_steps = int(history_steps)
+        self.history_feature_mode = str(history_feature_mode).lower()
         self.residual_scale = float(residual_scale)
         self.predict_size_residuals = bool(predict_size_residuals)
         self.use_filter_state_features = bool(use_filter_state_features)
@@ -192,6 +194,8 @@ class KalmanResidualForecaster(nn.Module):
             raise ValueError("state_layers must be >= 1.")
         if int(residual_layers) < 0:
             raise ValueError("residual_layers must be >= 0.")
+        if self.history_feature_mode not in {"raw", "relative", "none"}:
+            raise ValueError("history_feature_mode must be one of: raw, relative, none.")
         if not self.representations and not (
             self.use_filter_state_features or self.filter_covariance_features != "none"
         ):
@@ -228,16 +232,20 @@ class KalmanResidualForecaster(nn.Module):
             hidden_layers=max(0, int(fusion_layers) - 1),
             final_activation=True,
         )
-        self.history_encoder = _make_mlp(
-            input_dim=self.history_steps * 5,
-            hidden_dim=state_hidden_dim,
-            output_dim=state_hidden_dim,
-            hidden_layers=max(0, int(state_layers) - 1),
-            final_activation=True,
-        )
+        self.history_encoder = None
+        history_dim = 0
+        if self.history_feature_mode != "none":
+            self.history_encoder = _make_mlp(
+                input_dim=self.history_steps * 5,
+                hidden_dim=state_hidden_dim,
+                output_dim=state_hidden_dim,
+                hidden_layers=max(0, int(state_layers) - 1),
+                final_activation=True,
+            )
+            history_dim = int(state_hidden_dim)
         residual_out_dim = 4 if self.predict_size_residuals else 2
         self.residual_head = _make_mlp(
-            input_dim=fusion_hidden_dim + state_hidden_dim + 9,
+            input_dim=fusion_hidden_dim + history_dim + 9,
             hidden_dim=residual_hidden_dim,
             output_dim=residual_out_dim,
             hidden_layers=int(residual_layers),
@@ -245,6 +253,8 @@ class KalmanResidualForecaster(nn.Module):
         )
 
     def _history_features(self, past_boxes: torch.Tensor, past_times_s: torch.Tensor) -> torch.Tensor:
+        if self.history_encoder is None:
+            raise RuntimeError("_history_features called with history_feature_mode='none'.")
         if past_boxes.shape[1] < self.history_steps:
             pad_count = self.history_steps - past_boxes.shape[1]
             box_pad = past_boxes[:, :1].expand(-1, pad_count, -1)
@@ -254,6 +264,8 @@ class KalmanResidualForecaster(nn.Module):
         else:
             boxes = past_boxes[:, -self.history_steps :]
             times = past_times_s[:, -self.history_steps :]
+        if self.history_feature_mode == "relative":
+            boxes = boxes - boxes[:, -1:].expand_as(boxes)
         rel_times = times - times[:, -1:].expand_as(times)
         return self.history_encoder(torch.cat([boxes, rel_times.unsqueeze(-1)], dim=-1).flatten(1))
 
@@ -302,7 +314,11 @@ class KalmanResidualForecaster(nn.Module):
         if needs_filter:
             filter_state, filter_cov = kalman_filter_history(past_boxes, past_times_s, self.kalman_params)
         image_feat = self._image_features(inputs, filter_state, filter_cov)
-        history_feat = self._history_features(past_boxes, past_times_s)
+        history_feat = (
+            self._history_features(past_boxes, past_times_s)
+            if self.history_feature_mode != "none"
+            else None
+        )
         if self.initial_state_source == "kalman_filter":
             if filter_state is None:
                 raise RuntimeError("filter_state was not computed for kalman_filter initial_state_source.")
@@ -315,7 +331,10 @@ class KalmanResidualForecaster(nn.Module):
         for step in range(future_times_s.shape[1]):
             next_time = future_times_s[:, step]
             dt = (next_time - current_time).clamp(min=1.0e-6)
-            step_feat = torch.cat([image_feat, history_feat, state, dt.unsqueeze(-1)], dim=-1)
+            step_parts = [image_feat, state, dt.unsqueeze(-1)]
+            if history_feat is not None:
+                step_parts.insert(1, history_feat)
+            step_feat = torch.cat(step_parts, dim=-1)
             accel = self.residual_head(step_feat) * self.residual_scale
             if not self.predict_size_residuals:
                 accel = torch.cat([accel, torch.zeros_like(accel)], dim=-1)

@@ -93,6 +93,11 @@ model:
   # Number of box-history samples passed to the learned residual head. If the
   # dataset history window has fewer samples, the model pads with the earliest box.
   history_steps: 12
+  # Box-history feature mode for the learned residual head:
+  # - raw: encode normalized absolute history boxes plus relative times
+  # - relative: encode history boxes after subtracting the final history box
+  # - none: do not pass a direct box-history feature to the residual head
+  history_feature_mode: raw
   fusion_hidden_dim: 256
   fusion_layers: 1
   state_hidden_dim: 128

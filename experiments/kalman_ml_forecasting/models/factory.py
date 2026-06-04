@@ -19,6 +19,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         history_steps=history_steps,
         fusion_hidden_dim=int(model_cfg.get("fusion_hidden_dim", 256)),
         fusion_layers=int(model_cfg.get("fusion_layers", 1)),
+        history_feature_mode=str(model_cfg.get("history_feature_mode", "raw")),
         state_hidden_dim=int(model_cfg.get("state_hidden_dim", 128)),
         state_layers=int(model_cfg.get("state_layers", 2)),
         residual_hidden_dim=int(model_cfg.get("residual_hidden_dim", 256)),
