@@ -275,7 +275,8 @@ class KalmanResidualForecaster(nn.Module):
             boxes = past_boxes[:, -self.history_steps :]
             times = past_times_s[:, -self.history_steps :]
         if self.history_feature_mode == "relative":
-            boxes = boxes - boxes[:, -1:].expand_as(boxes)
+            relative_positions = boxes[..., :2] - boxes[:, -1:, :2].expand_as(boxes[..., :2])
+            boxes = torch.cat([relative_positions, boxes[..., 2:]], dim=-1)
         rel_times = times - times[:, -1:].expand_as(times)
         return self.history_encoder(torch.cat([boxes, rel_times.unsqueeze(-1)], dim=-1).flatten(1))
 
