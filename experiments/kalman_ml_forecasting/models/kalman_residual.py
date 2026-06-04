@@ -196,12 +196,18 @@ class KalmanResidualForecaster(nn.Module):
             raise ValueError("residual_layers must be >= 0.")
         if self.history_feature_mode not in {"raw", "relative", "none"}:
             raise ValueError("history_feature_mode must be one of: raw, relative, none.")
-        if not self.representations and not (
-            self.use_filter_state_features or self.filter_covariance_features != "none"
+        has_fusion_inputs = bool(
+            self.representations
+            or self.use_filter_state_features
+            or self.filter_covariance_features != "none"
+        )
+        if (
+            not has_fusion_inputs
+            and self.history_feature_mode == "none"
         ):
             raise ValueError(
-                "At least one representation is required unless filter state "
-                "or covariance features are enabled."
+                "At least one learned feature source is required: representation, "
+                "filter state/covariance features, or history_feature_mode raw/relative."
             )
         self.encoders = nn.ModuleDict(
             {
@@ -225,13 +231,17 @@ class KalmanResidualForecaster(nn.Module):
             fused_dim += filter_state_dim
         elif self.filter_covariance_features == "full":
             fused_dim += filter_state_dim * filter_state_dim
-        self.image_fusion = _make_mlp(
-            input_dim=fused_dim,
-            hidden_dim=fusion_hidden_dim,
-            output_dim=fusion_hidden_dim,
-            hidden_layers=max(0, int(fusion_layers) - 1),
-            final_activation=True,
-        )
+        self.image_fusion = None
+        fusion_dim = 0
+        if fused_dim > 0:
+            self.image_fusion = _make_mlp(
+                input_dim=fused_dim,
+                hidden_dim=fusion_hidden_dim,
+                output_dim=fusion_hidden_dim,
+                hidden_layers=max(0, int(fusion_layers) - 1),
+                final_activation=True,
+            )
+            fusion_dim = int(fusion_hidden_dim)
         self.history_encoder = None
         history_dim = 0
         if self.history_feature_mode != "none":
@@ -245,7 +255,7 @@ class KalmanResidualForecaster(nn.Module):
             history_dim = int(state_hidden_dim)
         residual_out_dim = 4 if self.predict_size_residuals else 2
         self.residual_head = _make_mlp(
-            input_dim=fusion_hidden_dim + history_dim + 9,
+            input_dim=fusion_dim + history_dim + 9,
             hidden_dim=residual_hidden_dim,
             output_dim=residual_out_dim,
             hidden_layers=int(residual_layers),
@@ -274,7 +284,7 @@ class KalmanResidualForecaster(nn.Module):
         inputs: Dict[str, torch.Tensor],
         filter_state: torch.Tensor | None = None,
         filter_cov: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         enc = [self.encoders[rep](inputs[rep]).pooled for rep in self.representations]
         if self.use_filter_state_features:
             if filter_state is None:
@@ -293,6 +303,10 @@ class KalmanResidualForecaster(nn.Module):
                 enc.append(torch.diagonal(selected_cov, dim1=-2, dim2=-1))
             else:
                 enc.append(selected_cov.flatten(1))
+        if not enc:
+            return None
+        if self.image_fusion is None:
+            raise RuntimeError("image_fusion is missing even though image/filter features were provided.")
         return self.image_fusion(torch.cat(enc, dim=-1))
 
     def forward(
@@ -331,9 +345,12 @@ class KalmanResidualForecaster(nn.Module):
         for step in range(future_times_s.shape[1]):
             next_time = future_times_s[:, step]
             dt = (next_time - current_time).clamp(min=1.0e-6)
-            step_parts = [image_feat, state, dt.unsqueeze(-1)]
+            step_parts = [state, dt.unsqueeze(-1)]
+            if image_feat is not None:
+                step_parts.insert(0, image_feat)
             if history_feat is not None:
-                step_parts.insert(1, history_feat)
+                insert_idx = 1 if image_feat is not None else 0
+                step_parts.insert(insert_idx, history_feat)
             step_feat = torch.cat(step_parts, dim=-1)
             accel = self.residual_head(step_feat) * self.residual_scale
             if not self.predict_size_residuals:

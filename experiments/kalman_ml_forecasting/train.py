@@ -159,6 +159,7 @@ def _is_kalman_baseline_only(cfg: Dict) -> bool:
         not list(data_cfg.get("representations", []))
         and not bool(model_cfg.get("use_filter_state_features", False))
         and str(model_cfg.get("filter_covariance_features", "none")).lower() == "none"
+        and str(model_cfg.get("history_feature_mode", "raw")).lower() == "none"
     )
 
 
@@ -281,8 +282,8 @@ def _print_training_plan(
     print(f"- minimum track duration filter: {_min_track_duration_label(cfg)}")
     if _is_kalman_baseline_only(cfg):
         print(
-            "WARNING: no representations, filter-state features, or covariance features are enabled. "
-            "Running configured Kalman filter baseline only; no ML model will be trained."
+            "WARNING: no representations, filter-state features, covariance features, or box-history "
+            "features are enabled. Running configured Kalman filter baseline only; no ML model will be trained."
         )
 
 

@@ -271,11 +271,14 @@ Metrics
 Extension points
 - Add or remove branches with `data.representations`.
 - Use `data.representations: []` to train a residual model without image/CNN
-  inputs. This is only valid when `model.use_filter_state_features: true` or
-  `model.filter_covariance_features` is `diag`/`full`.
-- If `data.representations: []` and no filter state/covariance features are
-  enabled, the trainer runs configured Kalman baseline-only evaluation, writes
-  normal metrics/test JSON, and skips ML model training.
+  inputs. This is valid when at least one learned feature source remains:
+  `model.history_feature_mode` is `raw`/`relative`,
+  `model.use_filter_state_features: true`, or `model.filter_covariance_features`
+  is `diag`/`full`.
+- If `data.representations: []`, `model.history_feature_mode: none`, and no
+  filter state/covariance features are enabled, the trainer runs configured
+  Kalman baseline-only evaluation, writes normal metrics/test JSON, and skips
+  ML model training.
 - Use grid-split render aliases such as `xt_my_10x10` as in object detection.
 - Control MLP width/depth with `model.fusion_hidden_dim`,
   `model.fusion_layers`, `model.state_hidden_dim`, `model.state_layers`,
