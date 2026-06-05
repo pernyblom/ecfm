@@ -16,7 +16,7 @@ overrides:
   model.use_filter_state_features: true
   model.history_feature_mode: none
   model.filter_state_center_position_normalization: frame_centered
-  data.decorrelation.mean_accel_weight: 1.0e-3
+  data.decorrelation.mean_accel_weight: 1.0e-4
 
 templates:
   train.checkpoint_dir: "{output_dir}/runs/{name}/ckpt"
