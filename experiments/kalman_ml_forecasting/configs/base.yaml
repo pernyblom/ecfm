@@ -5,15 +5,12 @@ data:
   tracks_file: cleaned_tracks.txt
   split_files:
     train: datasets/FRED/dataset_splits/canonical/train_split.txt
-    val: datasets/FRED/dataset_splits/canonical/test_split.txt
-    # Set this to a held-out test split and enable train.run_test_on_best to
-    # evaluate test only once from the best validation checkpoint.
-    test:
+    test: datasets/FRED/dataset_splits/canonical/test_split.txt
   # Optional random folder-level holdout from split_files.train. When enabled,
   # the train dataset uses the remaining folders and train_eval uses the held-out
   # folders, so per-epoch train_eval samples are not trained on.
   train_eval_split:
-    enabled: false
+    enabled: true
     eval_fraction: 0.1
     eval_count:
     seed: 123
@@ -105,7 +102,7 @@ model:
   residual_hidden_dim: 256
   residual_layers: 2
   residual_scale: 1.0
-  predict_size_residuals: true
+  predict_size_residuals: false
   # Rollout initial state: "last_four" keeps the paper-style linear fit,
   # "kalman_filter" starts the learned residual rollout from the configured
   # Kalman filter's final history state.
@@ -190,15 +187,15 @@ train:
   log_every: 20
   # Per-epoch evaluation splits. train_eval uses data.split_files.train with
   # data.max_samples_train_eval; val is used for best-checkpoint selection.
-  eval_splits_each_epoch: ["train_eval", "val"]
-  best_metric_split: val
+  eval_splits_each_epoch: ["train_eval"]
+  best_metric_split: train_eval
   best_metric: loss
   best_metric_mode: min
   # Enable only after data.split_files.test points to a held-out test split.
-  run_test_on_best: false
+  run_test_on_best: true
   test_split_key: test
   test_metrics_json: outputs/kalman_ml_forecasting_ckpt/best_test_metrics.json
-  checkpoint_every: 1
+  checkpoint_every: 0
   checkpoint_dir: outputs/kalman_ml_forecasting_ckpt
   resume_checkpoint:
   metrics_jsonl: outputs/kalman_ml_forecasting_ckpt/metrics.jsonl
