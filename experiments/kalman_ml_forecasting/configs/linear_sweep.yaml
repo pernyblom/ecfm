@@ -4,9 +4,9 @@ command: python experiments/kalman_ml_forecasting/train.py --config {config}
 configs_dir: configs
 
 overrides:
-  train.epochs: 10
+  train.epochs: 40
   train.batch_size: 1024
-  train.lr: 1.0e-2
+  train.lr: 2.0e-2
   data.representations: []
   data.max_samples_train: 
   data.max_samples_train_eval:
@@ -16,6 +16,7 @@ overrides:
   model.use_filter_state_features: true
   model.history_feature_mode: none
   model.filter_state_center_position_normalization: frame_centered
+  data.decorrelation.mean_accel_weight: 1.0e-3
 
 templates:
   train.checkpoint_dir: "{output_dir}/runs/{name}/ckpt"
@@ -28,10 +29,11 @@ grid:
     - center_full
     - center_position
     - center_velocity
-    - velocities
   data.decorrelation.enabled:
     - true
     - false
+
+
   # data.forecast_ms:
   #   - 800.0
   #   - 400.0

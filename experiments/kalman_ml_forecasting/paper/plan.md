@@ -12,13 +12,16 @@ Care is taken to extend the learned model to OOD performance by not directly pro
 
 However, there is a strong correlation with velocity to acceleration so we also implemented a decorrelation method.
 
+Also bias towards acceleration down more due to gravity and that most scenes have a horizontally directed camera. Trying to remove this depends on the OOD target.
 
 
 What to include:
 - Short description of FRED dataset
 - Description of baseline kalman and how it was optimized
-- Analysis of correlation from pos/vel to acceleration
+- Analysis of correlation from pos/vel to acceleration with training results linear regression
 - 
+
+
 
 
 
