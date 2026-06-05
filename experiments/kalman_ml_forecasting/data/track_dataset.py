@@ -901,6 +901,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         ridge_lambda: float,
         corr_weight: float,
         r2_weight: float,
+        mean_accel_weight: float,
     ) -> dict[str, float]:
         if n < 4:
             return {
@@ -908,7 +909,9 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 "samples": float(n),
                 "mean_abs_corr": float("inf"),
                 "mean_r2": float("inf"),
+                "mean_accel_norm": float("inf"),
             }
+        mean_y = sum_y / n
         centered_xx = sum_xx - np.outer(sum_x, sum_x) / n
         centered_xy = sum_xy - np.outer(sum_x, sum_y) / n
         centered_yy = sum_yy - np.outer(sum_y, sum_y) / n
@@ -925,11 +928,17 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         r2 = 1.0 - sse / np.maximum(sst, 1.0e-9)
         mean_abs_corr = float(np.mean(corr))
         mean_r2 = float(np.mean(np.maximum(r2, 0.0)))
+        mean_accel_norm = float(np.linalg.norm(mean_y))
         return {
-            "score": float(corr_weight * mean_abs_corr + r2_weight * mean_r2),
+            "score": float(
+                corr_weight * mean_abs_corr
+                + r2_weight * mean_r2
+                + mean_accel_weight * mean_accel_norm
+            ),
             "samples": float(n),
             "mean_abs_corr": mean_abs_corr,
             "mean_r2": mean_r2,
+            "mean_accel_norm": mean_accel_norm,
         }
 
     def _apply_sample_decorrelation(self) -> None:
@@ -968,6 +977,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         ridge_lambda = float(cfg.get("ridge_lambda", 1.0e-3))
         corr_weight = float(cfg.get("corr_weight", 1.0))
         r2_weight = float(cfg.get("r2_weight", 1.0))
+        mean_accel_weight = float(cfg.get("mean_accel_weight", 0.0))
         show_progress = bool(cfg.get("progress", True))
         rng = np.random.default_rng(seed)
         before_score = self._score_decorrelation_stats(
@@ -980,6 +990,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             ridge_lambda=ridge_lambda,
             corr_weight=corr_weight,
             r2_weight=r2_weight,
+            mean_accel_weight=mean_accel_weight,
         )
         current_score = before_score
         selected = np.ones(len(self.samples), dtype=bool)
@@ -1002,6 +1013,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     ridge_lambda=ridge_lambda,
                     corr_weight=corr_weight,
                     r2_weight=r2_weight,
+                    mean_accel_weight=mean_accel_weight,
                 )
                 if best_score is None or score["score"] < best_score["score"]:
                     best_idx = int(idx)
@@ -1026,6 +1038,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             f"kept {len(self.samples)}/{before} samples "
             f"(feature_mode={cfg.get('feature_mode', 'motion_priors')}, greedy_candidates={greedy_candidates}, "
             f"score={before_score['score']:.6g}->{current_score['score']:.6g}, "
+            f"mean_accel_norm={before_score['mean_accel_norm']:.3g}->{current_score['mean_accel_norm']:.3g}, "
             f"|a| mean/median/p90={before_motion['abs_accel_mean']:.3g}/"
             f"{before_motion['abs_accel_median']:.3g}/{before_motion['abs_accel_p90']:.3g}->"
             f"{after_motion['abs_accel_mean']:.3g}/{after_motion['abs_accel_median']:.3g}/"

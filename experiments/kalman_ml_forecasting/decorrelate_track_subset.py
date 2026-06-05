@@ -83,6 +83,7 @@ def _score_stats(
     ridge_lambda: float,
     corr_weight: float,
     r2_weight: float,
+    mean_accel_weight: float,
 ) -> dict[str, float]:
     n = float(stats["n"])
     if n < 4:
@@ -91,12 +92,14 @@ def _score_stats(
             "samples": n,
             "mean_abs_corr": float("inf"),
             "mean_r2": float("inf"),
+            "mean_accel_norm": float("inf"),
         }
     sum_x = np.asarray(stats["sum_x"], dtype=np.float64)
     sum_y = np.asarray(stats["sum_y"], dtype=np.float64)
     sum_xx = np.asarray(stats["sum_xx"], dtype=np.float64)
     sum_xy = np.asarray(stats["sum_xy"], dtype=np.float64)
     sum_yy = np.asarray(stats["sum_yy"], dtype=np.float64)
+    mean_y = sum_y / n
     centered_xx = sum_xx - np.outer(sum_x, sum_x) / n
     centered_xy = sum_xy - np.outer(sum_x, sum_y) / n
     centered_yy = sum_yy - np.outer(sum_y, sum_y) / n
@@ -113,11 +116,17 @@ def _score_stats(
     r2 = 1.0 - sse / np.maximum(sst, 1.0e-9)
     mean_abs_corr = float(np.mean(corr))
     mean_r2 = float(np.mean(np.maximum(r2, 0.0)))
+    mean_accel_norm = float(np.linalg.norm(mean_y))
     return {
-        "score": float(corr_weight * mean_abs_corr + r2_weight * mean_r2),
+        "score": float(
+            corr_weight * mean_abs_corr
+            + r2_weight * mean_r2
+            + mean_accel_weight * mean_accel_norm
+        ),
         "samples": n,
         "mean_abs_corr": mean_abs_corr,
         "mean_r2": mean_r2,
+        "mean_accel_norm": mean_accel_norm,
     }
 
 
@@ -150,6 +159,7 @@ def _select_decorrelated_tracks(
     ridge_lambda: float,
     corr_weight: float,
     r2_weight: float,
+    mean_accel_weight: float,
     feature_mode: str,
     show_progress: bool,
 ) -> tuple[list[TrackKey], dict[str, float]]:
@@ -173,6 +183,7 @@ def _select_decorrelated_tracks(
         ridge_lambda=float(ridge_lambda),
         corr_weight=float(corr_weight),
         r2_weight=float(r2_weight),
+        mean_accel_weight=float(mean_accel_weight),
     )
     removal_count = max(0, len(selected) - target_tracks)
     if removal_count == 0:
@@ -192,6 +203,7 @@ def _select_decorrelated_tracks(
                 ridge_lambda=ridge_lambda,
                 corr_weight=corr_weight,
                 r2_weight=r2_weight,
+                mean_accel_weight=mean_accel_weight,
             )
             if best_score is None or score["score"] < best_score["score"]:
                 best_remove = key
@@ -284,6 +296,12 @@ def main() -> None:
     parser.add_argument("--corr-weight", type=float, default=1.0)
     parser.add_argument("--r2-weight", type=float, default=1.0)
     parser.add_argument(
+        "--mean-accel-weight",
+        type=float,
+        default=0.0,
+        help="Weight for penalizing the raw norm of mean fitted acceleration in px/s^2.",
+    )
+    parser.add_argument(
         "--feature-mode",
         choices=["raw", "centered", "motion_priors"],
         default="motion_priors",
@@ -348,6 +366,7 @@ def main() -> None:
         ridge_lambda=float(args.ridge_lambda),
         corr_weight=float(args.corr_weight),
         r2_weight=float(args.r2_weight),
+        mean_accel_weight=float(args.mean_accel_weight),
     )
     selected, selected_score = _select_decorrelated_tracks(
         track_samples,
@@ -359,6 +378,7 @@ def main() -> None:
         ridge_lambda=float(args.ridge_lambda),
         corr_weight=float(args.corr_weight),
         r2_weight=float(args.r2_weight),
+        mean_accel_weight=float(args.mean_accel_weight),
         feature_mode=str(args.feature_mode),
         show_progress=not bool(args.no_progress),
     )
@@ -387,6 +407,10 @@ def main() -> None:
         "feature_mode": str(args.feature_mode),
         "min_track_samples": int(args.min_track_samples),
         "target_tracks": int(target_tracks),
+        "ridge_lambda": float(args.ridge_lambda),
+        "corr_weight": float(args.corr_weight),
+        "r2_weight": float(args.r2_weight),
+        "mean_accel_weight": float(args.mean_accel_weight),
         "all_tracks_score": all_score,
         "selected_tracks_score": selected_score,
         "manifest_csv": str(manifest_csv),
@@ -395,7 +419,7 @@ def main() -> None:
         "method": (
             "Greedy track removal using per-track sufficient statistics. Score is weighted "
             "mean absolute Pearson correlation and ridge linear R2 from the configured "
-            "feature mode to [ax, ay]."
+            "feature mode to [ax, ay], plus an optional raw mean-acceleration norm penalty."
         ),
     }
     summary_json.parent.mkdir(parents=True, exist_ok=True)

@@ -218,6 +218,7 @@ data:
     keep_fraction: 0.5
     feature_mode: motion_priors
     greedy_candidates: 64
+    mean_accel_weight: 0.0
 ```
 
 After the normal `max_samples_*` cap is applied, the dataset fits the same
@@ -230,6 +231,13 @@ only centered position and velocity, while `raw` preserves normalized
 top-left-origin position features. The sample cache key includes these settings,
 so changing them rebuilds the cached dataset.
 
+By default the score centers acceleration targets, so it removes feature-linked
+acceleration predictability but not a constant acceleration bias. Set
+`mean_accel_weight` to a small positive value to add
+`mean_accel_weight * ||mean([ax, ay])||` to the greedy-removal score. This term
+uses raw fitted acceleration in px/s^2, so weights should usually be much
+smaller than the unitless `corr_weight` and `r2_weight`.
+
 Each split listed in `splits` is decorrelated independently when that dataset is
 built, so `["train", "train_eval", "val"]` runs three separate selections on
 three separate sample pools. Use `["all"]` to apply the same rule to every
@@ -237,9 +245,10 @@ constructed split. Leave `seed` blank to use the dataset seed, which is already
 offset by split; set it explicitly only when you want the same candidate
 sampling seed everywhere.
 
-The decorrelation log reports the score before/after, absolute fitted
-acceleration magnitude `|a|`, and turning acceleration `|a_perp|`, where
-`a_perp` is the acceleration component perpendicular to fitted velocity.
+The decorrelation log reports the score before/after, mean acceleration norm,
+absolute fitted acceleration magnitude `|a|`, and turning acceleration
+`|a_perp|`, where `a_perp` is the acceleration component perpendicular to fitted
+velocity.
 
 The standalone script still exists for producing a coarse track-level manifest:
 

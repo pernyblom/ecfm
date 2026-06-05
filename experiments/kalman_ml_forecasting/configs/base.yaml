@@ -49,12 +49,12 @@ data:
   # forecast-window candidates, so it can require e.g. 1.2 s tracklets even when
   # history_ms + forecast_ms is shorter. The emitted past/future tensors still
   # use history_ms and forecast_ms.
-  min_track_duration_ms:
+  min_track_duration_ms: 1200.0
   label_period_s:
   max_tracks:
-  max_samples_train: 20000
-  max_samples_train_eval: 5000
-  max_samples_val: 5000
+  max_samples_train:
+  max_samples_train_eval:
+  max_samples_val:
   max_samples_test:
   filter_missing_representations: true
   # Optional sample-level decorrelation during dataset construction, applied
@@ -77,6 +77,10 @@ data:
     ridge_lambda: 1.0e-3
     corr_weight: 1.0
     r2_weight: 1.0
+    # Optional raw px/s^2 penalty for global mean fitted acceleration. Keep 0.0
+    # to only reduce feature predictability; set a small positive value to also
+    # discourage constant acceleration bias such as a global downward tendency.
+    mean_accel_weight: 1.0e-4
     progress: true
   seed: 123
   cache_dir: outputs/kalman_ml_forecasting_cache
@@ -105,7 +109,7 @@ model:
   residual_hidden_dim: 256
   residual_layers: 2
   residual_scale: 1.0
-  predict_size_residuals: false
+  predict_size_residuals: true
   # Rollout initial state: "last_four" keeps the paper-style linear fit,
   # "kalman_filter" starts the learned residual rollout from the configured
   # Kalman filter's final history state.

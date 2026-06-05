@@ -76,6 +76,10 @@ data:
     ridge_lambda: 1.0e-3
     corr_weight: 1.0
     r2_weight: 1.0
+    # Optional raw px/s^2 penalty for global mean fitted acceleration. Keep 0.0
+    # to only reduce feature predictability; set a small positive value to also
+    # discourage constant acceleration bias such as a global downward tendency.
+    mean_accel_weight: 0.0
     progress: true
   seed: 123
   cache_dir: outputs/kalman_ml_forecasting_cache

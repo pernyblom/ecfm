@@ -115,6 +115,38 @@ def test_optimize_kalman_objective_weights_support_maximize_and_weighted_score()
     assert _objective_score(metrics, weighted) == -13.0
 
 
+def test_sample_decorrelation_score_can_penalize_mean_acceleration() -> None:
+    x = np.asarray([[-1.0], [-0.5], [0.5], [1.0]], dtype=np.float64)
+    y = np.asarray([[2.0, 0.0], [2.0, 0.0], [2.0, 0.0], [2.0, 0.0]], dtype=np.float64)
+    base = TrackKalmanForecastDataset._score_decorrelation_stats(
+        float(x.shape[0]),
+        x.sum(axis=0),
+        y.sum(axis=0),
+        x.T @ x,
+        x.T @ y,
+        y.T @ y,
+        ridge_lambda=1.0e-3,
+        corr_weight=0.0,
+        r2_weight=0.0,
+        mean_accel_weight=0.0,
+    )
+    penalized = TrackKalmanForecastDataset._score_decorrelation_stats(
+        float(x.shape[0]),
+        x.sum(axis=0),
+        y.sum(axis=0),
+        x.T @ x,
+        x.T @ y,
+        y.T @ y,
+        ridge_lambda=1.0e-3,
+        corr_weight=0.0,
+        r2_weight=0.0,
+        mean_accel_weight=0.5,
+    )
+
+    assert base["mean_accel_norm"] == 2.0
+    assert penalized["score"] == 1.0
+
+
 def test_kalman_residual_forecaster_forward_shapes() -> None:
     model = KalmanResidualForecaster(
         representations=["cstr3", "xt_my"],
