@@ -1,7 +1,7 @@
 \section{Related Work}
 
 \paragraph{Object Motion Forecasting.}
-Classical trajectory forecasting often starts from constant-position, constant-velocity, or constant-acceleration assumptions, then augments them with learned dynamics or scene context. The prior FRED forecasting setup reports center-trajectory metrics, while our experiments emphasize full bounding-box forecasting and compare against an optimized center-size Kalman baseline. \todo{Add exact FRED and prior-work citations.}
+Classical trajectory forecasting often starts from constant-position, constant-velocity, or constant-acceleration assumptions, then augments them with learned dynamics or scene context. The FRED benchmark evaluates drone forecasting with full bounding boxes, reporting ADE/FDE over both boxes and centers as well as mean IoU~\cite{magrini_fred_2025}. A recent event-only Kalman follow-up uses propeller RPM to modulate process noise and reports center ADE/FDE at $0.4$ s and $0.8$ s horizons~\cite{rpm_kalman_2026}. Our work connects these two evaluation styles by using a Kalman-style state estimator as a full center-size box forecaster.
 
 \paragraph{Kalman Filtering and Learned Residuals.}
 Kalman filters provide a probabilistic state estimate under linear-Gaussian dynamics. Hybrid approaches combine analytic transitions with neural residuals, allowing learned components to model unobserved forces or target maneuvers while retaining stable state evolution. Our model keeps the transition structure explicit and learns acceleration residuals in the normalized box state.
@@ -12,4 +12,4 @@ Event cameras encode asynchronous brightness changes and are commonly converted 
 \paragraph{Dataset Bias and Decorrelation.}
 Forecasting datasets can contain correlations between target position, velocity, and future acceleration. Such correlations can create optimistic results for models that exploit split-specific motion priors rather than visual evidence. We therefore report both standard-split results and results on a decorrelated sample subset.
 
-\todo{Replace placeholder citations with target workshop bibliography entries.}
+\todo{Add final event-camera representation and forecasting citations.}

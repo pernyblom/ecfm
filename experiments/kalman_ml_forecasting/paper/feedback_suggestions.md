@@ -5,16 +5,16 @@
 The strongest workshop framing is not "we tried many event representations." It is:
 
 1. FRED UAV forecasting has a surprisingly strong optimized Kalman baseline.
-2. Extending Kalman from center-only to full center-size boxes already gives strong box metrics.
+2. The original FRED paper has full box forecasting metrics; the RPM-modulated Kalman paper is center-only.
 3. Event-conditioned residual learning improves standard-split box forecasting, but motion-prior shortcuts are a real confound.
 4. Correlation analysis, linear residual diagnostics, and decorrelated subsets make the evaluation more honest.
 
-This is a better story than claiming broad SOTA across all metrics. It lets you be precise: likely strong on box mIoU/ADE/FDE versus original FRED, but not necessarily better than recent work on center ADE/FDE.
+This is a better story than claiming broad SOTA across all metrics. It lets you be precise: box mIoU/ADE/FDE should be compared against the original FRED table, while center ADE/FDE should be compared separately against the RPM-modulated Kalman paper.
 
 ## Paper Claims To Keep Safe
 
-- Claim "strong box forecasting results" only after checking metric definitions against the original FRED paper.
-- Claim "preliminary SOTA on box metrics" only if the table directly supports it.
+- Claim "strong box forecasting results" against the original FRED paper's box ADE/FDE and mIoU metrics.
+- Keep center ADE/FDE claims separate from box SOTA claims, because the RPM-modulated Kalman paper reports center-only metrics.
 - Avoid claiming OOD generalization. Say the cutout and decorrelation setup is "OOD-motivated" or "a diagnostic for shortcut reliance."
 - Treat CSTR2-vs-event-frame findings as empirical observations, not explained facts.
 - Keep the decorrelated split framed as a stricter in-dataset diagnostic, not a replacement for a new collection protocol.
@@ -44,7 +44,7 @@ This is a better story than claiming broad SOTA across all metrics. It lets you 
 
 4. Verify comparison to prior work:
    - center ADE/FDE metric definition
-   - box ADE/FDE metric definition
+   - box ADE/FDE metric definition from the original FRED paper
    - mIoU horizon and averaging convention
    - whether prior numbers use the same history and forecast horizon
 
@@ -86,4 +86,4 @@ If space is tight, merge Tables 3 and 4 by adding a `Split` or `Decorrelated` co
 - If decorrelated results are weak, the paper still works as a cautionary analysis plus baseline improvement paper.
 - If event images only help on the raw split, avoid saying they learn maneuvers; say they improve under the standard protocol and analyze why decorrelation changes the picture.
 - If linear residuals remain strong after decorrelation, emphasize that the decorrelation is imperfect and that complete OOD validation needs a new dataset split or collection protocol.
-- If the prior FRED comparison is not apples-to-apples, move it to a short discussion paragraph instead of a headline result.
+- If the box comparison against original FRED is apples-to-apples but the center comparison against RPM-Kalman is not, keep them in separate table blocks or clearly mark the missing box metrics for RPM-Kalman.
