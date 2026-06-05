@@ -282,7 +282,10 @@ Extension points
 - Use grid-split render aliases such as `xt_my_10x10` as in object detection.
 - Control MLP width/depth with `model.fusion_hidden_dim`,
   `model.fusion_layers`, `model.state_hidden_dim`, `model.state_layers`,
-  `model.residual_hidden_dim`, and `model.residual_layers`.
+  `model.residual_hidden_dim`, and `model.residual_layers`. Set
+  `fusion_layers: 0`, `state_layers: 0`, and `residual_layers: 0` for a
+  linear-ish residual model over the selected features, flattened history,
+  rollout state, and step `dt`.
 - Set `model.history_feature_mode` to control the direct box-history feature
   passed to the learned residual head: `raw` uses normalized absolute boxes,
   `relative` subtracts the final history box before encoding, and `none`
@@ -299,10 +302,33 @@ Extension points
   filter state is additional conditioning information unless
   `model.initial_state_source: kalman_filter` is also set.
 - Set `model.filter_state_feature_mode` to control which filtered state entries
-  are appended: `full`, `center_position`, `center_velocity`, or `velocities`.
+  are appended: `full`, `center_full` (`[cx, cy, vx, vy]`),
+  `center_position`, `center_velocity`, or `velocities`.
 - Set `model.filter_covariance_features: diag` or `full` to append the Kalman
   history covariance diagonal or flattened covariance matrix to the fusion
   features. Covariance features use the same state subset selected by
   `model.filter_state_feature_mode`. The default is `none`.
 - Tune `model.residual_scale` if residual accelerations are too aggressive early
   in training.
+
+Linear-ish examples:
+
+```yaml
+data:
+  representations: []
+model:
+  history_feature_mode: none
+  use_filter_state_features: true
+  filter_state_feature_mode: center_full
+  fusion_layers: 0
+  residual_layers: 0
+```
+
+```yaml
+data:
+  representations: []
+model:
+  history_feature_mode: raw
+  state_layers: 0
+  residual_layers: 0
+```

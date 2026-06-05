@@ -14,7 +14,7 @@ data:
     eval_fraction: 0.1
     eval_count:
     seed: 123
-  representations: ["xt_my", "yt_mx", "cstr3", "padded_rgb"]
+  representations: []
   # Optional fixed-shape spatial masking around the final history box, just
   # before prediction starts. fixed_pixels returns real cropped tensors with
   # this output size. For xt* representations only the x axis is cut and the
@@ -52,9 +52,8 @@ data:
   min_track_duration_ms:
   label_period_s:
   max_tracks:
-  max_samples_train: 20000
-  max_samples_train_eval: 5000
-  max_samples_val: 5000
+  max_samples_train: 400000
+  max_samples_train_eval: 40000
   max_samples_test:
   filter_missing_representations: true
   # Optional sample-level decorrelation during dataset construction, applied
@@ -94,25 +93,25 @@ model:
   # - raw: encode normalized absolute history boxes plus relative times
   # - relative: encode history boxes after subtracting the final history box
   # - none: do not pass a direct box-history feature to the residual head
-  history_feature_mode: raw
+  history_feature_mode: none
   # Set fusion_layers/state_layers/residual_layers to 0 for a linear-ish
   # residual model over the selected learned features, flattened box history,
   # rollout state, and dt. Defaults keep the historical nonlinear MLP behavior.
   fusion_hidden_dim: 256
-  fusion_layers: 1
+  fusion_layers: 0
   state_hidden_dim: 128
   state_layers: 2
   residual_hidden_dim: 256
-  residual_layers: 2
+  residual_layers: 0
   residual_scale: 1.0
-  predict_size_residuals: false
+  predict_size_residuals: true
   # Rollout initial state: "last_four" keeps the paper-style linear fit,
   # "kalman_filter" starts the learned residual rollout from the configured
   # Kalman filter's final history state.
   initial_state_source: last_four
   # If true, append the configured Kalman filter's final history state
   # to the encoder features before image fusion.
-  use_filter_state_features: false
+  use_filter_state_features: true
   # Which Kalman state entries to append, and which covariance entries to keep
   # when filter_covariance_features is enabled:
   # - full: [cx, cy, w, h, vx, vy, vw, vh]
@@ -120,42 +119,13 @@ model:
   # - center_position: [cx, cy]
   # - center_velocity: [vx, vy]
   # - velocities: [vx, vy, vw, vh]
-  filter_state_feature_mode: full
+  filter_state_feature_mode: center_full
   # Optional covariance features from the configured Kalman filter history
   # state. Use "none", "diag" for the selected covariance diagonal entries, or
   # "full" for the flattened selected covariance submatrix.
   filter_covariance_features: none
   cell_local_first_conv: false
   cell_local_first_conv_representations: []
-
-# kalman:
-#   enabled: true
-#   initial_pos_std: 0.05
-#   initial_size_std: 0.05
-#   initial_vel_std: 1.0
-#   process_pos_std: 0.001
-#   process_size_std: 0.001
-#   process_vel_std: 0.1
-#   process_size_vel_std: 0.1
-#   measurement_pos_std: 0.01
-#   measurement_size_std: 0.01
-
-
-
-# Optimized 20000 train samples
-# Best val score: 111.681296
-# --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
-# kalman:
-#   enabled: true
-#   initial_pos_std: 9.7423363e-05
-#   initial_size_std: 0.041994311
-#   initial_vel_std: 0.0040328889
-#   process_pos_std: 3.7525289e-05
-#   process_size_std: 0.83824426
-#   process_vel_std: 0.13031271
-#   process_size_vel_std: 0.012997082
-#   measurement_pos_std: 0.010307864
-#   measurement_size_std: 0.07238128
 
 
 # Optimized 160000 train samples
@@ -176,8 +146,8 @@ kalman:
 
 train:
   device: cuda
-  epochs: 40
-  batch_size: 32
+  epochs: 100
+  batch_size: 1024
   accumulation_steps: 1
   num_workers: 2
   persistent_workers: true

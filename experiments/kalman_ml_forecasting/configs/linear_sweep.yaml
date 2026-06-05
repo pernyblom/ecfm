@@ -1,0 +1,35 @@
+# Linear sweep
+
+command: python experiments/kalman_ml_forecasting/train.py --config {config}
+configs_dir: configs
+
+overrides:
+  train.epochs: 100
+  train.batch_size: 1024
+  data.representations: []
+  data.max_samples_train: 400000
+  data.max_samples_train_eval: 40000
+  model.fusion_layers: 0
+  model.residual_layers: 0
+  model.use_filter_state_features: true
+  model.history_feature_mode: none
+
+
+templates:
+  train.checkpoint_dir: "{output_dir}/runs/{name}/ckpt"
+  train.metrics_jsonl: "{output_dir}/runs/{name}/metrics.jsonl"
+  train.test_metrics_json: "{output_dir}/runs/{name}/best_test_metrics.json"
+  data.cache_dir: "{output_dir}/runs/{name}/cache"
+
+grid:
+  filter_state_feature_mode:
+    - center_full
+    - center_position
+    - center_velocity
+    - velocities
+  data.decorrelation:
+    - false
+    - true
+  mode.predict_size_residuals:
+    - true
+    - false

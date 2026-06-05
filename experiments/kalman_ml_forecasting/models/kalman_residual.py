@@ -95,6 +95,8 @@ def _encoder_cfg_for_rep(
 def _filter_state_indices(mode: str) -> list[int]:
     if mode == "full":
         return list(range(8))
+    if mode == "center_full":
+        return [0, 1, 4, 5]
     if mode == "center_position":
         return [0, 1]
     if mode == "center_velocity":
@@ -102,7 +104,8 @@ def _filter_state_indices(mode: str) -> list[int]:
     if mode == "velocities":
         return [4, 5, 6, 7]
     raise ValueError(
-        "filter_state_feature_mode must be one of: full, center_position, center_velocity, velocities."
+        "filter_state_feature_mode must be one of: full, center_full, "
+        "center_position, center_velocity, velocities."
     )
 
 
@@ -188,10 +191,10 @@ class KalmanResidualForecaster(nn.Module):
             )
         if self.initial_state_source not in {"last_four", "kalman_filter"}:
             raise ValueError("initial_state_source must be one of: last_four, kalman_filter.")
-        if int(fusion_layers) < 1:
-            raise ValueError("fusion_layers must be >= 1.")
-        if int(state_layers) < 1:
-            raise ValueError("state_layers must be >= 1.")
+        if int(fusion_layers) < 0:
+            raise ValueError("fusion_layers must be >= 0.")
+        if int(state_layers) < 0:
+            raise ValueError("state_layers must be >= 0.")
         if int(residual_layers) < 0:
             raise ValueError("residual_layers must be >= 0.")
         if self.history_feature_mode not in {"raw", "relative", "none"}:
@@ -234,25 +237,33 @@ class KalmanResidualForecaster(nn.Module):
         self.image_fusion = None
         fusion_dim = 0
         if fused_dim > 0:
-            self.image_fusion = _make_mlp(
-                input_dim=fused_dim,
-                hidden_dim=fusion_hidden_dim,
-                output_dim=fusion_hidden_dim,
-                hidden_layers=max(0, int(fusion_layers) - 1),
-                final_activation=True,
-            )
-            fusion_dim = int(fusion_hidden_dim)
+            if int(fusion_layers) == 0:
+                self.image_fusion = nn.Identity()
+                fusion_dim = int(fused_dim)
+            else:
+                self.image_fusion = _make_mlp(
+                    input_dim=fused_dim,
+                    hidden_dim=fusion_hidden_dim,
+                    output_dim=fusion_hidden_dim,
+                    hidden_layers=max(0, int(fusion_layers) - 1),
+                    final_activation=True,
+                )
+                fusion_dim = int(fusion_hidden_dim)
         self.history_encoder = None
         history_dim = 0
         if self.history_feature_mode != "none":
-            self.history_encoder = _make_mlp(
-                input_dim=self.history_steps * 5,
-                hidden_dim=state_hidden_dim,
-                output_dim=state_hidden_dim,
-                hidden_layers=max(0, int(state_layers) - 1),
-                final_activation=True,
-            )
-            history_dim = int(state_hidden_dim)
+            if int(state_layers) == 0:
+                self.history_encoder = nn.Identity()
+                history_dim = self.history_steps * 5
+            else:
+                self.history_encoder = _make_mlp(
+                    input_dim=self.history_steps * 5,
+                    hidden_dim=state_hidden_dim,
+                    output_dim=state_hidden_dim,
+                    hidden_layers=max(0, int(state_layers) - 1),
+                    final_activation=True,
+                )
+                history_dim = int(state_hidden_dim)
         residual_out_dim = 4 if self.predict_size_residuals else 2
         self.residual_head = _make_mlp(
             input_dim=fusion_dim + history_dim + 9,

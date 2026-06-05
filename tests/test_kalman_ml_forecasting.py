@@ -257,6 +257,33 @@ def test_kalman_residual_forecaster_can_use_center_velocity_filter_features() ->
     assert out["filter_state"].shape == (1, 8)
 
 
+def test_kalman_residual_forecaster_can_use_center_full_filter_features_without_fusion_mlp() -> None:
+    model = KalmanResidualForecaster(
+        representations=[],
+        image_sizes={},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        fusion_layers=0,
+        history_feature_mode="none",
+        residual_layers=0,
+        use_filter_state_features=True,
+        filter_state_feature_mode="center_full",
+    )
+    past = torch.tensor(
+        [[[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]]],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0]])
+    future_t = torch.tensor([[2.0]])
+
+    out = model({}, past, past_t, future_t, return_debug=True)
+
+    assert isinstance(model.image_fusion, torch.nn.Identity)
+    assert model.residual_head[0].in_features == 13
+    assert out["boxes"].shape == (1, 1, 4)
+    assert out["filter_state"].shape == (1, 8)
+
+
 def test_kalman_residual_forecaster_can_use_center_position_filter_features() -> None:
     model = KalmanResidualForecaster(
         representations=[],
@@ -283,6 +310,30 @@ def test_kalman_residual_forecaster_can_use_center_position_filter_features() ->
     assert out["boxes"].shape == (1, 1, 4)
     assert out["filter_state"].shape == (1, 8)
     assert out["filter_cov"].shape == (1, 8, 8)
+
+
+def test_kalman_residual_forecaster_can_use_raw_box_history_without_history_mlp() -> None:
+    model = KalmanResidualForecaster(
+        representations=[],
+        image_sizes={},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        state_layers=0,
+        residual_layers=0,
+        history_feature_mode="raw",
+    )
+    past = torch.tensor(
+        [[[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]]],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0]])
+    future_t = torch.tensor([[2.0]])
+
+    out = model({}, past, past_t, future_t, return_debug=True)
+
+    assert isinstance(model.history_encoder, torch.nn.Identity)
+    assert model.residual_head[0].in_features == 19
+    assert out["boxes"].shape == (1, 1, 4)
 
 
 def test_kalman_residual_forecaster_covariance_uses_selected_velocity_state() -> None:
@@ -318,9 +369,10 @@ def test_kalman_residual_forecaster_rejects_empty_reps_without_filter_features()
             image_sizes={},
             backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
             history_steps=2,
+            history_feature_mode="none",
         )
     except ValueError as exc:
-        assert "At least one representation" in str(exc)
+        assert "At least one learned feature source" in str(exc)
     else:
         raise AssertionError("Expected empty representations without filter features to fail.")
 
