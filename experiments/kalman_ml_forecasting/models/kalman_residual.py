@@ -109,6 +109,26 @@ def _filter_state_indices(mode: str) -> list[int]:
     )
 
 
+def _normalize_filter_state_features(
+    features: torch.Tensor,
+    indices: list[int],
+    mode: str,
+) -> torch.Tensor:
+    if mode == "none":
+        return features
+    if mode != "frame_centered":
+        raise ValueError(
+            "filter_state_center_position_normalization must be one of: none, frame_centered."
+        )
+    if 0 not in indices and 1 not in indices:
+        return features
+    normalized = features.clone()
+    for feature_col, state_idx in enumerate(indices):
+        if state_idx in {0, 1}:
+            normalized[:, feature_col] = normalized[:, feature_col] * 2.0 - 1.0
+    return normalized
+
+
 def _make_mlp(
     *,
     input_dim: int,
@@ -164,6 +184,7 @@ class KalmanResidualForecaster(nn.Module):
         predict_size_residuals: bool = True,
         use_filter_state_features: bool = False,
         filter_state_feature_mode: str = "full",
+        filter_state_center_position_normalization: str = "none",
         filter_covariance_features: str = "none",
         initial_state_source: str = "last_four",
         kalman_params: Dict | None = None,
@@ -182,9 +203,16 @@ class KalmanResidualForecaster(nn.Module):
         self.use_filter_state_features = bool(use_filter_state_features)
         self.filter_state_feature_mode = str(filter_state_feature_mode).lower()
         self.filter_state_feature_indices = _filter_state_indices(self.filter_state_feature_mode)
+        self.filter_state_center_position_normalization = str(
+            filter_state_center_position_normalization
+        ).lower()
         self.filter_covariance_features = str(filter_covariance_features).lower()
         self.initial_state_source = str(initial_state_source).lower()
         self.kalman_params = dict(kalman_params or {})
+        if self.filter_state_center_position_normalization not in {"none", "frame_centered"}:
+            raise ValueError(
+                "filter_state_center_position_normalization must be one of: none, frame_centered."
+            )
         if self.filter_covariance_features not in {"none", "diag", "full"}:
             raise ValueError(
                 "filter_covariance_features must be one of: none, diag, full."
@@ -301,7 +329,14 @@ class KalmanResidualForecaster(nn.Module):
         if self.use_filter_state_features:
             if filter_state is None:
                 raise ValueError("filter_state is required when use_filter_state_features=True.")
-            enc.append(filter_state[:, self.filter_state_feature_indices])
+            filter_state_features = filter_state[:, self.filter_state_feature_indices]
+            enc.append(
+                _normalize_filter_state_features(
+                    filter_state_features,
+                    self.filter_state_feature_indices,
+                    self.filter_state_center_position_normalization,
+                )
+            )
         if self.filter_covariance_features != "none":
             if filter_cov is None:
                 raise ValueError("filter_cov is required when filter_covariance_features is enabled.")

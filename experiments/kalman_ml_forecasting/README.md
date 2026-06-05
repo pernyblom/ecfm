@@ -304,6 +304,11 @@ Extension points
 - Set `model.filter_state_feature_mode` to control which filtered state entries
   are appended: `full`, `center_full` (`[cx, cy, vx, vy]`),
   `center_position`, `center_velocity`, or `velocities`.
+- Set `model.filter_state_center_position_normalization: frame_centered` to map
+  selected filter-state center positions from `[0, 1]` to `[-1, 1]`, so the
+  frame center is `0` and the image borders are `-1`/`1`. This affects `cx/cy`
+  inside modes such as `full`, `center_full`, and `center_position`; velocity
+  entries and rollout state are unchanged. The default is `none`.
 - Set `model.filter_covariance_features: diag` or `full` to append the Kalman
   history covariance diagonal or flattened covariance matrix to the fusion
   features. Covariance features use the same state subset selected by
@@ -320,6 +325,7 @@ model:
   history_feature_mode: none
   use_filter_state_features: true
   filter_state_feature_mode: center_full
+  filter_state_center_position_normalization: frame_centered
   fusion_layers: 0
   residual_layers: 0
 ```

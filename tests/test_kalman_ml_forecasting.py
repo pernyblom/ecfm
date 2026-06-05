@@ -312,6 +312,35 @@ def test_kalman_residual_forecaster_can_use_center_position_filter_features() ->
     assert out["filter_cov"].shape == (1, 8, 8)
 
 
+def test_kalman_residual_forecaster_can_frame_center_filter_state_positions() -> None:
+    filter_state = torch.tensor(
+        [[0.25, 0.75, 0.2, 0.3, 1.0, -1.0, 0.1, -0.1]],
+        dtype=torch.float32,
+    )
+    expected = {
+        "full": torch.tensor([[-0.5, 0.5, 0.2, 0.3, 1.0, -1.0, 0.1, -0.1]]),
+        "center_full": torch.tensor([[-0.5, 0.5, 1.0, -1.0]]),
+        "center_position": torch.tensor([[-0.5, 0.5]]),
+        "center_velocity": torch.tensor([[1.0, -1.0]]),
+    }
+    for mode, expected_features in expected.items():
+        model = KalmanResidualForecaster(
+            representations=[],
+            image_sizes={},
+            backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+            history_steps=2,
+            fusion_layers=0,
+            history_feature_mode="none",
+            use_filter_state_features=True,
+            filter_state_feature_mode=mode,
+            filter_state_center_position_normalization="frame_centered",
+        )
+
+        features = model._image_features({}, filter_state=filter_state)
+
+        assert torch.allclose(features, expected_features, atol=1e-6)
+
+
 def test_kalman_residual_forecaster_can_use_raw_box_history_without_history_mlp() -> None:
     model = KalmanResidualForecaster(
         representations=[],
