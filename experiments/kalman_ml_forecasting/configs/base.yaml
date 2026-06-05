@@ -22,9 +22,9 @@ data:
   # and the temporal axis is kept intact. Other representations use both
   # spatial axes.
   spatial_cutout:
-    mode: none  # none, box_scale/box_fraction, fixed_pixels/fixed
+    mode: fixed_pixels  # none, box_scale/box_fraction, fixed_pixels/fixed
     scale: 1.0  # used by box_scale; 1.0 means the current box size
-    size_px: [256, 256]  # used by fixed_pixels
+    size_px: [64, 64]  # used by fixed_pixels
     min_size_px: 1
     fill: 0.0
   # Add "event_frames" to read dataset-native frames from
@@ -33,8 +33,17 @@ data:
   # model.use_filter_state_features: true or model.filter_covariance_features
   # set to "diag" or "full".
   frame_size: [1280, 720]
-  retain_spatial_dimensions: true
+  retain_spatial_dimensions: false
   temporal_bins: 224
+  image_sizes:
+    xt_my: [640, 64]
+    xt: [640, 64]
+    yt_mx: [64, 360]
+    yt: [64, 360]
+    cstr2: [640, 360]
+    cstr3: [640, 360]
+    rgb: [640, 360]
+    padded_rgb: [640, 360]
   label_time_unit: 1.0e-6
   track_time_unit: 1.0
   time_align: auto
@@ -98,7 +107,7 @@ model:
   # - raw: encode normalized absolute history boxes plus relative times
   # - relative: encode history boxes after subtracting the final history box
   # - none: do not pass a direct box-history feature to the residual head
-  history_feature_mode: raw
+  history_feature_mode: relative
   # Set fusion_layers/state_layers/residual_layers to 0 for a linear-ish
   # residual model over the selected learned features, flattened box history,
   # rollout state, and dt. Defaults keep the historical nonlinear MLP behavior.
@@ -128,7 +137,7 @@ model:
   # Optional transform for selected filter-state center positions only. The
   # default "none" keeps cx/cy in [0, 1]. "frame_centered" maps cx/cy so frame
   # center is 0 and image borders are -1/1.
-  filter_state_center_position_normalization: none
+  filter_state_center_position_normalization: frame_centered
   # Optional covariance features from the configured Kalman filter history
   # state. Use "none", "diag" for the selected covariance diagonal entries, or
   # "full" for the flattened selected covariance submatrix.

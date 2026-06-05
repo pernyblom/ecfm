@@ -1,4 +1,6 @@
 
+# Introduction draft
+
 Event cameras can see fast things. 
 Propellers for example, and it should be possible to predict multirotor UAVs better based on events compared to classical prediction models.
 
@@ -15,11 +17,41 @@ However, there is a strong correlation with velocity to acceleration so we also 
 Also bias towards acceleration down more due to gravity and that most scenes have a horizontally directed camera. Trying to remove this depends on the OOD target.
 
 
-What to include:
+
+# What to include:
+- Intro
+- Related work
 - Short description of FRED dataset
 - Description of baseline kalman and how it was optimized
-- Analysis of correlation from pos/vel to acceleration with training results linear regression
-- 
+- Description of how correlation is analyzed and linear regression setup
+- Description of experiment setup with image formats used and motivation for cutouts etc. and try to avoid any position info in the image formats (such as mean y in xt cutout)
+- Results of correlation from pos/vel to acceleration with training results linear regression, images showing arrows for pos/vel for train/test split
+- Results with combinations of image inputs on raw and decorrelated split.
+- Comparison with SOTA
+- Possible ablations
+    + Size of cutouts
+    + Temporal bin counts and/or size of cutout in time dimension (all images currently rendered with bin count 224)
+    + Smaller CNN
+    + Inclusion of covariance features from kalman filter
+- Discussion
+
+
+# Choices and limitations
+- Resized input frame to 640x360 for all image sizes
+- Cutouts only (motivated by getting rid of positional info and computational benefits)
+- Always using 64 as cutout size (which would be 128 in the original frame size right?)
+- Relative positions only in box coords (history_feature_mode: relative)
+- Position information removed from image formats (using xt, yt instead of xt_my etc.)
+- Temporal dim in xt/yt variants is always size 64
+- All tracks 1.2 s, even the 0.4 ms prediction
+- Decorrelation set mean_accel_weight: 1.0e-4 to mildly remove acceleration bias
+- Resnet-18 used only. It would be interesting to see if a much smaller CNN works as well in ablation
+- Always predicting size residuals
+- filter_state_center_position_normalization: frame_centered
+- Not using any covariance features from kalman filter
+- Always using optimized kalman filter as the state features
+
+
 
 
 
