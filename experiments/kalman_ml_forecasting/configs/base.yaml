@@ -63,7 +63,7 @@ data:
   # built. Use ["all"] to apply it to every constructed split.
   decorrelation:
     enabled: false
-    splits: ["train"]
+    splits: ["train", "train_eval"]
     keep_fraction: 0.5
     target_samples:
     min_samples: 4

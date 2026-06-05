@@ -4,7 +4,7 @@ command: python experiments/kalman_ml_forecasting/train.py --config {config}
 configs_dir: configs
 
 overrides:
-  train.epochs: 100
+  train.epochs: 80
   train.batch_size: 1024
   data.representations: []
   data.max_samples_train: 
@@ -23,14 +23,14 @@ templates:
   data.cache_dir: "{output_dir}/runs/{name}/cache"
 
 grid:
-  filter_state_feature_mode:
+  model.filter_state_feature_mode:
     - center_full
     - center_position
     - center_velocity
     - velocities
-  data.decorrelation:
+  data.decorrelation.enabled:
     - false
     - true
   model.predict_size_residuals:
-    - true
     - false
+    - true

@@ -311,6 +311,12 @@ def _mean_rows(rows: List[Dict[str, float]]) -> Dict[str, float]:
     return {key: sum(row[key] for row in rows if key in row) / len(rows) for key in keys}
 
 
+def _parameter_counts(model: torch.nn.Module) -> tuple[int, int]:
+    total = sum(param.numel() for param in model.parameters())
+    trainable = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    return trainable, total
+
+
 def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, train: bool) -> Dict[str, float]:
     train_cfg = cfg["train"]
     frame_size = tuple(cfg["data"]["frame_size"])
@@ -620,6 +626,8 @@ def main() -> None:
         return
 
     model = build_model(cfg, device)
+    trainable_params, total_params = _parameter_counts(model)
+    print(f"Network parameters: trainable={trainable_params:,} total={total_params:,}")
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(train_cfg["lr"]),
