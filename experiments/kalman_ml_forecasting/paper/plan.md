@@ -43,7 +43,7 @@ Also bias towards acceleration down more due to gravity and that most scenes hav
 
 # Preliminary findings
 - Decorrelation method seem to work but is not perfect. Still possible to get better residuals from vel/pos with linear regression, although with a worse miou.
-- The simple extension of kalman for sizes compared to the paper from Finland immediately gives SOTA on box results compared to the original FRED paper (miou, box ADE/FDE etc.). We can't beat them on center ADE/FDE with our kalman filter.
+- The simple extension of kalman for sizes compared to the paper from Finland (https://arxiv.org/abs/2603.01997) immediately gives SOTA on box results compared to the original FRED paper (miou, box ADE/FDE etc.). We can't beat them on center ADE/FDE with our kalman filter.
 - But it is pretty easy to get SOTA results the non-decorrelated dataset when including event images even when using cutouts, relative box positions, no image features giving away position etc.
 - The pre-rendered event frames that comes with the dataset gives the best result on the tested image formats on the raw dataset (event_frames). We tested with cstr2, xt, yt.
 - On the decorrelated subset we get better results with cstr2. No idea why it is better but the cstr2 uses normalized mean timestamps which makes it possible to see the gradient of movement instead of the binary-like event_frames. Why or if this matters at all we don't know.

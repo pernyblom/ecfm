@@ -12,20 +12,24 @@ where coordinates are normalized by the frame size. The model state augments the
   [c^x_t, c^y_t, w_t, h_t, v^x_t, v^y_t, v^w_t, v^h_t]^\top.
 \end{equation}
 
-The default configuration uses a $400$ ms history window and an $800$ ms forecast window. Samples are generated from track-aligned FRED labels in \texttt{Event\_YOLO} and \texttt{cleaned\_tracks.txt}. Tracks and forecast-window candidates may be filtered by a minimum duration. Event inputs use trailing render windows to avoid future leakage.
+The main configuration uses a $400$ ms history window and an $800$ ms forecast window, with all selected tracks required to contain at least $1.2$ s of usable labeled duration. Samples are generated from track-aligned FRED labels in \texttt{Event\_YOLO} and \texttt{cleaned\_tracks.txt}. Event inputs use trailing render windows to avoid future leakage. We use a random folder-level holdout from the training split for validation during development, with \texttt{train\_eval\_split.enabled=true} and a held-out fraction of $0.2$ unless otherwise stated.
 
 \subsection{Inputs}
 
-Let $\repr$ denote the configured set of rendered or dataset-native representations. The planned ablations include:
+Let $\repr$ denote the configured set of rendered or dataset-native representations. To reduce direct position leakage and keep training feasible, the main image-conditioned experiments use fixed cutouts around the final history box. In the current implementation these cutouts are $64\times64$ at the resized input resolution, corresponding to $128\times128$ pixels in the original FRED frame resolution. All image inputs are resized to $640\times360$ before cutout extraction. For time-space projections, the temporal dimension is fixed to $64$ bins.
+
+The evaluated input families are:
 \begin{itemize}
   \item \textbf{CSTR2/CSTR3}: compact event representations rendered over the trailing event window;
-  \item \textbf{XT/YT}: time-space projections, including aliases such as \texttt{xt\_my} and \texttt{yt\_mx};
+  \item \textbf{XT/YT}: time-space projections chosen to avoid direct mean-position channels where possible;
   \item \textbf{event frames}: dataset-native frames from \texttt{Event/Frames} when available;
   \item \textbf{RGB}: \texttt{rgb} or \texttt{padded\_rgb} frames aligned to the anchor time; and
-  \item \textbf{spatial cutouts}: masks or fixed crops around the final history box.
+  \item \textbf{box and filter-state features}: recent normalized boxes and optimized Kalman filter state features.
 \end{itemize}
 
 For XT inputs, spatial cutouts affect the $x$ axis only while preserving the temporal axis. For YT inputs, cutouts affect the $y$ axis only. Other image-like inputs use both spatial axes.
+
+To limit explicit absolute-position information, the residual model uses relative box-history features in the main experiments. When filtered center positions are used as learned features, we optionally map normalized coordinates from $[0,1]$ to $[-1,1]$ so that the frame center is zero.
 
 \subsection{Metrics}
 
@@ -38,4 +42,4 @@ Predictions are evaluated against future boxes using:
 \end{align}
 reported in pixels. We also report bounding-box ADE/FDE in pixels and mean IoU over the forecast horizon.
 
-\todo{State exact train/validation/test folders once the final split policy is frozen.}
+\todo{State exact train, validation, and test folder counts once the final split policy is frozen.}

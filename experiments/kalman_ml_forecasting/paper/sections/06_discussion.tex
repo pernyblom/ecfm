@@ -1,14 +1,9 @@
 \section{Discussion}
 
-The standard split may reward models for exploiting correlations between anchor state and future acceleration. A residual model with broad image context can use both visual evidence and non-causal or split-specific priors. Spatial cutouts and decorrelation are therefore complementary tests: cutouts restrict the visible spatial context, while decorrelation reduces direct predictability of acceleration from simple motion features.
+The main empirical risk is overinterpreting standard-split residual gains. A residual model can improve forecasting by reading local event evidence, but it can also learn that certain positions and velocities imply a likely future acceleration under the dataset collection protocol. The linear residual diagnostics and decorrelation experiments are intended to separate these explanations. If a linear model over filtered state improves substantially, then some part of the residual signal is available without images. If image-conditioned gains survive decorrelation and exceed the filter-state-only residual, then the evidence for visual conditioning is stronger.
 
-When interpreting results, we will separate three cases:
-\begin{itemize}
-  \item if residual models outperform the optimized Kalman baseline before and after decorrelation, the evidence supports genuine learned dynamics or useful visual conditioning;
-  \item if gains vanish after decorrelation, the original improvement was likely driven by motion-prior correlations;
-  \item if cutout models retain gains while full-context models degrade, local target evidence may be more reliable than global context.
-\end{itemize}
+The decorrelated subset should not be interpreted as a true out-of-distribution benchmark. It removes a specified class of linear motion-prior shortcuts after sample capping, and the greedy candidate search is approximate. Nonlinear shortcuts, remaining split-specific behavior, and visual context cues can persist. The optional mean-acceleration penalty addresses a global acceleration bias, such as a downward tendency, but choosing its weight is application dependent: for a horizontal camera it may be a dataset artifact, while for some deployment settings gravity-related image-plane acceleration may be a real prior.
 
-The decorrelated split is not a replacement for a new independently collected test set. It removes a defined class of linear motion-prior shortcuts while preserving the same source data, so remaining correlations and nonlinear shortcuts may still exist. We therefore report the correlation score before and after selection alongside forecasting metrics.
+The preliminary representation results also require caution. Event frames perform well on the raw split, while CSTR2 appears stronger in early decorrelated runs. One possible explanation is that CSTR2 preserves local motion direction through timestamp gradients, whereas event frames are closer to binary occupancy. However, this has not yet been isolated by controlled ablations over temporal bin count, crop size, or backbone capacity.
 
-\todo{Fill with actual observations once Tables~\ref{tab:standard-results}--\ref{tab:decorrelated-results} are populated.}
+The strongest defensible claim for the workshop version is therefore not that one event representation is universally best. Instead, the paper should argue that (i) full-box optimized Kalman filtering is a strong and necessary baseline on FRED, (ii) event-conditioned residuals can improve box forecasting under the standard protocol, and (iii) correlation analysis and decorrelation are necessary diagnostics before attributing those gains to visual evidence or OOD-ready dynamics.

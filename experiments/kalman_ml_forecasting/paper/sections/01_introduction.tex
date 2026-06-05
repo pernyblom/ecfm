@@ -1,22 +1,26 @@
 \section{Introduction}
 
-Forecasting the future image-plane location of an observed UAV is useful for event-camera tracking, interception, sensor scheduling, and downstream recognition. The setting is challenging because the target can be small, fast, and partially represented by sparse events rather than dense RGB frames. Pure kinematic extrapolation is stable but cannot react to visual evidence about maneuvers. Conversely, an unconstrained neural predictor can exploit dataset shortcuts and produce physically implausible rollouts.
+Forecasting the future image-plane location of an observed UAV is useful for event-camera tracking, sensor scheduling, interception, and downstream recognition. Event cameras are attractive in this setting because they can capture fast apparent motion and high temporal contrast, such as propeller motion and rapid target displacement. The practical question is whether event-derived visual evidence improves short-horizon UAV box forecasting beyond a strong physical or kinematic baseline.
 
-We investigate a hybrid approach: a constant-velocity Kalman model supplies a strong kinematic baseline, while a learned residual model predicts acceleration corrections conditioned on event representations, optional RGB, and the recent box history. The study is organized around three questions:
+Our starting point is deliberately conservative. On FRED, a constant-velocity Kalman filter with tuned uncertainty parameters is difficult to beat on center forecasting, and a simple extension from center-only motion to full bounding-box center-size state already gives strong box metrics. This makes the dataset a poor fit for claims based only on a weak baseline. We therefore study learned forecasting as a residual problem: the Kalman or last-four linear state supplies a stable rollout, and a learned model predicts acceleration corrections.
+
+The second issue is shortcut learning. Future acceleration is not independent of the current image position and velocity. For example, targets near image borders may tend to turn back into the frame, high-speed trajectories may decelerate, and many horizontally oriented recordings may contain a global vertical acceleration bias. A residual model can exploit these regularities even when it is not using target appearance. This matters for out-of-distribution use, where the camera orientation, operator behavior, or flight envelope may differ from the training split.
+
+We organize the paper around three questions:
 
 \begin{enumerate}
-  \item How strong is an optimized Kalman filter when its process and measurement uncertainty parameters are tuned on the training split?
-  \item Which visual representations contribute forecast information beyond kinematics: CSTR2/CSTR3, XT, YT, dataset event frames, RGB, and spatial cutouts around the anchor box?
-  \item Do observed gains persist after reducing correlations between future acceleration and simple motion priors such as image position, velocity, distance-to-center, and speed?
+  \item How strong is an optimized Kalman filter when evaluated as a full box forecaster rather than only a center extrapolator?
+  \item Which event representations appear to add useful residual information beyond filtered state and box history under leakage-reducing settings such as cutouts and relative coordinates?
+  \item Do residual gains persist when we reduce linear predictability of fitted acceleration from motion priors?
 \end{enumerate}
 
-Our planned contributions are:
+Our contributions are:
 
 \begin{itemize}
-  \item a reproducible residual Kalman forecasting benchmark on FRED UAV tracks using normalized box states and event/RGB representations;
-  \item an ablation study over representation combinations and spatial cutout policies;
-  \item a correlation analysis showing when future acceleration can be predicted from non-visual motion priors; and
-  \item a sample-level decorrelation method based on greedy removal under a ridge-linear predictability score.
+  \item a residual Kalman forecasting benchmark for FRED UAV bounding boxes, including full center-size Kalman filtering and learned acceleration residuals;
+  \item an empirical analysis of how fitted future acceleration correlates with anchor position and velocity, including simple linear baselines over filtered state features;
+  \item a sample-level decorrelation procedure that greedily removes forecast windows to reduce motion-prior predictability, with an optional penalty on global mean acceleration; and
+  \item preliminary evidence that event representations improve standard-split box forecasting, while decorrelated splits are a stricter test of whether those gains survive reduced motion shortcuts.
 \end{itemize}
 
-\todo{Tighten after final results: claim only what the completed experiments support.}
+The study is scoped for a workshop deadline. We prioritize a small number of controlled settings over a broad architecture search: fixed-size cutouts, relative box-history features, optimized Kalman state features, ResNet-18 encoders, and a limited set of event representations. The remaining ablations are discussed explicitly rather than hidden as completed experiments.

@@ -1,7 +1,7 @@
 \section{Related Work}
 
 \paragraph{Object Motion Forecasting.}
-Classical trajectory forecasting often starts from constant-position, constant-velocity, or constant-acceleration assumptions, then augments them with learned dynamics or scene context. Our baseline follows this tradition by filtering the observed history and rolling forward without future measurements.
+Classical trajectory forecasting often starts from constant-position, constant-velocity, or constant-acceleration assumptions, then augments them with learned dynamics or scene context. The prior FRED forecasting setup reports center-trajectory metrics, while our experiments emphasize full bounding-box forecasting and compare against an optimized center-size Kalman baseline. \todo{Add exact FRED and prior-work citations.}
 
 \paragraph{Kalman Filtering and Learned Residuals.}
 Kalman filters provide a probabilistic state estimate under linear-Gaussian dynamics. Hybrid approaches combine analytic transitions with neural residuals, allowing learned components to model unobserved forces or target maneuvers while retaining stable state evolution. Our model keeps the transition structure explicit and learns acceleration residuals in the normalized box state.
@@ -12,4 +12,4 @@ Event cameras encode asynchronous brightness changes and are commonly converted 
 \paragraph{Dataset Bias and Decorrelation.}
 Forecasting datasets can contain correlations between target position, velocity, and future acceleration. Such correlations can create optimistic results for models that exploit split-specific motion priors rather than visual evidence. We therefore report both standard-split results and results on a decorrelated sample subset.
 
-\todo{Replace these paragraphs with cited related work once target workshop and bibliography are fixed.}
+\todo{Replace placeholder citations with target workshop bibliography entries.}
