@@ -11,7 +11,7 @@ data:
   # folders, so per-epoch train_eval samples are not trained on.
   train_eval_split:
     enabled: true
-    eval_fraction: 0.1
+    eval_fraction: 0.2
     eval_count:
     seed: 123
   representations: ["xt_my", "yt_mx", "cstr3", "padded_rgb"]
