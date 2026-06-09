@@ -18,6 +18,7 @@ templates:
   train.checkpoint_dir: "{output_dir}/runs/{name}/ckpt"
   train.metrics_jsonl: "{output_dir}/runs/{name}/metrics.jsonl"
   train.test_metrics_json: "{output_dir}/runs/{name}/best_test_metrics.json"
+  train.log_file: "{output_dir}/runs/{name}/train.log"
   data.cache_dir: "{output_dir}/runs/{name}/cache"
 
 # Optional subset of grid keys used in generated config names. If omitted, all

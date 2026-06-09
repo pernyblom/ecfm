@@ -58,7 +58,9 @@ python scripts\generate_config_sweep.py --base-config experiments\kalman_ml_fore
 ```
 
 The spec supports `grid`, static `overrides`, output path `templates`, and a
-launcher `command` using `{config}`.
+launcher `command` using `{config}`. Generated sweep configs include
+`train.log_file: "{output_dir}/runs/{name}/train.log"` by default unless the
+spec overrides that template.
 
 After runs finish, collect configs and results into table-ready records:
 

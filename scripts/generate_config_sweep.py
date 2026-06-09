@@ -82,6 +82,13 @@ def _apply_templates(cfg: dict[str, Any], templates: dict[str, Any], *, name: st
         _set_path(cfg, dotted_path, value)
 
 
+def _with_default_run_templates(templates: dict[str, Any], base_cfg: dict[str, Any]) -> dict[str, Any]:
+    templates = dict(templates)
+    if isinstance(base_cfg.get("train"), dict):
+        templates.setdefault("train.log_file", "{output_dir}/runs/{name}/train.log")
+    return templates
+
+
 def _grid_items(spec: dict[str, Any]) -> list[tuple[str, list[Any]]]:
     grid = spec.get("grid")
     if not isinstance(grid, dict) or not grid:
@@ -144,7 +151,7 @@ def _write_manifest(
     json_path = output_dir / "manifest.json"
     csv_path = output_dir / "manifest.csv"
     json_path.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
-    fieldnames = ["index", "name", "config_path"] + grid_keys
+    fieldnames = ["index", "name", "config_path", "log_file"] + grid_keys
     with csv_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -171,7 +178,7 @@ def generate_sweep(args: argparse.Namespace) -> None:
     command = str(args.command or spec.get("command") or "python {config}")
     name_fields_raw = spec.get("name_fields")
     name_fields = [str(item) for item in name_fields_raw] if isinstance(name_fields_raw, list) else None
-    templates = dict(spec.get("templates") or {})
+    templates = _with_default_run_templates(dict(spec.get("templates") or {}), base_cfg)
     static_overrides = dict(spec.get("overrides") or {})
 
     rows: list[dict[str, Any]] = []
@@ -192,6 +199,9 @@ def generate_sweep(args: argparse.Namespace) -> None:
             "name": name,
             "config_path": str(config_path).replace("\\", "/"),
         }
+        log_file = _get_path(cfg, "train.log_file")
+        if log_file:
+            row["log_file"] = str(log_file).replace("\\", "/")
         row.update({key: value for key, value in zip(keys, values)})
         rows.append(row)
         config_paths.append(config_path)

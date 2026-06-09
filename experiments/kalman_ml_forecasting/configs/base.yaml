@@ -220,3 +220,5 @@ train:
   checkpoint_dir: outputs/kalman_ml_forecasting_ckpt
   resume_checkpoint:
   metrics_jsonl: outputs/kalman_ml_forecasting_ckpt/metrics.jsonl
+  log_file: outputs/kalman_ml_forecasting_ckpt/train.log
+  log_file_mode: w

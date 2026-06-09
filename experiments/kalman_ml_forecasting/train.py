@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 from dataclasses import dataclass
 import json
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, TextIO
 
 import torch
 from torch import nn
@@ -29,6 +30,62 @@ from experiments.kalman_ml_forecasting.utils.config import (
     resolve_representation_image_sizes,
     resolve_representation_source_image_sizes,
 )
+
+
+class _TeeStream:
+    def __init__(self, *streams: TextIO) -> None:
+        self._streams = streams
+
+    @property
+    def encoding(self) -> str | None:
+        return getattr(self._streams[0], "encoding", None)
+
+    @property
+    def errors(self) -> str | None:
+        return getattr(self._streams[0], "errors", None)
+
+    def write(self, text: str) -> int:
+        for stream in self._streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in self._streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self._streams)
+
+    def fileno(self) -> int:
+        return self._streams[0].fileno()
+
+
+def _configure_output_logging(cfg: Dict, config_path: Path) -> None:
+    train_cfg = cfg.get("train", {})
+    raw_log_file = train_cfg.get("log_file")
+    if raw_log_file is None or str(raw_log_file).strip() == "":
+        return
+    log_file = Path(str(raw_log_file))
+    if not log_file.is_absolute():
+        log_file = Path.cwd() / log_file
+    mode = str(train_cfg.get("log_file_mode", "w")).lower()
+    if mode not in {"w", "a"}:
+        raise ValueError(f"train.log_file_mode must be 'w' or 'a', got {mode!r}")
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    handle = log_file.open(mode, encoding="utf-8")
+    stdout = sys.stdout
+    stderr = sys.stderr
+    sys.stdout = _TeeStream(stdout, handle)  # type: ignore[assignment]
+    sys.stderr = _TeeStream(stderr, handle)  # type: ignore[assignment]
+
+    def _close_log() -> None:
+        sys.stdout = stdout
+        sys.stderr = stderr
+        handle.close()
+
+    atexit.register(_close_log)
+    print(f"Logging stdout/stderr to {log_file}")
+    print(f"Config: {config_path}")
 
 
 @dataclass
@@ -445,6 +502,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    _configure_output_logging(cfg, args.config)
     train_cfg = cfg["train"]
     eval_splits_each_epoch = list(train_cfg.get("eval_splits_each_epoch", ["val"]))
     best_metric_split = str(train_cfg.get("best_metric_split", "val"))
