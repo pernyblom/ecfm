@@ -947,6 +947,33 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             return
         if not self.samples:
             return
+        split_name = cfg.get("_split_name")
+        split_text = f" for split '{split_name}'" if split_name else ""
+        seed_raw = cfg.get("seed")
+        seed = self.seed if seed_raw is None else int(seed_raw)
+        random_subset_fraction = cfg.get("random_subset_fraction", 1.0)
+        random_subset_samples_raw = cfg.get("random_subset_samples")
+        if random_subset_samples_raw is None:
+            if not 0.0 < float(random_subset_fraction) <= 1.0:
+                raise ValueError("data.decorrelation.random_subset_fraction must be in (0, 1].")
+            random_subset_samples = max(1, int(round(len(self.samples) * float(random_subset_fraction))))
+        else:
+            random_subset_samples = int(random_subset_samples_raw)
+        min_samples = int(cfg.get("min_samples", 4))
+        random_subset_samples = max(min_samples, min(random_subset_samples, len(self.samples)))
+        if random_subset_samples < len(self.samples):
+            subset_seed_raw = cfg.get("random_subset_seed")
+            subset_seed = seed if subset_seed_raw is None else int(subset_seed_raw)
+            subset_rng = np.random.default_rng(subset_seed)
+            idx = np.sort(subset_rng.choice(len(self.samples), size=random_subset_samples, replace=False))
+            before_subset = len(self.samples)
+            self.samples = [self.samples[int(i)] for i in idx]
+            print(
+                f"Applied Kalman ML random decorrelation pre-subset{split_text}: "
+                f"kept {len(self.samples)}/{before_subset} samples "
+                f"(random_subset_fraction={float(random_subset_fraction):.6g}, seed={subset_seed})."
+            )
+
         keep_fraction = cfg.get("keep_fraction", 1.0)
         target_samples_raw = cfg.get("target_samples")
         if target_samples_raw is None:
@@ -955,9 +982,25 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             target_samples = max(1, int(round(len(self.samples) * float(keep_fraction))))
         else:
             target_samples = int(target_samples_raw)
-        min_samples = int(cfg.get("min_samples", 4))
         target_samples = max(min_samples, min(target_samples, len(self.samples)))
         if target_samples >= len(self.samples):
+            return
+
+        method = str(cfg.get("method", "greedy")).lower()
+        if method not in {"greedy", "random"}:
+            raise ValueError("data.decorrelation.method must be one of: greedy, random.")
+        if method == "random":
+            random_seed_raw = cfg.get("random_seed")
+            random_seed = seed if random_seed_raw is None else int(random_seed_raw)
+            rng = np.random.default_rng(random_seed)
+            idx = np.sort(rng.choice(len(self.samples), size=target_samples, replace=False))
+            before = len(self.samples)
+            self.samples = [self.samples[int(i)] for i in idx]
+            print(
+                f"Applied Kalman ML random sample selection{split_text}: "
+                f"kept {len(self.samples)}/{before} samples "
+                f"(keep_fraction={float(keep_fraction):.6g}, seed={random_seed})."
+            )
             return
 
         x, y, velocity = self._sample_decorrelation_arrays()
@@ -971,8 +1014,6 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         sample_xy = np.einsum("ni,nj->nij", x, y)
         sample_yy = np.einsum("ni,nj->nij", y, y)
 
-        seed_raw = cfg.get("seed")
-        seed = self.seed if seed_raw is None else int(seed_raw)
         greedy_candidates = int(cfg.get("greedy_candidates", 64))
         ridge_lambda = float(cfg.get("ridge_lambda", 1.0e-3))
         corr_weight = float(cfg.get("corr_weight", 1.0))
@@ -1031,8 +1072,6 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         before = len(self.samples)
         after_motion = self._decorrelation_motion_summary(y, velocity, selected)
         self.samples = [sample for sample, keep in zip(self.samples, selected) if bool(keep)]
-        split_name = cfg.get("_split_name")
-        split_text = f" for split '{split_name}'" if split_name else ""
         print(
             f"Applied Kalman ML sample decorrelation{split_text}: "
             f"kept {len(self.samples)}/{before} samples "

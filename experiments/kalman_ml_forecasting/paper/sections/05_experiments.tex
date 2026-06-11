@@ -4,7 +4,7 @@
 
 We use the optimized Kalman filter as the primary baseline and compare it against residual models. Unless otherwise noted, models use a $400$ ms history window, an $800$ ms forecast horizon, normalized boxes, AdamW training with learning rate $10^{-3}$, weight decay $10^{-4}$, Smooth L1 loss, and gradient clipping at norm $10$. Development runs use a folder-level train-evaluation split with $20\%$ of the training folders held out. The final held-out test split is evaluated only after model selection.
 
-The main image experiments use fixed cutouts, relative box-history features, frame-centered filtered center positions, optimized Kalman state features, and ResNet-18 encoders. We do not use Kalman covariance features in the main results. We report a compact set of representation comparisons selected to separate event-frame, CSTR, time-space projection, RGB, and filter-state-only effects.
+The image-conditioned experiments use one image representation per run together with fixed cutouts, relative box-history features, frame-centered filtered center positions, optimized Kalman state features, and a ResNet-18 encoder. We do not use Kalman covariance features in the main results. We report single-input comparisons selected to separate event-frame, CSTR, time-space projection, RGB, and filter-state-only effects.
 
 \subsection{Kalman and Linear Diagnostics}
 
@@ -56,7 +56,7 @@ We compute acceleration-field summaries on the training, train-evaluation, and h
 
 \subsection{Standard-Split Image Results}
 
-The second stage evaluates event-conditioned residuals on the standard split. Early experiments suggest that event-derived inputs improve box metrics beyond the optimized Kalman baseline on this split. Dataset-native event frames have been the strongest single image input in the raw split among the tested formats, while CSTR2, CSTR3, XT, and YT provide complementary views of motion. The final table focuses on the strongest single inputs and a small number of combinations.
+The second stage evaluates event-conditioned residuals on the standard split. Early experiments suggest that event-derived inputs improve box metrics beyond the optimized Kalman baseline on this split. Dataset-native event frames have been the strongest single image input in the raw split among the tested formats. The final table therefore focuses on individual image inputs.
 
 \begin{table}[t]
   \centering
@@ -72,9 +72,9 @@ The second stage evaluates event-conditioned residuals on the standard split. Ea
     Residual & event frames & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
     Residual & CSTR2 & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
     Residual & CSTR3 & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
-    Residual & XT+YT & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
-    Residual & event/CSTR + XT/YT & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
-    Residual & event/CSTR + XT/YT + RGB & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & XT & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & YT & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & RGB & fixed & \todo{} & \todo{} & \todo{} & \todo{} \\
     \bottomrule
   \end{tabular}
   }
@@ -82,7 +82,7 @@ The second stage evaluates event-conditioned residuals on the standard split. Ea
 
 \subsection{Decorrelated-Subset Results}
 
-The third stage repeats the strongest standard-split settings on the decorrelated sample pools. The decorrelation procedure keeps $50\%$ of capped samples, uses the motion-prior feature mode, and applies a small mean-acceleration penalty. Preliminary results suggest that decorrelation reduces but does not eliminate residual predictability from position and velocity. On decorrelated samples, CSTR2 has so far appeared stronger than dataset-native event frames, possibly because its normalized timestamp structure exposes local motion gradients that binary-like frames do not. This explanation remains speculative and should be treated as a hypothesis for follow-up experiments.
+The third stage repeats the strongest standard-split single-input settings on the decorrelated sample pools. The decorrelation procedure keeps $50\%$ of capped samples, uses the motion-prior feature mode, and applies a small mean-acceleration penalty. Preliminary results suggest that decorrelation reduces but does not eliminate residual predictability from position and velocity. On decorrelated samples, CSTR2 has so far appeared stronger than dataset-native event frames, possibly because its normalized timestamp structure exposes local motion gradients that binary-like frames do not. This explanation remains speculative and should be treated as a hypothesis for follow-up experiments.
 
 \begin{table}[t]
   \centering
@@ -97,8 +97,8 @@ The third stage repeats the strongest standard-split settings on the decorrelate
     Residual & filter state only & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
     Residual & event frames & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
     Residual & CSTR2 & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
-    Residual & CSTR2 + XT/YT & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
-    Residual & best available combo & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & CSTR3 & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
+    Residual & best single image input & 0.5 & \todo{} & \todo{} & \todo{} & \todo{} \\
     \bottomrule
   \end{tabular}
   }
@@ -132,4 +132,4 @@ The key box-forecasting claim is that extending the Kalman state to include widt
 
 \subsection{Ablations Deferred by Scope}
 
-The following ablations are useful extensions: cutout size, temporal bin count, temporal crop length for XT/YT, smaller CNN backbones, covariance features, RGB contribution, and broader representation combinations. We report them as limitations or future work unless included in the final result tables.
+The following ablations are useful extensions: cutout size, temporal bin count, temporal crop length for XT/YT, smaller CNN backbones, covariance features, and RGB contribution. We report them as limitations or future work unless included in the final result tables.

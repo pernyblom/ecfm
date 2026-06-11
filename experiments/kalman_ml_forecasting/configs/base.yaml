@@ -73,6 +73,14 @@ data:
   decorrelation:
     enabled: false
     splits: ["train", "train_eval"]
+    # greedy: remove samples to reduce motion-prior predictability.
+    # random: skip scoring and keep a reproducible random subset only.
+    method: greedy
+    # Optional reproducible pre-subset before greedy/random selection. Use this
+    # to make different runs start from exactly the same candidate sample pool.
+    random_subset_fraction: 1.0
+    random_subset_samples:
+    random_subset_seed:
     keep_fraction: 0.5
     target_samples:
     min_samples: 4
@@ -82,7 +90,10 @@ data:
     feature_mode: motion_priors
     greedy_candidates: 64
     # Leave blank to use the dataset seed, which is already offset per split.
+    # random_seed controls method=random; seed controls greedy candidate
+    # sampling and is also the fallback for random_subset_seed/random_seed.
     seed:
+    random_seed:
     ridge_lambda: 1.0e-3
     corr_weight: 1.0
     r2_weight: 1.0

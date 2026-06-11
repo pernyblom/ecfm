@@ -7,7 +7,7 @@ Classical trajectory forecasting often starts from constant-position, constant-v
 Kalman filters provide a probabilistic state estimate under linear-Gaussian dynamics. Hybrid approaches combine analytic transitions with neural residuals, allowing learned components to model unobserved forces or target maneuvers while retaining stable state evolution. Our model keeps the transition structure explicit and learns acceleration residuals in the normalized box state.
 
 \paragraph{Event-Based Vision.}
-Event cameras encode asynchronous brightness changes and are commonly converted into frame-like representations for convolutional networks. We evaluate multiple rendered representations, including XT, YT, CSTR variants, and dataset-native event frames, to separate visual information from kinematic priors.
+Event cameras encode asynchronous brightness changes and are commonly converted into frame-like representations for convolutional networks. We evaluate individual rendered or dataset-native event inputs, including XT, YT, CSTR variants, and event frames, to separate visual information from kinematic priors.
 
 \paragraph{Dataset Bias and Decorrelation.}
 Forecasting datasets can contain correlations between target position, velocity, and future acceleration. Such correlations can create optimistic results for models that exploit split-specific motion priors rather than visual evidence. We therefore report both standard-split results and results on a decorrelated sample subset.

@@ -219,6 +219,7 @@ data:
   decorrelation:
     enabled: true
     splits: ["train", "train_eval", "val"]
+    method: greedy
     keep_fraction: 0.5
     feature_mode: motion_priors
     greedy_candidates: 64
@@ -235,6 +236,34 @@ only centered position and velocity, while `raw` preserves normalized
 top-left-origin position features. The sample cache key includes these settings,
 so changing them rebuilds the cached dataset.
 
+To make several runs start from exactly the same candidate sample pool, add a
+random pre-subset stage before greedy decorrelation:
+
+```yaml
+data:
+  decorrelation:
+    enabled: true
+    method: greedy
+    random_subset_fraction: 0.5
+    random_subset_seed: 123
+    keep_fraction: 0.5
+```
+
+This first keeps a deterministic random `50%` of the capped samples, then runs
+greedy decorrelation on that shared pool and keeps `50%` of the pre-subset. Use
+`random_subset_samples` instead of `random_subset_fraction` for an exact count.
+
+For a simple random baseline with no decorrelation scoring, set:
+
+```yaml
+data:
+  decorrelation:
+    enabled: true
+    method: random
+    keep_fraction: 0.5
+    random_seed: 123
+```
+
 By default the score centers acceleration targets, so it removes feature-linked
 acceleration predictability but not a constant acceleration bias. Set
 `mean_accel_weight` to a small positive value to add
@@ -247,7 +276,8 @@ built, so `["train", "train_eval", "val"]` runs three separate selections on
 three separate sample pools. Use `["all"]` to apply the same rule to every
 constructed split. Leave `seed` blank to use the dataset seed, which is already
 offset by split; set it explicitly only when you want the same candidate
-sampling seed everywhere.
+sampling seed everywhere. `random_subset_seed` and `random_seed` default to the
+same seed when left blank.
 
 The decorrelation log reports the score before/after, mean acceleration norm,
 absolute fitted acceleration magnitude `|a|`, and turning acceleration

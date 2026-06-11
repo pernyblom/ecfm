@@ -35,9 +35,9 @@ For comparison, we also report a paper-style linear extrapolator. It estimates v
 
 The learned model predicts acceleration residuals rather than boxes directly. It begins from either the last-four linear-fit state or the final filtered Kalman state. The main experiments use the optimized Kalman filter as the source of filtered state features. At forecast step $k$, the residual head predicts
 \begin{equation}
-  \mathbf{a}_k = f_\theta(\phi_\repr, \phi_h, \state_k, \Delta t_k),
+  \mathbf{a}_k = f_\theta(\phi_u, \phi_h, \state_k, \Delta t_k),
 \end{equation}
-where $\phi_\repr$ is the fused image representation feature and $\phi_h$ encodes recent box history. The rollout is
+where $\phi_u$ contains the optional image feature and selected Kalman filter-derived features, and $\phi_h$ encodes recent box history. If no image, filter-state, or covariance feature is enabled, $\phi_u$ is omitted. The rollout is
 \begin{align}
   \bbox_{k+1} &= \bbox_k + \mathbf{v}_k \Delta t_k
     + \frac{1}{2}\mathbf{a}_k \Delta t_k^2, \\
@@ -47,19 +47,19 @@ The predicted box channels are clamped to $[0,1]$. A configuration option can re
 
 \subsection{Network Structure}
 
-Each representation $r \in \repr$ has its own CNN encoder. The default encoder configuration uses a ResNet-18 style backbone with three input channels and a $128$-dimensional pooled output. Per-representation pooled features are concatenated and passed through an image-fusion MLP:
+In the reported image-conditioned runs, the model receives at most one image representation. That image is encoded by a ResNet-18 style CNN with three input channels and a $128$-dimensional pooled output. This feature is concatenated with any selected Kalman filter-state or covariance features and passed through a learned projection MLP:
 \begin{equation}
-  \phi_\repr = g_\theta\left([\mathrm{enc}_r(\mathbf{I}^r)]_{r\in\repr}\right).
+  \phi_u = g_\theta\left([\mathrm{enc}(\mathbf{I}), \phi_K]\right),
 \end{equation}
-The default fusion hidden dimension is $256$.
+where $\phi_K$ denotes the enabled filtered-state or covariance features. In non-image runs, the same projection is applied to $\phi_K$ alone; if no image, filter-state, or covariance features are enabled, this branch is absent. The default projection hidden dimension is $256$ with one linear layer followed by ReLU.
 
-The history encoder receives the last $N_h=12$ history samples. Each sample contributes four normalized box values and one relative timestamp, giving an input dimension of $12 \times 5$. In the leakage-reduced setting, positions are expressed relative to the final history box. The residual head receives the concatenation of the fused image feature, history feature, current $8$-D state, and scalar $\Delta t$, and outputs either $4$ acceleration channels or $2$ center-only acceleration channels. The main residual experiments predict all four box acceleration channels so that size dynamics can also deviate from constant velocity.
+The history encoder receives the last $N_h=12$ history samples. Each sample contributes four normalized box values and one relative timestamp, giving an input dimension of $12 \times 5$. In the leakage-reduced setting, positions are expressed relative to the final history box. The residual head receives the concatenation of $\phi_u$, the history feature, current $8$-D rollout state, and scalar $\Delta t$, and outputs either $4$ acceleration channels or $2$ center-only acceleration channels. The main residual experiments predict all four box acceleration channels so that size dynamics can also deviate from constant velocity.
 
-Optional Kalman state and covariance features can be appended to the image-fusion input. Supported state subsets are full state, center position and velocity (\texttt{center\_full}), center position, center velocity, and all velocity channels. Selected center positions can be mapped from $[0,1]$ to $[-1,1]$, placing the frame center at zero. Covariance features can be omitted, diagonal-only, or a flattened selected covariance submatrix; the current main experiments omit covariance features.
+Optional Kalman state and covariance features can be appended to the projected feature branch. Supported state subsets are full state, center position and velocity (\texttt{center\_full}), center position, center velocity, and all velocity channels. Selected center positions can be mapped from $[0,1]$ to $[-1,1]$, placing the frame center at zero. Covariance features can be omitted, diagonal-only, or a flattened selected covariance submatrix; the current main experiments omit covariance features.
 
 \subsection{Linear Residual Baselines}
 
-To test how much of the residual task can be solved from non-image features alone, we also use a linearized version of the residual model. Setting the fusion, history, and residual hidden-layer counts to zero bypasses the intermediate MLPs and fits a single linear acceleration head over the selected features, rollout state, and $\Delta t$. We evaluate variants using only filtered center position, center velocity, center position plus velocity, or all velocity channels. These models are useful diagnostics: if they improve over Kalman, then part of the residual signal is already available from simple motion priors.
+To test how much of the residual task can be solved from non-image features alone, we also use a linearized version of the residual model. Setting the feature-projection, history, and residual hidden-layer counts to zero bypasses the intermediate MLPs and fits a single linear acceleration head over the selected features, rollout state, and $\Delta t$. We evaluate variants using only filtered center position, center velocity, center position plus velocity, or all velocity channels. These models are useful diagnostics: if they improve over Kalman, then part of the residual signal is already available from simple motion priors.
 
 \subsection{Spatial Cutouts}
 
@@ -81,13 +81,13 @@ This yields anchor position $\mathbf{c}_0$, velocity $\mathbf{v}_0$, and future 
 
 \subsection{Greedy Decorrelation}
 
-The decorrelation method drops samples after the normal dataset cap is applied. For a candidate subset $S$, sufficient statistics are accumulated for standardized prior features $X_S$ and fitted accelerations $Y_S$. The score combines mean absolute Pearson correlation, ridge-linear predictability, and optionally a penalty on global mean acceleration:
+The decorrelation method drops samples after the normal dataset cap is applied. We optionally first choose a reproducible random pre-subset, which allows multiple runs to start from exactly the same candidate pool. For a candidate subset $S$, sufficient statistics are accumulated for standardized prior features $X_S$ and fitted accelerations $Y_S$. The score combines mean absolute Pearson correlation, ridge-linear predictability, and optionally a penalty on global mean acceleration:
 \begin{equation}
   \mathrm{score}(S) =
   \alpha \cdot \mathrm{mean}\left(|\mathrm{corr}(X_S,Y_S)|\right)
   + \beta \cdot \mathrm{mean}\left(\max(R^2,0)\right)
   + \gamma \cdot \left\|\mathrm{mean}(Y_S)\right\|_2.
 \end{equation}
-At each greedy step, the algorithm samples a candidate set of removable examples and removes the one that most reduces the score, stopping when the target keep fraction is reached. The default feature mode uses centered position, velocity, distance-to-center, and speed. In the main decorrelated experiments we keep $50\%$ of capped samples and use a small mean-acceleration weight, $\gamma=10^{-4}$, to mildly discourage a constant vertical acceleration bias without making it dominate the unitless correlation and $R^2$ terms.
+At each greedy step, the algorithm samples a candidate set of removable examples and removes the one that most reduces the score, stopping when the target keep fraction is reached. We also support a random-selection mode as a simple size-matched control that skips this score. The default feature mode uses centered position, velocity, distance-to-center, and speed. In the main decorrelated experiments we keep $50\%$ of capped samples and use a small mean-acceleration weight, $\gamma=10^{-4}$, to mildly discourage a constant vertical acceleration bias without making it dominate the unitless correlation and $R^2$ terms.
 
 The standalone script also supports a coarser track-level variant that selects complete tracks using the same score and per-track sufficient statistics.

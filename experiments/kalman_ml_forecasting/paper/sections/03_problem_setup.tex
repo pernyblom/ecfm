@@ -16,14 +16,14 @@ The main configuration uses a $400$ ms history window and an $800$ ms forecast w
 
 \subsection{Inputs}
 
-Let $\repr$ denote the configured set of rendered or dataset-native representations. To reduce direct position leakage and keep training feasible, the main image-conditioned experiments use fixed cutouts around the final history box. In the current implementation these cutouts are $64\times64$ at the resized input resolution, corresponding to $128\times128$ pixels in the original FRED frame resolution. All image inputs are resized to $640\times360$ before cutout extraction. For time-space projections, the temporal dimension is fixed to $64$ bins.
+Image-conditioned runs use one configured rendered or dataset-native representation at a time. To reduce direct position leakage and keep training feasible, the main image-conditioned experiments use fixed cutouts around the final history box. In the current implementation these cutouts are $64\times64$ at the resized input resolution, corresponding to $128\times128$ pixels in the original FRED frame resolution. All image inputs are resized to $640\times360$ before cutout extraction. For time-space projections, the temporal dimension is fixed to $64$ bins.
 
 The evaluated input families are:
 \begin{itemize}
   \item \textbf{CSTR2/CSTR3}: compact event representations rendered over the trailing event window;
   \item \textbf{XT/YT}: time-space projections chosen to avoid direct mean-position channels where possible;
   \item \textbf{event frames}: dataset-native frames from \texttt{Event/Frames} when available;
-  \item \textbf{RGB}: \texttt{rgb} or \texttt{padded\_rgb} frames aligned to the anchor time; and
+  \item \textbf{RGB}: \texttt{rgb} or \texttt{padded\_rgb} frames aligned to the anchor time when used as a single image input; and
   \item \textbf{box and filter-state features}: recent normalized boxes and optimized Kalman filter state features.
 \end{itemize}
 

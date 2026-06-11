@@ -10,7 +10,7 @@ We organize the paper around three questions:
 
 \begin{enumerate}
   \item How strong is an optimized Kalman filter when evaluated as a full box forecaster against the original FRED box metrics?
-  \item Which event representations appear to add useful residual information beyond filtered state and box history under leakage-reducing settings such as cutouts and relative coordinates?
+  \item Does a single event-derived image input add useful residual information beyond filtered state and box history under leakage-reducing settings such as cutouts and relative coordinates?
   \item Do residual gains persist when we reduce linear predictability of fitted acceleration from motion priors?
 \end{enumerate}
 
@@ -20,7 +20,7 @@ Our contributions are:
   \item a residual Kalman forecasting benchmark for FRED UAV bounding boxes, including a center-size Kalman baseline that extends center-only Kalman trajectory forecasting to width and height;
   \item an empirical analysis of how fitted future acceleration correlates with anchor position and velocity, including simple linear baselines over filtered state features;
   \item a sample-level decorrelation procedure that greedily removes forecast windows to reduce motion-prior predictability, with an optional penalty on global mean acceleration; and
-  \item preliminary evidence that event representations improve standard-split box forecasting, while decorrelated splits are a stricter test of whether those gains survive reduced motion shortcuts.
+  \item preliminary evidence that single-input event-conditioned residuals improve standard-split box forecasting, while decorrelated splits are a stricter test of whether those gains survive reduced motion shortcuts.
 \end{itemize}
 
-We prioritize controlled settings over a broad architecture search: fixed-size cutouts, relative box-history features, optimized Kalman state features, ResNet-18 encoders, and a focused set of event representations.
+We prioritize controlled settings over a broad architecture search: fixed-size cutouts, relative box-history features, optimized Kalman state features, and a ResNet-18 encoder for each single-image experiment.
