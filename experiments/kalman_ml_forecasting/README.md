@@ -209,6 +209,27 @@ or `--velocity-bin-vertical-min`/`--velocity-bin-vertical-max` for the vertical
 `--velocity-bin-y-abs`, with horizontal/vertical aliases. If `matplotlib` is
 installed it uses quiver plots; otherwise it falls back to a PIL renderer.
 
+Correlation Table Experiment
+
+Run the motion-prior predictability experiment used for paper table
+`tab:correlation`:
+
+```bash
+python experiments/kalman_ml_forecasting/correlation_table_experiment.py --config experiments/kalman_ml_forecasting/configs/base.yaml --output-dir outputs/kalman_ml_correlation_table
+```
+
+By default it evaluates `train`, `train_eval`, and `test`, and writes:
+- `correlation_table_rows.csv`
+- `correlation_table_rows.jsonl`
+- `correlation_table_summary.json`
+
+Each output row contains `split`, `decorrelated`, `samples`,
+`mean_abs_corr`, `mean_r2`, and `mean_accel_norm`, matching the columns needed
+for `tab:correlation`. The `decorrelated=no` rows are measured on the candidate
+pool after the optional `data.decorrelation.random_subset_*` stage but before
+greedy decorrelation, so the before/after rows use the same initial pool when a
+random pre-subset is configured.
+
 Decorrelated Track Subsets
 
 For training, prefer sample-level decorrelation in the dataset config. This
