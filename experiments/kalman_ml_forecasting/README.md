@@ -230,6 +230,15 @@ pool after the optional `data.decorrelation.random_subset_*` stage but before
 greedy decorrelation, so the before/after rows use the same initial pool when a
 random pre-subset is configured.
 
+Create the LaTeX table from any of those output files with:
+
+```bash
+python experiments/kalman_ml_forecasting/format_correlation_table.py outputs/kalman_ml_correlation_table/correlation_table_summary.json --output experiments/kalman_ml_forecasting/paper/tables/correlation_table.tex
+```
+
+Use `--fragment` to write only the `tabular` environment instead of a complete
+`table` environment.
+
 Decorrelated Track Subsets
 
 For training, prefer sample-level decorrelation in the dataset config. This
