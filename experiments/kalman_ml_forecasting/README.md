@@ -1,6 +1,7 @@
 Kalman ML Forecasting
 
-This experiment forecasts UAV boxes with a real constant-velocity Kalman
+This experiment forecasts UAV boxes with a configurable constant-velocity or
+constant-acceleration Kalman
 baseline plus learned residual dynamics from rendered FRED images.
 
 Model
@@ -154,11 +155,41 @@ Weighted objectives work the same way:
 python experiments/kalman_ml_forecasting/optimize_kalman_backprop.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1.0e-2 --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
 ```
 
+To evaluate the validation-selected best parameters once on the configured
+held-out `test` split, add `--run-test-on-best`:
+
+```bash
+python experiments/kalman_ml_forecasting/optimize_kalman_backprop.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1.0e-2 --objective fde_center_px --run-test-on-best --output-json outputs/kalman_backprop.json
+```
+
+`--test-split-key` selects another entry under `data.split_files` and
+`--max-test-samples` provides an optional smoke-run cap. The selected filter's
+test metrics and last-four comparison are printed and stored under `test` in
+the output JSON. Test samples never participate in training or epoch selection.
+
 Notes:
+- `kalman.motion_model` selects `constant_velocity` (the unchanged default,
+  with an 8-D box/velocity state) or `constant_acceleration` (a 12-D
+  box/velocity/acceleration state)
+- constant acceleration adds `initial_accel_std`,
+  `initial_size_accel_std`, `process_accel_std`, and
+  `process_size_accel_std`; the optimizer tunes these only for that model
 - parameters are optimized in log space and clamped by `--min-std`/`--max-std`
 - the configured `kalman:` block is the initial incumbent
 - mIoU is piecewise differentiable and can have weak gradients when boxes do
   not overlap, so distance-based terms are often useful in the weighted loss
+
+Generate a directly comparable CV/CA optimization sweep with the repository's
+normal sweep system:
+
+```bash
+python scripts/generate_config_sweep.py --base-config experiments/kalman_ml_forecasting/configs/base.yaml --spec experiments/kalman_ml_forecasting/configs/kalman_motion_model_sweep.yaml --output-dir outputs/kalman_ml_sweeps/kalman_motion_models
+```
+
+The generated launchers optimize each motion model independently and write one
+JSON history per run. Dotted sweep overrides such as
+`kalman.motion_model` and `kalman.process_accel_std` work like other config
+fields.
 
 Visualize Tracks
 

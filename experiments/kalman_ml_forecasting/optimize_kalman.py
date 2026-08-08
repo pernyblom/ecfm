@@ -34,19 +34,32 @@ SEARCH_RANGES: dict[str, tuple[float, float]] = {
     "initial_pos_std": (1.0e-3, 2.0e-1),
     "initial_size_std": (1.0e-3, 2.0e-1),
     "initial_vel_std": (1.0e-2, 5.0),
+    "initial_accel_std": (1.0e-2, 10.0),
+    "initial_size_accel_std": (1.0e-2, 10.0),
     "process_pos_std": (1.0e-5, 5.0e-2),
     "process_size_std": (1.0e-5, 5.0e-2),
     "process_vel_std": (1.0e-3, 2.0),
     "process_size_vel_std": (1.0e-3, 2.0),
+    "process_accel_std": (1.0e-3, 5.0),
+    "process_size_accel_std": (1.0e-3, 5.0),
     "measurement_pos_std": (1.0e-4, 2.0e-1),
     "measurement_size_std": (1.0e-4, 2.0e-1),
 }
 
 
-def _build_train_dataset(cfg: Dict[str, Any], *, max_samples: int | None) -> TrackKalmanForecastDataset:
+def _build_split_dataset(
+    cfg: Dict[str, Any], *, split_key: str, max_samples: int | None
+) -> TrackKalmanForecastDataset:
     data_cfg = cfg["data"]
     split_files = data_cfg.get("split_files")
-    folders = read_split_file(Path(split_files["train"])) if split_files else None
+    if not split_files and split_key != "train":
+        raise KeyError(
+            f"Cannot evaluate split '{split_key}': data.split_files is not configured."
+        )
+    if split_files and split_key not in split_files:
+        available = ", ".join(sorted(split_files))
+        raise KeyError(f"Unknown data split '{split_key}'. Available split_files: {available}")
+    folders = read_split_file(Path(split_files[split_key])) if split_files else None
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
@@ -77,6 +90,10 @@ def _build_train_dataset(cfg: Dict[str, Any], *, max_samples: int | None) -> Tra
         require_representations=False,
         spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
     )
+
+
+def _build_train_dataset(cfg: Dict[str, Any], *, max_samples: int | None) -> TrackKalmanForecastDataset:
+    return _build_split_dataset(cfg, split_key="train", max_samples=max_samples)
 
 
 def _split_indices_by_track(
@@ -162,10 +179,12 @@ def _log_uniform(rng: random.Random, lo: float, hi: float) -> float:
     return 10.0 ** rng.uniform(math.log10(lo), math.log10(hi))
 
 
-def _sample_params(rng: random.Random, base_cfg: Dict[str, Any]) -> dict[str, float | bool]:
+def _sample_params(rng: random.Random, base_cfg: Dict[str, Any]) -> dict[str, float | bool | str]:
     params = kalman_config_from_dict(base_cfg)
     params["enabled"] = True
     for key, bounds in SEARCH_RANGES.items():
+        if "accel" in key and params["motion_model"] != "constant_acceleration":
+            continue
         params[key] = _log_uniform(rng, bounds[0], bounds[1])
     return params
 
@@ -173,9 +192,13 @@ def _sample_params(rng: random.Random, base_cfg: Dict[str, Any]) -> dict[str, fl
 def _format_yaml(params: Dict[str, Any]) -> str:
     lines = ["kalman:"]
     for key in DEFAULT_KALMAN_CONFIG:
+        if key not in params:
+            continue
         value = params[key]
         if isinstance(value, bool):
             lines.append(f"  {key}: {str(value).lower()}")
+        elif isinstance(value, str):
+            lines.append(f"  {key}: {value}")
         else:
             lines.append(f"  {key}: {float(value):.8g}")
     return "\n".join(lines)

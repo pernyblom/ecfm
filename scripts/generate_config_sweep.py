@@ -130,11 +130,21 @@ def _write_launchers(
     ps_lines = ["$ErrorActionPreference = 'Stop'", ""]
     for name, config_path in zip(names, config_paths):
         cfg_text = str(config_path).replace("\\", "/")
+        result_json = f"{str(output_dir).replace('\\', '/')}/results/{name}.json"
         sh_lines.append(f"echo '=== {name} ==='")
-        sh_lines.append(command.format(config=shlex.quote(cfg_text), config_path=shlex.quote(cfg_text), name=shlex.quote(name)))
+        output_text = str(output_dir).replace("\\", "/")
+        sh_lines.append(command.format(
+            config=shlex.quote(cfg_text), config_path=shlex.quote(cfg_text),
+            name=shlex.quote(name), output_dir=shlex.quote(output_text),
+            result_json=shlex.quote(result_json),
+        ))
         sh_lines.append("")
         ps_lines.append(f"Write-Host {_quote_ps(f'=== {name} ===')}")
-        ps_lines.append(command.format(config=_quote_ps(cfg_text), config_path=_quote_ps(cfg_text), name=_quote_ps(name)))
+        ps_lines.append(command.format(
+            config=_quote_ps(cfg_text), config_path=_quote_ps(cfg_text),
+            name=_quote_ps(name), output_dir=_quote_ps(output_text),
+            result_json=_quote_ps(result_json),
+        ))
         ps_lines.append("")
     sh_path = output_dir / "run_all.sh"
     ps_path = output_dir / "run_all.ps1"
@@ -226,7 +236,7 @@ def main() -> None:
         "--command",
         type=str,
         default=None,
-        help="Launcher command template. Use {config} or {config_path}; overrides spec.command.",
+        help="Launcher command template. Supports {config}, {config_path}, {name}, {output_dir}, and {result_json}; overrides spec.command.",
     )
     args = parser.parse_args()
     generate_sweep(args)

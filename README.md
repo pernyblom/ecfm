@@ -58,9 +58,16 @@ python scripts\generate_config_sweep.py --base-config experiments\kalman_ml_fore
 ```
 
 The spec supports `grid`, static `overrides`, output path `templates`, and a
-launcher `command` using `{config}`. Generated sweep configs include
+launcher `command` using `{config}`, `{config_path}`, `{name}`, `{output_dir}`,
+and `{result_json}` (an automatically quoted `results/<name>.json` path).
+Generated sweep configs include
 `train.log_file: "{output_dir}/runs/{name}/train.log"` by default unless the
 spec overrides that template.
+
+The Kalman forecasting experiment includes
+`configs/kalman_motion_model_sweep.yaml` to compare and backprop-optimize
+constant-velocity and constant-acceleration filters while leaving constant
+velocity as the base-config default.
 
 After runs finish, collect configs and results into table-ready records:
 

@@ -65,6 +65,44 @@ def test_kalman_cv_forecast_shapes() -> None:
     assert pred.shape == (2, 3, 4)
 
 
+def test_kalman_constant_acceleration_forecast_uses_12d_state() -> None:
+    times = torch.tensor([[0.0, 1.0, 2.0, 3.0]])
+    x = 0.1 + 0.02 * times + 0.01 * times.square()
+    past = torch.stack(
+        [x, torch.full_like(x, 0.5), torch.full_like(x, 0.1), torch.full_like(x, 0.1)], dim=-1
+    )
+    params = {
+        "motion_model": "constant_acceleration", "measurement_pos_std": 1.0e-5,
+        "initial_vel_std": 1.0, "initial_accel_std": 1.0,
+        "process_pos_std": 1.0e-6, "process_vel_std": 1.0e-6, "process_accel_std": 1.0e-6,
+    }
+    state, cov = kalman_filter_history(past, times, params)
+    pred = kalman_cv_forecast(past, times, torch.tensor([[4.0, 5.0]]), params)
+
+    assert state.shape == (1, 12)
+    assert cov.shape == (1, 12, 12)
+    assert state[0, 8] > 0.0
+    assert pred.shape == (1, 2, 4)
+
+
+def test_kalman_constant_acceleration_tensor_parameters_receive_gradients() -> None:
+    past = torch.tensor([[[0.1, 0.5, 0.1, 0.1], [0.13, 0.5, 0.1, 0.1], [0.18, 0.5, 0.1, 0.1]]])
+    past_t = torch.tensor([[0.0, 1.0, 2.0]])
+    params = {
+        key: value.detach().clone().requires_grad_(True)
+        for key, value in kalman_std_tensors_from_config(
+            {"motion_model": "constant_acceleration"}, device=past.device, dtype=past.dtype
+        ).items()
+    }
+    pred = kalman_cv_forecast_tensor_params(
+        past, past_t, torch.tensor([[3.0]]), params, motion_model="constant_acceleration"
+    )
+    pred[..., 0].sum().backward()
+
+    assert params["initial_accel_std"].grad is not None
+    assert params["process_accel_std"].grad is not None
+
+
 def test_kalman_measurement_trust_changes_velocity_estimate() -> None:
     past = torch.tensor(
         [[[0.0, 0.5, 0.1, 0.1], [0.1, 0.5, 0.1, 0.1], [0.7, 0.5, 0.1, 0.1]]],

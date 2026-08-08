@@ -24,6 +24,7 @@ from experiments.kalman_ml_forecasting.models.kalman_filter import (
 from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.optimize_kalman import (
     _build_train_dataset,
+    _build_split_dataset,
     _format_yaml,
     _limit_indices,
     _objective_score,
@@ -34,27 +35,39 @@ from experiments.kalman_ml_forecasting.optimize_kalman import (
 from experiments.kalman_ml_forecasting.utils.config import load_config
 
 
-OPTIMIZED_PARAM_KEYS = [key for key in DEFAULT_KALMAN_CONFIG if key != "enabled"]
+COMMON_PARAM_KEYS = [
+    "initial_pos_std", "initial_size_std", "initial_vel_std",
+    "process_pos_std", "process_size_std", "process_vel_std", "process_size_vel_std",
+    "measurement_pos_std", "measurement_size_std",
+]
+ACCELERATION_PARAM_KEYS = [
+    "initial_accel_std", "initial_size_accel_std",
+    "process_accel_std", "process_size_accel_std",
+]
 
 
 class KalmanStdParameters(nn.Module):
     def __init__(self, cfg: Dict[str, Any] | None, *, min_std: float, max_std: float, device) -> None:
         super().__init__()
         params = kalman_config_from_dict(cfg)
+        self.motion_model = str(params["motion_model"])
+        self.optimized_param_keys = COMMON_PARAM_KEYS + (
+            ACCELERATION_PARAM_KEYS if self.motion_model == "constant_acceleration" else []
+        )
         self.min_std = float(min_std)
         self.max_std = float(max_std)
         self.log_std = nn.ParameterDict()
-        for key in OPTIMIZED_PARAM_KEYS:
+        for key in self.optimized_param_keys:
             value = min(max(float(params[key]), self.min_std), self.max_std)
             self.log_std[key] = nn.Parameter(torch.tensor(math.log(value), dtype=torch.float32, device=device))
 
     def tensors(self) -> dict[str, torch.Tensor]:
-        return {key: self.log_std[key].exp() for key in OPTIMIZED_PARAM_KEYS}
+        return {key: self.log_std[key].exp() for key in self.optimized_param_keys}
 
-    def as_config(self) -> dict[str, float | bool]:
-        out: dict[str, float | bool] = {"enabled": True}
+    def as_config(self) -> dict[str, float | bool | str]:
+        out: dict[str, float | bool | str] = {"enabled": True, "motion_model": self.motion_model}
         with torch.no_grad():
-            for key in OPTIMIZED_PARAM_KEYS:
+            for key in self.optimized_param_keys:
                 out[key] = float(self.log_std[key].exp().detach().cpu().item())
         return out
 
@@ -119,7 +132,9 @@ def _evaluate(
         for start in range(0, len(indices), batch_size):
             batch_indices = indices[start : start + batch_size]
             past_boxes, future_boxes, past_times, future_times = _stack_batch(samples, batch_indices, device=device)
-            pred = kalman_cv_forecast_tensor_params(past_boxes, past_times, future_times, model.tensors())
+            pred = kalman_cv_forecast_tensor_params(
+                past_boxes, past_times, future_times, model.tensors(), motion_model=model.motion_model
+            )
             metrics_t = _metric_tensors(pred, future_boxes, frame_size)
             rows.append({key: float(value.detach().cpu().item()) for key, value in metrics_t.items()})
             row_weights.append(len(batch_indices))
@@ -170,7 +185,9 @@ def _train_epoch(
     for start in range(0, len(shuffled), batch_size):
         batch_indices = shuffled[start : start + batch_size]
         past_boxes, future_boxes, past_times, future_times = _stack_batch(samples, batch_indices, device=device)
-        pred = kalman_cv_forecast_tensor_params(past_boxes, past_times, future_times, model.tensors())
+        pred = kalman_cv_forecast_tensor_params(
+            past_boxes, past_times, future_times, model.tensors(), motion_model=model.motion_model
+        )
         loss = _weighted_loss(_metric_tensors(pred, future_boxes, frame_size), objective_weights)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
@@ -183,7 +200,7 @@ def _train_epoch(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Backprop-optimize CV Kalman filter parameters from the configured values."
+        description="Backprop-optimize the configured Kalman motion model's noise parameters."
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=50)
@@ -196,6 +213,15 @@ def main() -> None:
     parser.add_argument("--max-samples", type=int, default=None)
     parser.add_argument("--max-tune-train-samples", type=int, default=None)
     parser.add_argument("--max-tune-val-samples", type=int, default=None)
+    parser.add_argument(
+        "--run-test-on-best",
+        action="store_true",
+        help="Evaluate the validation-selected best parameters on a held-out configured split.",
+    )
+    parser.add_argument(
+        "--test-split-key", type=str, default="test", help="Key under data.split_files (default: test)."
+    )
+    parser.add_argument("--max-test-samples", type=int, default=None, help="Optional held-out evaluation cap.")
     parser.add_argument("--min-std", type=float, default=1.0e-6)
     parser.add_argument("--max-std", type=float, default=10.0)
     parser.add_argument("--seed", type=int, default=123)
@@ -239,6 +265,7 @@ def main() -> None:
     print(f"Tune train samples: {len(train_idx)}")
     print(f"Tune val samples: {len(val_idx)}")
     print(f"Objective score minimized: {objective_label}")
+    print(f"Kalman motion model: {kalman_config_from_dict(cfg.get('kalman'))['motion_model']}")
 
     last4_train_metrics, last4_train_score = _evaluate_last_four(
         dataset.samples,
@@ -359,12 +386,58 @@ def main() -> None:
     print(f"Last-four tune train metrics: {json.dumps(last4_train_metrics, sort_keys=True)}")
     print(f"Last-four tune val metrics:   {json.dumps(last4_val_metrics, sort_keys=True)}")
 
+    test_result = None
+    if args.run_test_on_best:
+        test_dataset = _build_split_dataset(
+            cfg, split_key=str(args.test_split_key), max_samples=args.max_test_samples
+        )
+        test_idx = list(range(len(test_dataset.samples)))
+        if not test_idx:
+            raise RuntimeError(f"Configured '{args.test_split_key}' dataset yielded zero Kalman ML samples.")
+        # Recreate the model from the validation-selected snapshot. The live
+        # model contains the final epoch and may no longer be the incumbent.
+        best_model = KalmanStdParameters(
+            best["params"],
+            min_std=float(args.min_std),
+            max_std=float(args.max_std),
+            device=device,
+        ).to(device)
+        test_metrics, test_score = _evaluate(
+            test_dataset.samples,
+            test_idx,
+            model=best_model,
+            frame_size=frame_size,
+            objective_weights=objective_weights,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+        last4_test_metrics, last4_test_score = _evaluate_last_four(
+            test_dataset.samples,
+            test_idx,
+            frame_size=frame_size,
+            objective_weights=objective_weights,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+        test_result = {
+            "split": str(args.test_split_key),
+            "samples": len(test_idx),
+            "metrics": test_metrics,
+            "score": test_score,
+            "last4_metrics": last4_test_metrics,
+            "last4_score": last4_test_score,
+        }
+        print(f"Best Kalman test split: {args.test_split_key} samples={len(test_idx)}")
+        print(f"Best Kalman test score: {test_score:.6f} metrics={json.dumps(test_metrics, sort_keys=True)}")
+        print(f"Last-four test score:   {last4_test_score:.6f} metrics={json.dumps(last4_test_metrics, sort_keys=True)}")
+
     if args.output_json is not None:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(
             json.dumps(
                 {
                     "objective": args.objective,
+                    "motion_model": model.motion_model,
                     "objective_weights": objective_weights,
                     "last4": {
                         "train": last4_train_metrics,
@@ -379,6 +452,7 @@ def main() -> None:
                         "val_score": initial_val_score,
                     },
                     "best": best,
+                    "test": test_result,
                     "history": history,
                 },
                 indent=2,

@@ -1,0 +1,12 @@
+# Optimize comparable constant-velocity and constant-acceleration baselines.
+# Generate with scripts/generate_config_sweep.py using configs/base.yaml.
+command: python experiments/kalman_ml_forecasting/optimize_kalman_backprop.py --config {config} --epochs 20 --lr 1.0e-2 --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100" --run-test-on-best --output-json {result_json}
+configs_dir: configs
+
+name_fields:
+  - kalman.motion_model
+
+grid:
+  kalman.motion_model:
+    - constant_acceleration
+    - constant_velocity

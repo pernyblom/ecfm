@@ -158,13 +158,18 @@ model:
 
 # kalman:
 #   enabled: true
+#   motion_model: constant_velocity  # or constant_acceleration
 #   initial_pos_std: 0.05
 #   initial_size_std: 0.05
 #   initial_vel_std: 1.0
+#   initial_accel_std: 1.0
+#   initial_size_accel_std: 1.0
 #   process_pos_std: 0.001
 #   process_size_std: 0.001
 #   process_vel_std: 0.1
 #   process_size_vel_std: 0.1
+#   process_accel_std: 0.1
+#   process_size_accel_std: 0.1
 #   measurement_pos_std: 0.01
 #   measurement_size_std: 0.01
 
@@ -191,13 +196,20 @@ model:
 # --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
 kalman:
   enabled: true
+  # Keep the paper's existing baseline as the default. Sweep this field to
+  # constant_acceleration to use a 12-D [box, velocity, acceleration] state.
+  motion_model: constant_velocity
   initial_pos_std: 9.6178901e-06
   initial_size_std: 0.020246828
   initial_vel_std: 0.0004936771
+  initial_accel_std: 1.0
+  initial_size_accel_std: 1.0
   process_pos_std: 4.2104816e-06
   process_size_std: 1.2950349
   process_vel_std: 0.13281414
   process_size_vel_std: 0.003452712
+  process_accel_std: 0.1
+  process_size_accel_std: 0.1
   measurement_pos_std: 0.010384851
   measurement_size_std: 0.11314614
 

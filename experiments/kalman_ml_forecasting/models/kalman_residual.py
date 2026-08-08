@@ -383,7 +383,10 @@ class KalmanResidualForecaster(nn.Module):
         if self.initial_state_source == "kalman_filter":
             if filter_state is None:
                 raise RuntimeError("filter_state was not computed for kalman_filter initial_state_source.")
-            state = filter_state
+            # The learned residual rollout remains an 8-D position/velocity
+            # model even when its configured Kalman initializer also estimates
+            # acceleration in a 12-D constant-acceleration state.
+            state = filter_state[:, :8]
         else:
             state = box_sequence_to_state(past_boxes, past_times_s)
         current_time = past_times_s[:, -1]
