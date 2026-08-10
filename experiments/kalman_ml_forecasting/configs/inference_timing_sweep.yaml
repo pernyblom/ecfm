@@ -1,0 +1,35 @@
+# Generate with:
+# python scripts/generate_config_sweep.py --base-config experiments/kalman_ml_forecasting/configs/base.yaml --spec experiments/kalman_ml_forecasting/configs/inference_timing_sweep.yaml --output-dir outputs/kalman_ml_timing
+
+command: python experiments/kalman_ml_forecasting/benchmark_inference.py --config {config} --batch-size 1 --history-steps 12 --future-steps 24 --step-s 0.033333 --warmup 100 --iterations 5000 --output-json {result_json}
+configs_dir: configs
+
+cases:
+  - name: kalman_only
+    overrides:
+      data.representations: []
+      model.history_feature_mode: none
+      model.use_filter_state_features: false
+      model.filter_covariance_features: none
+      inference.device: cpu
+  - name: resnet18_64
+    overrides:
+      data.representations: [cstr3]
+      data.spatial_cutout.mode: fixed_pixels
+      data.spatial_cutout.size_px: [64, 64]
+      model.backbone.type: resnet18
+      inference.device: cuda
+  - name: resnet18_224
+    overrides:
+      data.representations: [cstr3]
+      data.spatial_cutout.mode: fixed_pixels
+      data.spatial_cutout.size_px: [224, 224]
+      model.backbone.type: resnet18
+      inference.device: cuda
+  - name: resnet18_1280
+    overrides:
+      data.representations: [cstr3]
+      data.spatial_cutout.mode: fixed_pixels
+      data.spatial_cutout.size_px: [1280, 720]
+      model.backbone.type: resnet18
+      inference.device: cuda

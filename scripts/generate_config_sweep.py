@@ -91,8 +91,10 @@ def _with_default_run_templates(templates: dict[str, Any], base_cfg: dict[str, A
 
 def _grid_items(spec: dict[str, Any]) -> list[tuple[str, list[Any]]]:
     grid = spec.get("grid")
-    if not isinstance(grid, dict) or not grid:
-        raise ValueError("Sweep spec must contain a non-empty 'grid' mapping.")
+    if grid is None:
+        return []
+    if not isinstance(grid, dict):
+        raise ValueError("Sweep spec 'grid' must be a mapping.")
     items: list[tuple[str, list[Any]]] = []
     for key, values in grid.items():
         if not isinstance(values, list):
@@ -101,6 +103,23 @@ def _grid_items(spec: dict[str, Any]) -> list[tuple[str, list[Any]]]:
             raise ValueError(f"Grid value for '{key}' is empty.")
         items.append((str(key), values))
     return items
+
+
+def _cases(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = spec.get("cases")
+    if raw is None:
+        return [{"name": None, "overrides": {}}]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("Sweep spec 'cases' must be a non-empty list.")
+    cases: list[dict[str, Any]] = []
+    for index, case in enumerate(raw):
+        if not isinstance(case, dict):
+            raise ValueError(f"Sweep case {index} must be a mapping.")
+        overrides = case.get("overrides") or {}
+        if not isinstance(overrides, dict):
+            raise ValueError(f"Sweep case {index} 'overrides' must be a mapping.")
+        cases.append({"name": case.get("name"), "overrides": overrides})
+    return cases
 
 
 def _name_for_combo(*, index: int, keys: list[str], values: tuple[Any, ...], name_fields: list[str] | None) -> str:
@@ -178,6 +197,9 @@ def generate_sweep(args: argparse.Namespace) -> None:
     base_cfg = _load_structured(args.base_config)
     spec = _load_structured(args.spec)
     grid = _grid_items(spec)
+    cases = _cases(spec)
+    if not grid and spec.get("cases") is None:
+        raise ValueError("Sweep spec must contain a non-empty 'grid' mapping or 'cases' list.")
     keys = [key for key, _ in grid]
     value_lists = [values for _, values in grid]
     output_dir = args.output_dir
@@ -194,28 +216,41 @@ def generate_sweep(args: argparse.Namespace) -> None:
     rows: list[dict[str, Any]] = []
     config_paths: list[Path] = []
     names: list[str] = []
-    for index, values in enumerate(itertools.product(*value_lists)):
-        cfg = copy.deepcopy(base_cfg)
-        for key, value in static_overrides.items():
-            _set_path(cfg, str(key), value)
-        for key, value in zip(keys, values):
-            _set_path(cfg, key, value)
-        name = _name_for_combo(index=index, keys=keys, values=values, name_fields=name_fields)
-        config_path = configs_dir / f"{name}.yaml"
-        _apply_templates(cfg, templates, name=name, index=index, output_dir=output_dir, config_path=config_path)
-        config_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8")
-        row = {
-            "index": index,
-            "name": name,
-            "config_path": str(config_path).replace("\\", "/"),
-        }
-        log_file = _get_path(cfg, "train.log_file")
-        if log_file:
-            row["log_file"] = str(log_file).replace("\\", "/")
-        row.update({key: value for key, value in zip(keys, values)})
-        rows.append(row)
-        config_paths.append(config_path)
-        names.append(name)
+    combinations = list(itertools.product(*value_lists)) if value_lists else [()]
+    index = 0
+    for case in cases:
+        for values in combinations:
+            cfg = copy.deepcopy(base_cfg)
+            for key, value in static_overrides.items():
+                _set_path(cfg, str(key), value)
+            for key, value in case["overrides"].items():
+                _set_path(cfg, str(key), value)
+            for key, value in zip(keys, values):
+                _set_path(cfg, key, value)
+            case_name = case["name"]
+            if case_name is not None:
+                suffix = _name_for_combo(index=index, keys=keys, values=values, name_fields=name_fields)
+                name = f"{index:04d}_{_safe_slug(str(case_name))}"
+                if keys:
+                    name += suffix[len(f"{index:04d}"):]
+            else:
+                name = _name_for_combo(index=index, keys=keys, values=values, name_fields=name_fields)
+            config_path = configs_dir / f"{name}.yaml"
+            _apply_templates(cfg, templates, name=name, index=index, output_dir=output_dir, config_path=config_path)
+            config_path.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8")
+            row = {
+                "index": index,
+                "name": name,
+                "config_path": str(config_path).replace("\\", "/"),
+            }
+            log_file = _get_path(cfg, "train.log_file")
+            if log_file:
+                row["log_file"] = str(log_file).replace("\\", "/")
+            row.update({key: value for key, value in zip(keys, values)})
+            rows.append(row)
+            config_paths.append(config_path)
+            names.append(name)
+            index += 1
 
     _write_manifest(output_dir=output_dir, rows=rows, grid_keys=keys)
     _write_launchers(output_dir=output_dir, command=command, config_paths=config_paths, names=names)

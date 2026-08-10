@@ -375,6 +375,43 @@ Metrics
   linear extrapolator.
 - Non-prefixed metrics are the image-conditioned residual model.
 
+Inference Timing
+
+Benchmark forecasting compute with warmed-up, pre-created device tensors:
+
+```bash
+python experiments/kalman_ml_forecasting/benchmark_inference.py --config path/to/config.yaml --device cpu --batch-size 1 --history-steps 12 --future-steps 40 --warmup 20 --iterations 100 --output-json outputs/timing.json
+```
+
+The timed region includes the complete history filtering and future rollout for
+Kalman-only, and the complete backbone, feature fusion, and future rollout for
+the learned path. Dataset reads, crop creation, and host-to-device copies are
+excluded equally. The Kalman path uses the batched tensor-parameter implementation
+from `optimize_kalman_backprop.py`, with parameters created once on the selected
+device outside the timed region. CUDA is synchronized around every measurement. Use the same
+device, batch size, history/future step counts, warm-up, and iteration count for
+comparisons; an ML checkpoint is optional because weights do not change the
+compute graph (`--checkpoint`). Whether the script runs Kalman-only or ML, the
+backbone type, representations, and spatial cutout are taken directly from the
+normal `data`, `model`, and `kalman` config sections. The device is read from
+`inference.device` (default `cuda`); `--device` remains available as a CLI
+override.
+
+Generate configurations for Kalman-only, ResNet-18 with a 64x64 cstr3 cutout,
+and ResNet-18 with a 224x224 cstr3 cutout:
+
+```bash
+python scripts/generate_config_sweep.py --base-config experiments/kalman_ml_forecasting/configs/base.yaml --spec experiments/kalman_ml_forecasting/configs/inference_timing_sweep.yaml --output-dir outputs/kalman_ml_timing
+```
+
+Then run `outputs/kalman_ml_timing/run_all.sh` (or `run_all.ps1`). Each JSON
+reports batch latency distribution, per-sample latency, throughput, tensor
+sizes, and device metadata. Edit the ordinary `data.representations` and
+`data.spatial_cutout.size_px` case overrides in the sweep spec to compare other
+representations or crop sizes. Timing controls are command-line arguments in
+the sweep's `command` field. The supplied cases use `inference.device: cpu` for
+Kalman-only and `inference.device: cuda` for the ResNet models.
+
 Extension points
 - Add or remove branches with `data.representations`.
 - Use `data.representations: []` to train a residual model without image/CNN

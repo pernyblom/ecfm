@@ -156,6 +156,11 @@ model:
   cell_local_first_conv: false
   cell_local_first_conv_representations: []
 
+# Device used by inference utilities. Individual scripts may provide a CLI
+# override; benchmark_inference.py defaults to this value.
+inference:
+  device: cuda
+
 # kalman:
 #   enabled: true
 #   motion_model: constant_velocity  # or constant_acceleration
