@@ -29,12 +29,12 @@ from experiments.kalman_ml_forecasting.models.kalman_residual import KalmanResid
 
 # Fixed benchmark protocol.
 DEVICE = "cuda"
-BATCH_SIZE = 32
+BATCH_SIZE = 1
 HISTORY_STEPS = 12
 FUTURE_STEPS = 24
 STEP_S = 1.0 / 30.0
 # (width, height) pairs. For example, add (1280, 720) to benchmark a full frame.
-IMAGE_SIZES = ((224, 224), (64, 64), (1280, 720))
+IMAGE_SIZES = ((64, 64), (224, 224), (1280, 720))
 WARMUP = 500
 ITERATIONS = 5000
 SEED = 123

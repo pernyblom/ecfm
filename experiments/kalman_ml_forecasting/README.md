@@ -377,6 +377,10 @@ Metrics
 
 Inference Timing
 
+For a detailed description of the focused post-filter CUDA benchmark and
+guidance for presenting its results at several levels of detail, see
+[`INCREMENTAL_ML_OVERHEAD_BENCHMARK.md`](INCREMENTAL_ML_OVERHEAD_BENCHMARK.md).
+
 Benchmark forecasting compute with warmed-up, pre-created device tensors:
 
 ```bash
