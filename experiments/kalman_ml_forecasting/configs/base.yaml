@@ -133,10 +133,10 @@ model:
   # Rollout initial state: "last_four" keeps the paper-style linear fit,
   # "kalman_filter" starts the learned residual rollout from the configured
   # Kalman filter's final history state.
-  initial_state_source: last_four
+  initial_state_source: kalman_filter
   # If true, append the configured Kalman filter's final history state
   # to the encoder features before image fusion.
-  use_filter_state_features: false
+  use_filter_state_features: true
   # Which Kalman state entries to append, and which covariance entries to keep
   # when filter_covariance_features is enabled:
   # - full: [cx, cy, w, h, vx, vy, vw, vh]
