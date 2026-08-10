@@ -377,6 +377,13 @@ Metrics
 
 Inference Timing
 
+On Windows, create the repository's Python 3.12 CUDA environment using the
+[root Windows CUDA setup](../../README.md#cuda-setup-windows). That setup pins
+the mutually compatible PyTorch, torchvision, and `triton-windows` versions
+needed for compiled inference. Installing only `triton-windows` into the older
+PyTorch 2.5 environment is insufficient because PyTorch 2.5 contains a known
+Windows TorchInductor cache-renaming bug.
+
 For a detailed description of the focused post-filter CUDA benchmark and
 guidance for presenting its results at several levels of detail, see
 [`INCREMENTAL_ML_OVERHEAD_BENCHMARK.md`](INCREMENTAL_ML_OVERHEAD_BENCHMARK.md).

@@ -20,11 +20,79 @@ to an existing Kalman forecasting pipeline.
 
 ## Quick usage
 
+### Windows installation from a fresh checkout
+
+This benchmark requires an NVIDIA GPU and a working CUDA build of PyTorch.
+Compiled results additionally require a Windows Triton wheel compatible with
+the installed PyTorch minor version. The following known-working combination
+is used by this repository:
+
+| Component | Version |
+|---|---|
+| Python | 3.12 (64-bit) |
+| PyTorch | 2.6.0+cu124 |
+| torchvision | 0.21.0+cu124 |
+| triton-windows | 3.2.x |
+
+From PowerShell in a fresh repository checkout:
+
+```powershell
+py -3.12 -m venv .venv312
+. .\.venv312\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install --index-url https://download.pytorch.org/whl/cu124 "torch==2.6.0+cu124" "torchvision==0.21.0+cu124"
+python -m pip install "triton-windows>=3.2,<3.3"
+python -m pip install -e .
+python -m pip check
+```
+
+Do not replace `triton-windows` with the ordinary `triton` package on Windows.
+The PyTorch/Triton minor versions must remain paired; PyTorch 2.6 corresponds
+to Triton 3.2. These wheels bundle the CUDA and small C compiler components
+needed for this CUDA workload, so installing the full CUDA Toolkit or Visual
+Studio Build Tools is not normally necessary. A compatible, up-to-date NVIDIA
+driver is still required.
+
+Confirm that the intended virtual environment and GPU are active:
+
+```powershell
+python -c "import sys, torch, torchvision, triton; print(sys.executable); print(torch.__version__, torchvision.__version__, triton.__version__); print(torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'No CUDA GPU')"
+```
+
+Expected core output includes `2.6.0+cu124`, `0.21.0+cu124`, `3.2.x`, CUDA
+`12.4`, and `True`. The CUDA version displayed by `nvidia-smi` may be newer;
+that value is the driver's maximum supported CUDA version, not the runtime
+bundled in the PyTorch wheel.
+
 Run the benchmark from the repository root:
 
 ```bash
 python experiments/kalman_ml_forecasting/benchmark_incremental_ml_overhead.py
 ```
+
+The first compiled run can pause while TorchInductor creates and caches its
+kernels. This compilation occurs before the timed measurements.
+
+### Windows troubleshooting
+
+- If `torch.cuda.is_available()` is `False`, check that `python` resolves to
+  `.venv312\Scripts\python.exe`, run `nvidia-smi`, and confirm that the CUDA
+  PyTorch wheel—not a CPU-only wheel—is installed.
+- `ModuleNotFoundError: No module named 'triton'` means `triton-windows` was not
+  installed in the active environment. The distribution is named
+  `triton-windows`, but its Python import is `triton`.
+- `FileExistsError: [WinError 183]` from a TorchInductor cache rename is a
+  known PyTorch 2.5 Windows issue. Confirm that `torch.__version__` is 2.6.0
+  and that Triton is 3.2.x; installing Triton alone does not fix PyTorch 2.5.
+- After changing Python, PyTorch, Triton, CUDA, or compiler versions, stale
+  caches can be removed from
+  `%LOCALAPPDATA%\Temp\torchinductor_<Windows-user>` and
+  `%USERPROFILE%\.triton\cache` before retrying. Only remove these generated
+  cache directories, and do so while no Python benchmark process is running.
+- A warning that there are not enough SMs for `max_autotune_gemm` is not a
+  compilation failure. This benchmark requests `reduce-overhead`, and results
+  are valid when the JSON contains normal component measurements under
+  `compiled` rather than `available: false`.
 
 The script is self-contained and does not read an experiment YAML file. Its
 protocol is defined by constants near the top of the script. The defaults are:

@@ -23,17 +23,55 @@ python scripts\train.py --config configs\small.yaml
 ```
 
 ## CUDA Setup (Windows)
-If your default Python is 3.14, install a CUDA-enabled PyTorch build in a
-Python 3.12 venv (CUDA wheels are not available for 3.14).
+
+The following setup is tested with both ordinary CUDA execution and
+`torch.compile` in the Kalman incremental-overhead benchmark. Use the versions
+as a matched set: PyTorch 2.6 uses Triton 3.2. In particular, PyTorch 2.5 has a
+known Windows TorchInductor cache-renaming failure even when Triton itself is
+installed correctly.
+
+Prerequisites:
+
+- 64-bit Python 3.12, available through the Windows `py` launcher;
+- an NVIDIA CUDA-capable GPU;
+- a current NVIDIA driver (`nvidia-smi` should run successfully);
+- PowerShell opened in the repository root.
+
+The PyTorch and Triton wheels include the CUDA components needed by this
+setup. A separate CUDA Toolkit or Visual Studio C++ installation is not
+required for this GPU-only benchmark.
 
 ```powershell
 py -3.12 -m venv .venv312
 . .\.venv312\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install -e .
-python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python -m pip install --index-url https://download.pytorch.org/whl/cu124 "torch==2.6.0+cu124" "torchvision==0.21.0+cu124"
+python -m pip install "triton-windows>=3.2,<3.3"
+python -m pip install -e .
+python -m pip check
+python -c "import torch, torchvision, triton; print('torch:', torch.__version__); print('torchvision:', torchvision.__version__); print('triton:', triton.__version__); print('CUDA runtime:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'none')"
 ```
+
+The expected core versions are `torch 2.6.0+cu124`,
+`torchvision 0.21.0+cu124`, and `triton 3.2.x`. The CUDA version reported by
+`nvidia-smi` describes the newest runtime supported by the driver and does not
+need to equal the `12.4` runtime bundled with PyTorch.
+
+If PowerShell blocks activation scripts, either adjust the execution policy
+for the current process or invoke the environment's interpreter explicitly:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+. .\.venv312\Scripts\Activate.ps1
+
+# Equivalent form without activation:
+.\.venv312\Scripts\python.exe -m pip check
+```
+
+These pins intentionally favor a known-working, reproducible Windows compile
+environment over automatically selecting the newest releases. When upgrading
+PyTorch later, upgrade Triton to the matching minor version as documented by
+the `triton-windows` project and retest `torch.compile`.
 
 ## THU-EACT-50-CHL Smoke Run
 If the dataset is placed at `datasets/THU-EACT-50-CHL`, run:
