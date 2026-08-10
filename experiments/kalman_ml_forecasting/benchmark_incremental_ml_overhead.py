@@ -35,7 +35,7 @@ FUTURE_STEPS = 24
 STEP_S = 1.0 / 30.0
 # (width, height) pairs. For example, add (1280, 720) to benchmark a full frame.
 IMAGE_SIZES = ((224, 224), (64, 64), (1280, 720))
-WARMUP = 50
+WARMUP = 500
 ITERATIONS = 5000
 SEED = 123
 
