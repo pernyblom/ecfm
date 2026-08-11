@@ -23,10 +23,7 @@ def compose_frames(layer_frames: dict[str, Sequence[Image.Image]], order: Sequen
         raise ValueError(f"Composition layers have different frame counts: {counts}")
     result = []
     for index in range(next(iter(counts.values()))):
-        base = layer_frames[order[0]][index].convert("RGBA")
-        for name in order[1:]:
-            base.alpha_composite(layer_frames[name][index].convert("RGBA"))
-        result.append(base)
+        result.append(compose_image_layers({name: layer_frames[name][index] for name in order}, order))
     return result
 
 
@@ -34,6 +31,13 @@ def compose_image_layers(layer_images: dict[str, Image.Image], order: Sequence[s
     missing = [name for name in order if name not in layer_images]
     if missing:
         raise ValueError(f"Composition references missing layers: {', '.join(missing)}")
+    sizes = {name: layer_images[name].size for name in order}
+    if len(set(sizes.values())) != 1:
+        raise ValueError(
+            "Cannot alpha-compose layers with different coordinate systems/resolutions: "
+            f"{sizes}. Export projection layers such as xt/yt with --layer-rep and compare "
+            "their matching numbered PNGs side by side."
+        )
     base = layer_images[order[0]].convert("RGBA")
     for name in order[1:]:
         base.alpha_composite(layer_images[name].convert("RGBA"))

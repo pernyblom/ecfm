@@ -41,6 +41,11 @@ LAYER_COLORS = {
     "baseline": (0, 255, 255, 255),
 }
 
+# These projections do not share the spatial x/y canvas used by boxes and raw
+# events. They are exported at their rendered resolution for synchronized
+# side-by-side comparison, never resized to data.frame_size.
+NATIVE_RESOLUTION_LAYER_REPS = {"xt", "xt_my", "yt", "yt_mx"}
+
 
 def _boxes_to_xyxy(boxes: torch.Tensor, frame_size: tuple[int, int]) -> torch.Tensor:
     w, h = float(frame_size[0]), float(frame_size[1])
@@ -313,22 +318,30 @@ def _load_backdrop(
     rep: str,
     frame_size: tuple[int, int],
     label_time_unit: float = 1.0e-6,
+    preserve_native_size: bool = False,
 ):
     from PIL import Image
+
+    def load(path: Path):
+        with Image.open(path) as source:
+            image = source.convert("RGB")
+        if preserve_native_size:
+            return image
+        return image.resize(frame_size, resample=Image.BILINEAR)
 
     folder, stem = _parse_frame_key(frame_key)
     base = images_root / folder if folder else images_root
     for ext in (".png", ".jpg", ".jpeg"):
         img_path = base / f"{stem}_{rep}{ext}"
         if img_path.exists():
-            return Image.open(img_path).convert("RGB").resize(frame_size, resample=Image.BILINEAR)
+            return load(img_path)
     rgb_path = _nearest_dataset_rgb(labels_root, folder, rep, frame_time_s)
     if rgb_path is not None and rgb_path.exists():
-        return Image.open(rgb_path).convert("RGB").resize(frame_size, resample=Image.BILINEAR)
+        return load(rgb_path)
     if rep.lower() in {"event_frames", "event_frame"}:
         event_path = _nearest_dataset_event_frame(labels_root, folder, stem, frame_time_s, label_time_unit)
         if event_path is not None and event_path.exists():
-            return Image.open(event_path).convert("RGB").resize(frame_size, resample=Image.BILINEAR)
+            return load(event_path)
     return None
 
 
@@ -576,6 +589,7 @@ def main() -> None:
                         rep=layer_rep_l,
                         frame_size=frame_size_t,
                         label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
+                        preserve_native_size=layer_rep_l in NATIVE_RESOLUTION_LAYER_REPS,
                     )
                     if layer_image is None:
                         raise FileNotFoundError(

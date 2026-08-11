@@ -311,6 +311,21 @@ compositions:
 python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep none --layer-rep rgb --layer-rep padded_rgb --raw-events
 ```
 
+The projection representations `xt`, `xt_my`, `yt`, and `yt_mx` can also be
+exported as synchronized comparison layers:
+
+```bash
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;gt_boxes" --layer-rep xt --layer-rep xt_my --layer-rep yt --layer-rep yt_mx
+```
+
+These four layers keep the exact resolution of their rendered source PNGs;
+they are not resized to `data.frame_size`. Their numbered filenames still
+match the other layer folders, making them suitable for side-by-side layouts.
+Because temporal projections use different coordinate systems and may have
+different dimensions, they cannot be alpha-composed with spatial layers unless
+the dimensions already match. The compositor reports a size mismatch instead
+of silently scaling them.
+
 To try multiple compositions without loading the dataset or running inference
 again, compose the automatically written PNG directory:
 
@@ -325,6 +340,7 @@ both; unlike the renderer, these options take explicit destination paths.
 Useful options:
 - `--backdrop-rep` is a legacy shortcut used only when `--composition` is omitted; new commands should put the desired background layer directly in `--composition`
 - `--layer-rep padded_rgb` to export an additional named representation layer; repeat the option for more layers
+- `--layer-rep xt`, `xt_my`, `yt`, or `yt_mx` to export native-resolution temporal projection layers with matching frame filenames
 - `--track-id 12 --track-id 25` to render only selected tracks
 - `--max-tracks 10` to cap a batch render
 - `--max-frames-per-track 200` to cap GIF length
