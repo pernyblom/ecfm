@@ -4,7 +4,7 @@ import argparse
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable
 
 import numpy as np
 import torch
@@ -15,9 +15,11 @@ if str(ROOT) not in sys.path:
 
 from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
 from experiments.kalman_ml_forecasting.compose_track_layers import (
-    compose_frames,
+    compose_image_layers,
+    iter_composed_layer_files,
     parse_composition,
-    write_mp4,
+    write_gif_iter,
+    write_mp4_iter,
 )
 from experiments.kalman_ml_forecasting.models.factory import build_model
 from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_cv_forecast
@@ -127,30 +129,6 @@ def _render_forecast_layers(
     return layers
 
 
-def _to_gif(frames: List["PIL.Image.Image"], out_path: Path, duration_ms: int) -> None:
-    if not frames:
-        return
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(
-        out_path,
-        save_all=True,
-        append_images=frames[1:],
-        duration=duration_ms,
-        loop=0,
-        disposal=2,
-    )
-
-
-def _save_png_sequence(frames: Sequence["PIL.Image.Image"], out_dir: Path) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for index, frame in enumerate(frames):
-        frame.save(out_dir / f"{index:06d}.png")
-
-
-def _repeat_frame(frame, count: int):
-    return [frame.copy() for _ in range(count)]
-
-
 def _load_raw_events(labels_root: Path, folder: str, event_source: str):
     """Load one FRED event sequence as [x, y, timestamp, polarity]."""
     import atexit
@@ -229,7 +207,6 @@ def _render_raw_event_subframes(
         end_s = start_s + 1.0 / 30.0
     boundaries = np.linspace(start_s, end_s, slowdown + 1) / event_time_unit
     timestamps = events[:, 2]
-    result = []
     for left, right in zip(boundaries[:-1], boundaries[1:]):
         lo = int(np.searchsorted(timestamps, left, side="left"))
         hi = int(np.searchsorted(timestamps, right, side="left"))
@@ -246,8 +223,7 @@ def _render_raw_event_subframes(
             pixels = np.asarray(image).copy()
             pixels[ys[valid], xs[valid]] = np.asarray(colors, dtype=np.uint8)[ps[valid]]
             image = Image.fromarray(pixels, mode=mode)
-        result.append(image.resize(frame_size, resample=Image.NEAREST))
-    return result
+        yield image.resize(frame_size, resample=Image.NEAREST)
 
 
 def _parse_frame_key(key: str) -> tuple[str, str]:
@@ -464,7 +440,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--split-layers", action="store_true",
-        help="Write background, trajectory, and optional raw-event layers as reusable PNG sequences.",
+        help="Deprecated no-op: reusable PNG layers are now always written.",
     )
     parser.add_argument("--include-cv", action="store_true", help="Also draw configured Kalman CV baseline in cyan.")
     parser.add_argument("--include-last4", action="store_true", help="Draw the last-four linear extrapolation baseline in cyan instead.")
@@ -478,17 +454,6 @@ def main() -> None:
         parser.error("--slowdown must be at least 1")
     if args.duration_ms < 1:
         parser.error("--duration-ms must be at least 1")
-    if not any((
-        args.output_gif,
-        args.output_mp4,
-        args.output_composition_gif,
-        args.output_composition_mp4,
-        args.split_layers,
-    )):
-        parser.error(
-            "Select at least one output: --output-gif, --output-mp4, "
-            "--output-composition-gif, --output-composition-mp4, or --split-layers."
-        )
     if args.composition is not None:
         composition_order = parse_composition(args.composition)
     else:
@@ -561,8 +526,13 @@ def main() -> None:
     written = 0
     with torch.no_grad():
         for track_id in track_ids:
-            frames = []
-            layer_frames: dict[str, list] = defaultdict(list)
+            suffix = "kalman" if args.baseline_only else "model"
+            layers_root = output_dir / f"folder_{args.folder}_track_{track_id}_{suffix}_layers"
+            # A shorter rerun must not leave stale tail frames from an older run.
+            if layers_root.exists():
+                for stale_path in layers_root.glob("*/*.png"):
+                    stale_path.unlink()
+            frame_index = 0
             indices = samples_by_track[track_id]
             if args.max_frames_per_track and args.max_frames_per_track > 0:
                 indices = indices[: args.max_frames_per_track]
@@ -594,6 +564,7 @@ def main() -> None:
                         frame_size=frame_size_t,
                         backdrop=None,
                     )
+                layers.pop("composite", None)
                 for layer_rep_l in sorted(representation_layers):
                     if layer_rep_l == "none":
                         continue
@@ -611,9 +582,7 @@ def main() -> None:
                             f"Could not resolve composition layer {layer_rep_l!r} for {sample.frame_key}."
                         )
                     layers[layer_rep_l] = layer_image.convert("RGBA")
-                repeated_layers = {
-                    name: _repeat_frame(image, args.slowdown) for name, image in layers.items()
-                }
+                event_frames = None
                 if raw_events is not None and sensor_size is not None:
                     if previous_time_s is None:
                         # Use the configured/inferred label cadence for the first sample.
@@ -621,39 +590,48 @@ def main() -> None:
                         start_time_s = sample.frame_time_s - period
                     else:
                         start_time_s = previous_time_s
-                    event_frames = _render_raw_event_subframes(
+                    event_frames = iter(_render_raw_event_subframes(
                         raw_events, sensor_size, frame_size_t, start_time_s,
                         sample.frame_time_s, args.slowdown, event_time_unit,
                         args.transparent_events,
+                    ))
+                for _ in range(args.slowdown):
+                    current_layers = dict(layers)
+                    if event_frames is not None:
+                        current_layers["raw_events"] = next(event_frames)
+                    current_layers["composite"] = compose_image_layers(
+                        current_layers, composition_order
                     )
-                    repeated_layers["raw_events"] = event_frames
-                # The requested chain is authoritative for every composite
-                # output, including the split-layers composite/ directory.
-                repeated_layers["composite"] = compose_frames(repeated_layers, composition_order)
-                for name, rendered in repeated_layers.items():
-                    layer_frames[name].extend(rendered)
-                frames.extend(repeated_layers["composite"])
+                    for name, image in current_layers.items():
+                        layer_dir = layers_root / name
+                        layer_dir.mkdir(parents=True, exist_ok=True)
+                        image.save(layer_dir / f"{frame_index:06d}.png")
+                    frame_index += 1
                 previous_time_s = sample.frame_time_s
-            suffix = "kalman" if args.baseline_only else "model"
-            out_path = output_dir / f"folder_{args.folder}_track_{track_id}_{suffix}.gif"
-            stem = out_path.with_suffix("")
+            stem = output_dir / f"folder_{args.folder}_track_{track_id}_{suffix}"
+            composite_order = ["composite"]
             if args.output_gif:
-                _to_gif(frames, out_path, args.duration_ms)
+                write_gif_iter(
+                    iter_composed_layer_files(layers_root, composite_order),
+                    stem.with_suffix(".gif"), args.duration_ms,
+                )
             if args.output_mp4:
-                write_mp4(frames, stem.with_suffix(".mp4"), 1000.0 / args.duration_ms)
-            custom_frames = None
-            if args.output_composition_gif or args.output_composition_mp4:
-                custom_frames = compose_frames(layer_frames, composition_order)
+                write_mp4_iter(
+                    iter_composed_layer_files(layers_root, composite_order),
+                    stem.with_suffix(".mp4"), 1000.0 / args.duration_ms,
+                )
             if args.output_composition_gif:
-                _to_gif(custom_frames, Path(f"{stem}_composition.gif"), args.duration_ms)
+                write_gif_iter(
+                    iter_composed_layer_files(layers_root, composite_order),
+                    Path(f"{stem}_composition.gif"), args.duration_ms,
+                )
             if args.output_composition_mp4:
-                write_mp4(custom_frames, Path(f"{stem}_composition.mp4"), 1000.0 / args.duration_ms)
-            if args.split_layers:
-                layers_root = output_dir / f"folder_{args.folder}_track_{track_id}_{suffix}_layers"
-                for name, rendered in layer_frames.items():
-                    _save_png_sequence(rendered, layers_root / name)
+                write_mp4_iter(
+                    iter_composed_layer_files(layers_root, composite_order),
+                    Path(f"{stem}_composition.mp4"), 1000.0 / args.duration_ms,
+                )
             written += 1
-            print(f"Rendered folder={args.folder} track={track_id} ({len(frames)} frames)")
+            print(f"Rendered folder={args.folder} track={track_id} ({frame_index} frames)")
 
     print(f"Rendered {written} tracks to {output_dir}")
     if raw_events_cleanup is not None:

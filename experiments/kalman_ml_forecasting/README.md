@@ -204,7 +204,7 @@ To visualize the timestamp-aligned raw FRED event stream at ten times the
 normal output-frame count and export independently composable layers:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --raw-events --transparent-events --slowdown 10 --split-layers --output-gif
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --raw-events --transparent-events --slowdown 10 --output-gif
 ```
 
 `--slowdown N` emits `N` images for every dataset frame. For raw events, the
@@ -234,15 +234,16 @@ Naming `raw_events` also enables raw-event loading, and naming `cv_boxes`
 enables the configured Kalman CV layer. For example:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --transparent-events --slowdown 10 --output-gif --split-layers
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --transparent-events --slowdown 10 --output-gif
 ```
 
 The standard GIF/MP4 and the PNGs under `composite/` all use this exact custom
 order. Layers omitted from the composition are not added implicitly. Individual
-generated layers are still exported alongside it when `--split-layers` is set.
+generated layers are always exported alongside it.
 
-`--split-layers` writes a reusable layer directory. It does not implicitly
-create GIFs:
+Reusable layer directories are always written. `--split-layers` is retained as
+a deprecated no-op so older commands continue to work. GIF and MP4 creation
+remain explicit:
 
 ```text
 folder_8_track_12_model_layers/
@@ -267,18 +268,25 @@ Output controls:
 - `--output-mp4` writes the active composition as MP4.
 - `--output-composition-gif` and `--output-composition-mp4` use the custom
   order supplied by `--composition`.
-- `--split-layers` writes numbered PNGs for later composition.
+- Numbered PNG layers are always written for later composition.
 
-At least one output control must be selected. MP4 frame rate is derived from
-`--duration-ms` as `1000 / duration_ms`. MP4 has no alpha channel, so
-transparent areas become black.
+No media output control is required because the PNG layers are always
+produced. MP4 frame rate is derived from `--duration-ms` as
+`1000 / duration_ms`. MP4 has no alpha channel, so transparent areas become
+black.
+
+Every layer frame is saved as soon as it is ready. The renderer does not retain
+all slowdown frames in RAM, and GIF/MP4 encoding reads the saved `composite/`
+sequence incrementally. Large slowdown values therefore primarily increase
+disk usage and rendering time rather than memory usage. When rerendering the
+same track, stale PNG tail frames from an earlier, longer render are removed.
 
 A custom composition is a semicolon-separated, back-to-front layer order. For
 example, the following puts RGB at the back, then events, history, Kalman CV,
 and ground truth at the front. No backdrop option is required:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-composition-gif --output-composition-mp4 --split-layers
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-composition-gif --output-composition-mp4
 ```
 
 Layer names are exact. Available names depend on the render options:
@@ -291,7 +299,7 @@ Use `padded_rgb` when composing with raw events or boxes in event-camera
 coordinates:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;gt_boxes" --output-composition-mp4 --split-layers
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;gt_boxes" --output-composition-mp4
 ```
 
 It can also be exported without becoming the standard backdrop by passing
@@ -300,11 +308,11 @@ representations can be saved in the same layer directory and used in later
 compositions:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep none --layer-rep rgb --layer-rep padded_rgb --raw-events --split-layers
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep none --layer-rep rgb --layer-rep padded_rgb --raw-events
 ```
 
 To try multiple compositions without loading the dataset or running inference
-again, compose the PNG directory produced by `--split-layers`:
+again, compose the automatically written PNG directory:
 
 ```bash
 python experiments/kalman_ml_forecasting/compose_track_layers.py --layers-dir outputs/kalman_ml_forecasting_track_vis/8/folder_8_track_12_model_layers --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-gif outputs/compositions/track_12.gif --output-mp4 outputs/compositions/track_12.mp4 --duration-ms 120
@@ -329,7 +337,7 @@ Useful options:
 - `--transparent-events` to give the raw-event layer a transparent background
 - `--event-source auto|npz|raw` to choose the FRED event reader
 - `--event-time-unit 1e-6` to override seconds per raw timestamp unit
-- `--split-layers` to write transparent PNG sequences and separate layer GIFs
+- `--split-layers` is a deprecated no-op; PNG layer sequences are always written
 - `--include-cv` to draw the configured Kalman CV baseline in cyan alongside the learned prediction
 - `--include-last4` to draw the last-four linear extrapolation baseline in cyan
 - `--baseline-only` to render configured Kalman predictions without loading a checkpoint

@@ -13,8 +13,8 @@ dependencies = [
   "torchvision",
   "numpy",
   "pyyaml",
+  "imageio-ffmpeg",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
