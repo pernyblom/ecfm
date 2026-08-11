@@ -165,6 +165,7 @@ def _load_raw_events(labels_root: Path, folder: str, event_source: str):
     event_dir = labels_root / folder / "Event" if folder else labels_root / "Event"
     raw_path = event_dir / "events.raw"
     npz_path = event_dir / "output_events.npz"
+    cleanup = None
     if event_source == "npz" or (event_source == "auto" and npz_path.exists()):
         events, _, meta, _, _, _ = _load_events_from_npz(
             raw_path, event_unit=1.0, ts_shift_us=_read_ts_shift_us(raw_path)
@@ -177,14 +178,39 @@ def _load_raw_events(labels_root: Path, folder: str, event_source: str):
             ts_shift_us=_read_ts_shift_us(raw_path), show_progress=True,
         )
         if temporary_path is not None:
-            # The returned memmap needs this file until rendering is complete.
-            atexit.register(lambda path=temporary_path: path.unlink(missing_ok=True))
+            # Keep the mmap alive while rendering, but close its Windows file
+            # handle explicitly before unlinking the decoded temporary file.
+            cleaned = False
+
+            def cleanup() -> None:
+                nonlocal cleaned
+                if cleaned:
+                    return
+                cleaned = True
+                current = events
+                seen: set[int] = set()
+                while current is not None and id(current) not in seen:
+                    seen.add(id(current))
+                    mmap_handle = getattr(current, "_mmap", None)
+                    if mmap_handle is not None:
+                        mmap_handle.close()
+                        break
+                    current = getattr(current, "base", None)
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    # A third-party Windows process may briefly retain the
+                    # file. Avoid an atexit traceback; the OS temp directory
+                    # can safely reclaim this decoded cache later.
+                    pass
+
+            atexit.register(cleanup)
     width, height = _parse_geometry(meta or _read_raw_meta_or_empty(raw_path))
     if width is None or height is None:
         if events.size == 0:
             raise ValueError("Cannot infer event sensor geometry from an empty stream.")
         width, height = int(events[:, 0].max()) + 1, int(events[:, 1].max()) + 1
-    return events, (int(width), int(height))
+    return events, (int(width), int(height)), cleanup
 
 
 def _render_raw_event_subframes(
@@ -394,6 +420,10 @@ def main() -> None:
         "--backdrop-rep", type=str, default="none",
         help="Backdrop representation, or 'none' for a transparent background (default).",
     )
+    parser.add_argument(
+        "--layer-rep", action="append", default=None,
+        help="Also export a representation as a named layer; repeatable (for example padded_rgb).",
+    )
     parser.add_argument("--track-id", type=int, action="append", default=None)
     parser.add_argument("--max-tracks", type=int, default=None)
     parser.add_argument("--max-frames-per-track", type=int, default=200)
@@ -495,8 +525,9 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_events = None
     sensor_size = None
+    raw_events_cleanup = None
     if args.raw_events:
-        raw_events, sensor_size = _load_raw_events(
+        raw_events, sensor_size, raw_events_cleanup = _load_raw_events(
             Path(data_cfg["labels_root"]), str(args.folder).strip("/"), args.event_source
         )
         if raw_events.size and np.any(np.diff(raw_events[:, 2]) < 0):
@@ -552,6 +583,24 @@ def main() -> None:
                         frame_size=frame_size_t,
                         backdrop=backdrop,
                     )
+                for layer_rep in args.layer_rep or []:
+                    layer_rep_l = layer_rep.lower()
+                    if layer_rep_l in {"none", args.backdrop_rep.lower()}:
+                        continue
+                    layer_image = _load_backdrop(
+                        images_root=Path(data_cfg["images_root"]),
+                        labels_root=Path(data_cfg["labels_root"]),
+                        frame_key=sample.frame_key,
+                        frame_time_s=sample.frame_time_s,
+                        rep=layer_rep,
+                        frame_size=frame_size_t,
+                        label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
+                    )
+                    if layer_image is None:
+                        raise FileNotFoundError(
+                            f"Could not resolve --layer-rep {layer_rep!r} for {sample.frame_key}."
+                        )
+                    layers[layer_rep_l] = layer_image.convert("RGBA")
                 repeated_layers = {
                     name: _repeat_frame(image, args.slowdown) for name, image in layers.items()
                 }
@@ -614,6 +663,8 @@ def main() -> None:
             print(f"Rendered folder={args.folder} track={track_id} ({len(frames)} frames)")
 
     print(f"Rendered {written} tracks to {output_dir}")
+    if raw_events_cleanup is not None:
+        raw_events_cleanup()
 
 
 if __name__ == "__main__":

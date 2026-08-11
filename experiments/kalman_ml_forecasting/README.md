@@ -274,6 +274,22 @@ such as `rgb` or `cstr3`, `raw_events`, `history_boxes`, `prediction_boxes`,
 `cv_boxes`, `gt_boxes`, and `composite`. A requested composition fails clearly
 if a named layer was not generated.
 
+Use `padded_rgb` when composing with raw events or boxes in event-camera
+coordinates. It can be the standard backdrop:
+
+```bash
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep padded_rgb --raw-events --composition "padded_rgb;raw_events;history_boxes;gt_boxes" --output-composition-mp4 --split-layers
+```
+
+It can also be exported without becoming the standard backdrop by passing
+`--layer-rep padded_rgb`. `--layer-rep` is repeatable, so multiple source image
+representations can be saved in the same layer directory and used in later
+compositions:
+
+```bash
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep none --layer-rep rgb --layer-rep padded_rgb --raw-events --split-layers
+```
+
 To try multiple compositions without loading the dataset or running inference
 again, compose the PNG directory produced by `--split-layers`:
 
@@ -287,6 +303,7 @@ both; unlike the renderer, these options take explicit destination paths.
 
 Useful options:
 - `--backdrop-rep none` for no backdrop (the default), or `cstr3`, `xt_my`, `yt_mx`, `rgb`, `padded_rgb`, or `event_frames`
+- `--layer-rep padded_rgb` to export an additional named representation layer; repeat the option for more layers
 - `--track-id 12 --track-id 25` to render only selected tracks
 - `--max-tracks 10` to cap a batch render
 - `--max-frames-per-track 200` to cap GIF length
