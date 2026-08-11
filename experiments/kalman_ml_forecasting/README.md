@@ -193,17 +193,113 @@ fields.
 
 Visualize Tracks
 
-Render one GIF per track for a specific FRED folder:
+Render one GIF per track for a specific FRED folder. GIF creation is explicit;
+the script does not create one unless `--output-gif` is passed. The default
+backdrop is `none`, which leaves the background transparent:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep cstr3
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep cstr3 --output-gif
 ```
 
+To visualize the timestamp-aligned raw FRED event stream at ten times the
+normal output-frame count and export independently composable layers:
+
+```bash
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --raw-events --transparent-events --slowdown 10 --split-layers --output-gif
+```
+
+`--slowdown N` emits `N` images for every dataset frame. For raw events, the
+time interval ending at the dataset frame is divided into `N` non-overlapping
+event slices, so each output image contains newly selected events. Existing
+rendered representations, RGB backgrounds, and trajectory overlays are not
+recomputed; their image is repeated `N` times. Since every output image still
+uses `--duration-ms`, a slowdown of 10 also makes the resulting GIF ten times
+longer unless `--duration-ms` is reduced.
+
+Raw events are drawn in blue and red-orange for the two polarities. The loader
+uses `datasets/FRED/<folder>/Event/output_events.npz` when available and
+otherwise decodes `events.raw`. Control this with `--event-source auto`,
+`npz`, or `raw`; `auto` is the default and avoids the slower raw decode when a
+cache exists. Event timestamps use `data.label_time_unit` by default. Pass
+`--event-time-unit` when the raw stream uses a different number of seconds per
+timestamp unit.
+
+`--transparent-events` makes pixels without events transparent. Without it,
+the event stream uses a black background and replaces the configured backdrop
+in the composite. In both cases trajectory layers are drawn above the events.
+
+`--split-layers` writes a reusable layer directory. It does not implicitly
+create GIFs:
+
+```text
+folder_8_track_12_model_layers/
+  rgb/              # selected backdrop name; absent with --backdrop-rep none
+  background/       # transparent canvas with --backdrop-rep none
+  raw_events/       # present with --raw-events
+  history_boxes/
+  prediction_boxes/
+  gt_boxes/
+  cv_boxes/         # present with --include-cv or --include-last4
+  composite/
+```
+
+Trajectory and raw-event PNGs have RGBA transparency, making them suitable for
+later video or GIF composition. A selected backdrop layer retains its source
+image. With `--backdrop-rep none`, the exported `background` layer is
+transparent.
+
+Output controls:
+
+- `--output-gif` writes the renderer's standard composite as GIF.
+- `--output-mp4` writes the standard composite as MP4.
+- `--output-composition-gif` and `--output-composition-mp4` use the custom
+  order supplied by `--composition`.
+- `--split-layers` writes numbered PNGs for later composition.
+
+At least one output control must be selected. MP4 frame rate is derived from
+`--duration-ms` as `1000 / duration_ms`. MP4 has no alpha channel, so
+transparent areas become black.
+
+A custom composition is a semicolon-separated, back-to-front layer order. For
+example, the following puts RGB at the back, then events, history, Kalman CV,
+and ground truth at the front:
+
+```bash
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep rgb --raw-events --include-cv --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-composition-gif --output-composition-mp4 --split-layers
+```
+
+Layer names are exact. Available names depend on the render options:
+`background` (when backdrop is `none`), the lower-case backdrop representation
+such as `rgb` or `cstr3`, `raw_events`, `history_boxes`, `prediction_boxes`,
+`cv_boxes`, `gt_boxes`, and `composite`. A requested composition fails clearly
+if a named layer was not generated.
+
+To try multiple compositions without loading the dataset or running inference
+again, compose the PNG directory produced by `--split-layers`:
+
+```bash
+python experiments/kalman_ml_forecasting/compose_track_layers.py --layers-dir outputs/kalman_ml_forecasting_track_vis/8/folder_8_track_12_model_layers --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-gif outputs/compositions/track_12.gif --output-mp4 outputs/compositions/track_12.mp4 --duration-ms 120
+```
+
+Run this command repeatedly with different `--composition` strings and output
+paths. The standalone compositor accepts `--output-gif`, `--output-mp4`, or
+both; unlike the renderer, these options take explicit destination paths.
+
 Useful options:
-- `--backdrop-rep cstr3`, `xt_my`, `yt_mx`, `rgb`, `padded_rgb`, or `event_frames`
+- `--backdrop-rep none` for no backdrop (the default), or `cstr3`, `xt_my`, `yt_mx`, `rgb`, `padded_rgb`, or `event_frames`
 - `--track-id 12 --track-id 25` to render only selected tracks
 - `--max-tracks 10` to cap a batch render
 - `--max-frames-per-track 200` to cap GIF length
+- `--duration-ms 120` to set the display duration of every output image
+- `--output-gif` or `--output-mp4` to write the standard composite
+- `--output-composition-gif` or `--output-composition-mp4` to write `--composition`
+- `--composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes"` for back-to-front composition order
+- `--slowdown 10` to emit ten output images per dataset frame
+- `--raw-events` to render time-sliced events instead of only a pre-rendered event representation
+- `--transparent-events` to give the raw-event layer a transparent background
+- `--event-source auto|npz|raw` to choose the FRED event reader
+- `--event-time-unit 1e-6` to override seconds per raw timestamp unit
+- `--split-layers` to write transparent PNG sequences and separate layer GIFs
 - `--include-cv` to draw the configured Kalman CV baseline in cyan alongside the learned prediction
 - `--include-last4` to draw the last-four linear extrapolation baseline in cyan
 - `--baseline-only` to render configured Kalman predictions without loading a checkpoint
@@ -213,6 +309,10 @@ The overlay colors are:
 - yellow: learned predicted boxes
 - green: future ground truth boxes
 - cyan: optional Kalman or last-four extrapolation baseline
+
+Ground truth is drawn after the prediction in the composite so an overlapping
+yellow prediction cannot hide the green ground-truth outline. The split layers
+also preserve each color independently when trajectories overlap.
 
 Motion Fields
 
