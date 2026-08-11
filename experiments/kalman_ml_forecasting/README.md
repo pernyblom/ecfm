@@ -194,8 +194,7 @@ fields.
 Visualize Tracks
 
 Render one GIF per track for a specific FRED folder. GIF creation is explicit;
-the script does not create one unless `--output-gif` is passed. The default
-backdrop is `none`, which leaves the background transparent:
+the script does not create one unless `--output-gif` is passed:
 
 ```bash
 python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep cstr3 --output-gif
@@ -228,6 +227,20 @@ timestamp unit.
 the event stream uses a black background and replaces the configured backdrop
 in the composite. In both cases trajectory layers are drawn above the events.
 
+`--composition` defines the complete image from back to front. It does not
+need `--backdrop-rep`; naming `rgb`, `padded_rgb`, `cstr3`, or another
+representation in the composition loads that representation automatically.
+Naming `raw_events` also enables raw-event loading, and naming `cv_boxes`
+enables the configured Kalman CV layer. For example:
+
+```bash
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --transparent-events --slowdown 10 --output-gif --split-layers
+```
+
+The standard GIF/MP4 and the PNGs under `composite/` all use this exact custom
+order. Layers omitted from the composition are not added implicitly. Individual
+generated layers are still exported alongside it when `--split-layers` is set.
+
 `--split-layers` writes a reusable layer directory. It does not implicitly
 create GIFs:
 
@@ -250,8 +263,8 @@ transparent.
 
 Output controls:
 
-- `--output-gif` writes the renderer's standard composite as GIF.
-- `--output-mp4` writes the standard composite as MP4.
+- `--output-gif` writes the active composition as GIF.
+- `--output-mp4` writes the active composition as MP4.
 - `--output-composition-gif` and `--output-composition-mp4` use the custom
   order supplied by `--composition`.
 - `--split-layers` writes numbered PNGs for later composition.
@@ -262,10 +275,10 @@ transparent areas become black.
 
 A custom composition is a semicolon-separated, back-to-front layer order. For
 example, the following puts RGB at the back, then events, history, Kalman CV,
-and ground truth at the front:
+and ground truth at the front. No backdrop option is required:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep rgb --raw-events --include-cv --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-composition-gif --output-composition-mp4 --split-layers
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "rgb;raw_events;history_boxes;cv_boxes;gt_boxes" --output-composition-gif --output-composition-mp4 --split-layers
 ```
 
 Layer names are exact. Available names depend on the render options:
@@ -275,10 +288,10 @@ such as `rgb` or `cstr3`, `raw_events`, `history_boxes`, `prediction_boxes`,
 if a named layer was not generated.
 
 Use `padded_rgb` when composing with raw events or boxes in event-camera
-coordinates. It can be the standard backdrop:
+coordinates:
 
 ```bash
-python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --backdrop-rep padded_rgb --raw-events --composition "padded_rgb;raw_events;history_boxes;gt_boxes" --output-composition-mp4 --split-layers
+python experiments/kalman_ml_forecasting/visualize_tracks.py --config experiments/kalman_ml_forecasting/configs/base.yaml --checkpoint outputs/kalman_ml_forecasting_ckpt/best.pt --folder 8 --composition "padded_rgb;raw_events;history_boxes;gt_boxes" --output-composition-mp4 --split-layers
 ```
 
 It can also be exported without becoming the standard backdrop by passing
@@ -302,7 +315,7 @@ paths. The standalone compositor accepts `--output-gif`, `--output-mp4`, or
 both; unlike the renderer, these options take explicit destination paths.
 
 Useful options:
-- `--backdrop-rep none` for no backdrop (the default), or `cstr3`, `xt_my`, `yt_mx`, `rgb`, `padded_rgb`, or `event_frames`
+- `--backdrop-rep` is a legacy shortcut used only when `--composition` is omitted; new commands should put the desired background layer directly in `--composition`
 - `--layer-rep padded_rgb` to export an additional named representation layer; repeat the option for more layers
 - `--track-id 12 --track-id 25` to render only selected tracks
 - `--max-tracks 10` to cap a batch render

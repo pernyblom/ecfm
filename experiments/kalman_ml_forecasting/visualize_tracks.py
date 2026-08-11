@@ -418,7 +418,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--backdrop-rep", type=str, default="none",
-        help="Backdrop representation, or 'none' for a transparent background (default).",
+        help="Legacy shortcut used only when --composition is omitted (default: none).",
     )
     parser.add_argument(
         "--layer-rep", action="append", default=None,
@@ -432,15 +432,15 @@ def main() -> None:
     parser.add_argument("--output-mp4", action="store_true", help="Write the default composite MP4.")
     parser.add_argument(
         "--output-composition-gif", action="store_true",
-        help="Write a GIF using --composition instead of the default composite order.",
+        help="Write the active composition as a separately named GIF.",
     )
     parser.add_argument(
         "--output-composition-mp4", action="store_true",
-        help="Write an MP4 using --composition instead of the default composite order.",
+        help="Write the active composition as a separately named MP4.",
     )
     parser.add_argument(
-        "--composition", default="rgb;raw_events;history_boxes;cv_boxes;gt_boxes",
-        help="Semicolon-separated layer names in back-to-front order.",
+        "--composition", default=None,
+        help="Complete semicolon-separated layer chain in back-to-front order.",
     )
     parser.add_argument(
         "--slowdown", type=int, default=1,
@@ -489,7 +489,28 @@ def main() -> None:
             "Select at least one output: --output-gif, --output-mp4, "
             "--output-composition-gif, --output-composition-mp4, or --split-layers."
         )
-    composition_order = parse_composition(args.composition)
+    if args.composition is not None:
+        composition_order = parse_composition(args.composition)
+    else:
+        composition_order = [
+            "background" if args.backdrop_rep.lower() == "none" else args.backdrop_rep.lower()
+        ]
+        if args.raw_events:
+            composition_order.append("raw_events")
+        composition_order.append("history_boxes")
+        if args.include_cv or args.include_last4:
+            composition_order.append("cv_boxes")
+        composition_order.extend(("prediction_boxes", "gt_boxes"))
+    if "composite" in composition_order:
+        parser.error("--composition cannot contain the derived 'composite' layer.")
+
+    generated_layer_names = {
+        "background", "raw_events", "history_boxes", "prediction_boxes", "cv_boxes", "gt_boxes"
+    }
+    representation_layers = {
+        name for name in composition_order if name not in generated_layer_names
+    }
+    representation_layers.update(rep.lower() for rep in (args.layer_rep or []))
 
     cfg = load_config(args.config)
     data_cfg = cfg["data"]
@@ -526,7 +547,7 @@ def main() -> None:
     raw_events = None
     sensor_size = None
     raw_events_cleanup = None
-    if args.raw_events:
+    if args.raw_events or "raw_events" in composition_order:
         raw_events, sensor_size, raw_events_cleanup = _load_raw_events(
             Path(data_cfg["labels_root"]), str(args.folder).strip("/"), args.event_source
         )
@@ -555,57 +576,44 @@ def main() -> None:
                 future_times_s = sample.future_times_s.unsqueeze(0).to(device)
                 kalman_boxes = kalman_cv_forecast(past_boxes, past_times_s, future_times_s, kalman_cfg)
                 last4_boxes = last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
+                want_cv_layer = "cv_boxes" in composition_order or args.include_cv or args.include_last4
                 if args.baseline_only:
                     pred_boxes = kalman_boxes
-                    cv_overlay = None
+                    cv_overlay = kalman_boxes if want_cv_layer else None
                 else:
                     pred_boxes = model(inputs, past_boxes, past_times_s, future_times_s)
                     if args.include_last4:
                         cv_overlay = last4_boxes
                     else:
-                        cv_overlay = kalman_boxes if args.include_cv else None
-                backdrop = None
-                if args.backdrop_rep.lower() != "none":
-                    backdrop = _load_backdrop(
-                        images_root=Path(data_cfg["images_root"]),
-                        labels_root=Path(data_cfg["labels_root"]),
-                        frame_key=sample.frame_key,
-                        frame_time_s=sample.frame_time_s,
-                        rep=args.backdrop_rep,
-                        frame_size=frame_size_t,
-                        label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
-                    )
+                        cv_overlay = kalman_boxes if want_cv_layer else None
                 layers = _render_forecast_layers(
                         past_boxes=past_boxes[0].cpu(),
                         pred_boxes=pred_boxes[0].cpu(),
                         gt_boxes=future_boxes[0].cpu(),
                         cv_boxes=None if cv_overlay is None else cv_overlay[0].cpu(),
                         frame_size=frame_size_t,
-                        backdrop=backdrop,
+                        backdrop=None,
                     )
-                for layer_rep in args.layer_rep or []:
-                    layer_rep_l = layer_rep.lower()
-                    if layer_rep_l in {"none", args.backdrop_rep.lower()}:
+                for layer_rep_l in sorted(representation_layers):
+                    if layer_rep_l == "none":
                         continue
                     layer_image = _load_backdrop(
                         images_root=Path(data_cfg["images_root"]),
                         labels_root=Path(data_cfg["labels_root"]),
                         frame_key=sample.frame_key,
                         frame_time_s=sample.frame_time_s,
-                        rep=layer_rep,
+                        rep=layer_rep_l,
                         frame_size=frame_size_t,
                         label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
                     )
                     if layer_image is None:
                         raise FileNotFoundError(
-                            f"Could not resolve --layer-rep {layer_rep!r} for {sample.frame_key}."
+                            f"Could not resolve composition layer {layer_rep_l!r} for {sample.frame_key}."
                         )
                     layers[layer_rep_l] = layer_image.convert("RGBA")
                 repeated_layers = {
                     name: _repeat_frame(image, args.slowdown) for name, image in layers.items()
                 }
-                if args.backdrop_rep.lower() != "none":
-                    repeated_layers[args.backdrop_rep.lower()] = repeated_layers.pop("background")
                 if raw_events is not None and sensor_size is not None:
                     if previous_time_s is None:
                         # Use the configured/inferred label cadence for the first sample.
@@ -619,24 +627,9 @@ def main() -> None:
                         args.transparent_events,
                     )
                     repeated_layers["raw_events"] = event_frames
-                    for subframe in range(args.slowdown):
-                        event_layer = event_frames[subframe].convert("RGBA")
-                        if args.transparent_events:
-                            backdrop_name = args.backdrop_rep.lower()
-                            if backdrop_name == "none":
-                                composite = layers["background"].copy()
-                            else:
-                                composite = repeated_layers[backdrop_name][subframe].copy()
-                            composite.alpha_composite(event_layer)
-                            for name in ("history_boxes", "cv_boxes", "prediction_boxes", "gt_boxes"):
-                                if name in repeated_layers:
-                                    composite.alpha_composite(repeated_layers[name][subframe])
-                        else:
-                            composite = event_layer
-                            for name in ("history_boxes", "cv_boxes", "prediction_boxes", "gt_boxes"):
-                                if name in repeated_layers:
-                                    composite.alpha_composite(repeated_layers[name][subframe])
-                        repeated_layers["composite"][subframe] = composite
+                # The requested chain is authoritative for every composite
+                # output, including the split-layers composite/ directory.
+                repeated_layers["composite"] = compose_frames(repeated_layers, composition_order)
                 for name, rendered in repeated_layers.items():
                     layer_frames[name].extend(rendered)
                 frames.extend(repeated_layers["composite"])
