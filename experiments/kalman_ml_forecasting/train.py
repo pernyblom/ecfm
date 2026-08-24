@@ -116,6 +116,16 @@ def _collate(batch: List[KalmanForecastSample]) -> Batch:
     )
 
 
+def _box_augmentation_for_split(data_cfg: Dict, split: str) -> Dict:
+    augmentation_cfg = dict(data_cfg.get("box_augmentation") or {})
+    splits_raw = augmentation_cfg.get("splits", ["train"])
+    if isinstance(splits_raw, str):
+        splits = {splits_raw}
+    else:
+        splits = {str(item) for item in splits_raw}
+    return augmentation_cfg if "all" in splits or split in splits else {}
+
+
 def _build_dataset(
     cfg: Dict,
     split: str,
@@ -146,6 +156,7 @@ def _build_dataset(
         decorrelation_cfg = {}
     else:
         decorrelation_cfg["_split_name"] = split
+    box_augmentation_cfg = _box_augmentation_for_split(data_cfg, split)
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
@@ -175,6 +186,7 @@ def _build_dataset(
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
         sample_decorrelation=decorrelation_cfg,
         spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
+        box_augmentation=box_augmentation_cfg,
     )
 
 

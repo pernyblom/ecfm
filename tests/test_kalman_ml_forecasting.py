@@ -9,7 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
+from experiments.kalman_ml_forecasting.data.track_dataset import (
+    TrackKalmanForecastDataset,
+    _augment_boxes,
+)
 from experiments.kalman_ml_forecasting.models.kalman_filter import (
     kalman_cv_forecast,
     kalman_cv_forecast_tensor_params,
@@ -24,6 +27,7 @@ from experiments.kalman_ml_forecasting.optimize_kalman import (
     _objective_score,
     _parse_objective_weights,
 )
+from experiments.kalman_ml_forecasting.train import _box_augmentation_for_split
 from experiments.kalman_ml_forecasting.utils.config import resolve_representation_image_sizes
 
 
@@ -35,6 +39,103 @@ def _write_image(path: Path) -> None:
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def test_box_augmentation_changes_offset_and_size_within_configured_bounds() -> None:
+    boxes = np.asarray([[0.5, 0.5, 0.2, 0.1], [0.4, 0.6, 0.1, 0.2]], dtype=np.float32)
+    original = boxes.copy()
+    cfg = {
+        "enabled": True,
+        "center_offset_fraction": [0.2, 0.1],
+        "size_scale_range": [0.8, 1.3],
+        "clip_to_frame": False,
+    }
+
+    augmented = _augment_boxes(boxes, cfg, rng=np.random.default_rng(7))
+
+    np.testing.assert_array_equal(boxes, original)
+    assert not np.array_equal(augmented, original)
+    assert np.all(np.abs(augmented[:, 0] - boxes[:, 0]) <= boxes[:, 2] * 0.2 + 1e-7)
+    assert np.all(np.abs(augmented[:, 1] - boxes[:, 1]) <= boxes[:, 3] * 0.1 + 1e-7)
+    scales = augmented[:, 2:4] / boxes[:, 2:4]
+    assert np.all(scales >= 0.8 - 1e-6)
+    assert np.all(scales <= 1.3 + 1e-6)
+
+
+def test_box_augmentation_split_selection_defaults_to_train() -> None:
+    data_cfg = {"box_augmentation": {"enabled": True, "live": True}}
+    assert _box_augmentation_for_split(data_cfg, "train")["enabled"] is True
+    assert _box_augmentation_for_split(data_cfg, "val") == {}
+
+    data_cfg["box_augmentation"]["splits"] = ["train_eval", "test"]
+    assert _box_augmentation_for_split(data_cfg, "train") == {}
+    assert _box_augmentation_for_split(data_cfg, "train_eval")["live"] is True
+
+
+def test_live_box_augmentation_is_redrawn_without_mutating_cached_sample() -> None:
+    dataset = TrackKalmanForecastDataset.__new__(TrackKalmanForecastDataset)
+    dataset.representations = []
+    dataset.image_sizes = {}
+    dataset.source_image_sizes = {}
+    dataset.frame_size = (100.0, 100.0)
+    dataset.spatial_cutout = {}
+    dataset.box_augmentation = {
+        "enabled": True,
+        "live": True,
+        "center_offset_fraction": [0.25, 0.25],
+        "size_scale_range": [0.75, 1.25],
+    }
+    cached_past = np.asarray([[0.5, 0.5, 0.2, 0.2]], dtype=np.float32)
+    cached_future = np.asarray([[0.6, 0.5, 0.2, 0.2]], dtype=np.float32)
+    dataset.samples = [
+        {
+            "input_paths": {},
+            "past_boxes": cached_past.copy(),
+            "future_boxes": cached_future.copy(),
+            "past_times_s": np.asarray([0.0], dtype=np.float32),
+            "future_times_s": np.asarray([1.0], dtype=np.float32),
+            "folder": "",
+            "anchor_stem": "frame_0",
+            "anchor_time_s": 0.0,
+            "track_id": 1,
+        }
+    ]
+
+    first = dataset[0]
+    second = dataset[0]
+
+    assert not torch.equal(first.past_boxes, second.past_boxes)
+    np.testing.assert_array_equal(dataset.samples[0]["past_boxes"], cached_past)
+    np.testing.assert_array_equal(dataset.samples[0]["future_boxes"], cached_future)
+
+
+def test_cache_box_augmentation_is_applied_reproducibly() -> None:
+    cfg = {
+        "enabled": True,
+        "cache": True,
+        "center_offset_fraction": 0.2,
+        "size_scale_range": [0.8, 1.2],
+    }
+    sample = {
+        "past_boxes": np.asarray([[0.5, 0.5, 0.2, 0.2]], dtype=np.float32),
+        "future_boxes": np.asarray([[0.6, 0.5, 0.2, 0.2]], dtype=np.float32),
+    }
+    datasets = []
+    for _ in range(2):
+        dataset = TrackKalmanForecastDataset.__new__(TrackKalmanForecastDataset)
+        dataset.seed = 19
+        dataset.box_augmentation = dict(cfg)
+        dataset.samples = [{key: value.copy() for key, value in sample.items()}]
+        dataset._apply_cache_box_augmentation()
+        datasets.append(dataset)
+
+    assert not np.array_equal(datasets[0].samples[0]["past_boxes"], sample["past_boxes"])
+    np.testing.assert_array_equal(
+        datasets[0].samples[0]["past_boxes"], datasets[1].samples[0]["past_boxes"]
+    )
+    np.testing.assert_array_equal(
+        datasets[0].samples[0]["future_boxes"], datasets[1].samples[0]["future_boxes"]
+    )
 
 
 def test_constant_velocity_forecast_uses_last_four_linear_fit() -> None:

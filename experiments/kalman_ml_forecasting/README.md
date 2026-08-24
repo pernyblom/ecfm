@@ -46,6 +46,34 @@ Data
   `fixed_pixels`/`fixed` uses `size_px` and returns real cropped tensors of
   that size. `xt*` cuts only the x axis, `yt*` cuts only the y axis, and
   temporal axes keep their full length.
+- `data.box_augmentation` optionally adds center-offset and size noise to boxes
+  on selected splits. It is off by default. Set `enabled: true`, select split
+  names with `splits`, and enable `cache`, `live`, or both. Cache augmentation
+  is sampled reproducibly from `data.seed` when a cache is created; live
+  augmentation is redrawn for every `Dataset.__getitem__` call (and therefore
+  every training fetch). `center_offset_fraction: [x, y]` gives maximum
+  absolute offsets as fractions of the current box width and height, while
+  `size_scale_range: [min, max]` independently scales width and height. Use
+  `target: past` to simulate noisy detector inputs while retaining clean
+  forecast targets, or `all`/`future` to augment those boxes too.
+
+For example, this adds fixed cached noise and fresh per-fetch noise only to the
+training split:
+
+```yaml
+data:
+  box_augmentation:
+    enabled: true
+    splits: [train]
+    cache: true
+    live: true
+    center_offset_fraction: [0.15, 0.15]
+    size_scale_range: [0.85, 1.25]
+    probability: 1.0
+    shared_across_sequence: false
+    target: all
+    clip_to_frame: true
+```
 
 Render
 

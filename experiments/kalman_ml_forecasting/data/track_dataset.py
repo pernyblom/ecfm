@@ -41,6 +41,82 @@ _DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
 _DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
 
 
+def _pair(value: Any, *, name: str) -> tuple[float, float]:
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise ValueError(f"{name} must be a number or a two-item list.")
+        return float(value[0]), float(value[1])
+    scalar = float(value)
+    return scalar, scalar
+
+
+def _validate_box_augmentation(cfg: Dict[str, Any]) -> None:
+    if not bool(cfg.get("enabled", False)):
+        return
+    offset_x, offset_y = _pair(
+        cfg.get("center_offset_fraction", 0.0),
+        name="box_augmentation.center_offset_fraction",
+    )
+    if offset_x < 0 or offset_y < 0:
+        raise ValueError("box_augmentation.center_offset_fraction values must be >= 0.")
+    scale_min, scale_max = _pair(
+        cfg.get("size_scale_range", [1.0, 1.0]),
+        name="box_augmentation.size_scale_range",
+    )
+    if scale_min <= 0 or scale_max < scale_min:
+        raise ValueError("box_augmentation.size_scale_range must be positive and ordered [min, max].")
+    probability = float(cfg.get("probability", 1.0))
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("box_augmentation.probability must be in [0, 1].")
+    target = str(cfg.get("target", "all")).lower()
+    if target not in {"all", "past", "future"}:
+        raise ValueError("box_augmentation.target must be one of: all, past, future.")
+
+
+def _augment_boxes(
+    boxes: np.ndarray,
+    cfg: Dict[str, Any],
+    *,
+    rng: Any,
+) -> np.ndarray:
+    """Randomly perturb normalized center-size boxes without modifying the input."""
+    out = np.asarray(boxes, dtype=np.float32).copy()
+    if out.size == 0 or not bool(cfg.get("enabled", False)):
+        return out
+
+    offset_x, offset_y = _pair(
+        cfg.get("center_offset_fraction", 0.0),
+        name="box_augmentation.center_offset_fraction",
+    )
+    scale_min, scale_max = _pair(
+        cfg.get("size_scale_range", [1.0, 1.0]),
+        name="box_augmentation.size_scale_range",
+    )
+    shared = bool(cfg.get("shared_across_sequence", False))
+    random_shape = (1, 4) if shared else (out.shape[0], 4)
+    random_values = np.asarray(rng.uniform(0.0, 1.0, size=random_shape), dtype=np.float32)
+    if shared:
+        random_values = np.broadcast_to(random_values, (out.shape[0], 4))
+
+    probability = float(cfg.get("probability", 1.0))
+    if shared:
+        apply_mask = np.full((out.shape[0],), bool(rng.uniform() < probability))
+    else:
+        apply_mask = np.asarray(rng.uniform(0.0, 1.0, size=out.shape[0]) < probability)
+
+    original_sizes = out[:, 2:4].copy()
+    offsets = (random_values[:, 0:2] * 2.0 - 1.0) * np.asarray([offset_x, offset_y], dtype=np.float32)
+    scales = scale_min + random_values[:, 2:4] * (scale_max - scale_min)
+    out[apply_mask, 0:2] += offsets[apply_mask] * original_sizes[apply_mask]
+    out[apply_mask, 2:4] *= scales[apply_mask]
+
+    if bool(cfg.get("clip_to_frame", True)):
+        out[:, 2:4] = np.clip(out[:, 2:4], 1.0e-6, 1.0)
+        half_sizes = out[:, 2:4] * 0.5
+        out[:, 0:2] = np.minimum(np.maximum(out[:, 0:2], half_sizes), 1.0 - half_sizes)
+    return out
+
+
 def _base_representation_name(rep: str) -> str:
     match = re.match(r"^(?P<base>.+)_\d+x\d+$", str(rep), flags=re.IGNORECASE)
     return match.group("base") if match is not None else str(rep)
@@ -353,7 +429,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackKalmanForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 3
+    CACHE_VERSION = 4
 
     def __init__(
         self,
@@ -387,6 +463,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         require_representations: bool = True,
         sample_decorrelation: Optional[Dict[str, Any]] = None,
         spatial_cutout: Optional[Dict[str, Any]] = None,
+        box_augmentation: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -420,6 +497,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.require_representations = bool(require_representations)
         self.sample_decorrelation = dict(sample_decorrelation or {})
         self.spatial_cutout = dict(spatial_cutout or {})
+        self.box_augmentation = dict(box_augmentation or {})
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
@@ -439,6 +517,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             raise ValueError(f"Missing source image sizes for representations: {missing_source_sizes}")
         if self.image_window_mode not in {"trailing", "center", "leading"}:
             raise ValueError(f"Unknown image_window_mode: {self.image_window_mode}")
+        _validate_box_augmentation(self.box_augmentation)
 
         self.frames_by_folder = self._discover_frames()
         self.allowed_tracks = self._select_track_subset()
@@ -450,6 +529,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             self.samples = self._build_samples()
             self._apply_sample_limit()
             self._apply_sample_decorrelation()
+            self._apply_cache_box_augmentation()
             self._save_cache()
 
     def _labels_dir(self, folder: str) -> Path:
@@ -1097,6 +1177,29 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         idx = rng.permutation(len(self.samples))[: self.max_samples]
         self.samples = [self.samples[i] for i in idx]
 
+    def _augment_sample_boxes(self, sample: Dict[str, Any], *, rng: Any) -> tuple[np.ndarray, np.ndarray]:
+        past = np.asarray(sample["past_boxes"], dtype=np.float32)
+        future = np.asarray(sample["future_boxes"], dtype=np.float32)
+        target = str(self.box_augmentation.get("target", "all")).lower()
+        if target == "past":
+            return _augment_boxes(past, self.box_augmentation, rng=rng), future.copy()
+        if target == "future":
+            return past.copy(), _augment_boxes(future, self.box_augmentation, rng=rng)
+        combined = np.concatenate((past, future), axis=0)
+        augmented = _augment_boxes(combined, self.box_augmentation, rng=rng)
+        return augmented[: len(past)], augmented[len(past) :]
+
+    def _apply_cache_box_augmentation(self) -> None:
+        if not bool(self.box_augmentation.get("enabled", False)) or not bool(
+            self.box_augmentation.get("cache", False)
+        ):
+            return
+        rng = np.random.default_rng(self.seed)
+        for sample in self.samples:
+            past, future = self._augment_sample_boxes(sample, rng=rng)
+            sample["past_boxes"] = past
+            sample["future_boxes"] = future
+
     def _cache_key(self) -> str:
         payload = {
             "images_root": str(self.images_root),
@@ -1124,6 +1227,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "max_samples": self.max_samples,
             "require_representations": self.require_representations,
             "sample_decorrelation": self.sample_decorrelation,
+            "box_augmentation": self.box_augmentation,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,
         }
@@ -1160,6 +1264,13 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> KalmanForecastSample:
         sample = self.samples[idx]
+        if bool(self.box_augmentation.get("enabled", False)) and bool(
+            self.box_augmentation.get("live", False)
+        ):
+            past_boxes, future_boxes = self._augment_sample_boxes(sample, rng=np.random)
+        else:
+            past_boxes = np.asarray(sample["past_boxes"], dtype=np.float32)
+            future_boxes = np.asarray(sample["future_boxes"], dtype=np.float32)
         inputs = {
             rep: _load_image(
                 Path(path),
@@ -1167,7 +1278,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 source_size=self.source_image_sizes[rep],
                 rep=rep,
                 frame_size=self.frame_size,
-                anchor_box=np.asarray(sample["past_boxes"], dtype=np.float32)[-1],
+                anchor_box=past_boxes[-1],
                 spatial_cutout=self.spatial_cutout,
             )
             for rep, path in sample["input_paths"].items()
@@ -1176,8 +1287,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         frame_key = f"{folder}/{sample['anchor_stem']}" if folder else sample["anchor_stem"]
         return KalmanForecastSample(
             inputs=inputs,
-            past_boxes=torch.tensor(sample["past_boxes"], dtype=torch.float32),
-            future_boxes=torch.tensor(sample["future_boxes"], dtype=torch.float32),
+            past_boxes=torch.from_numpy(past_boxes.copy()),
+            future_boxes=torch.from_numpy(future_boxes.copy()),
             past_times_s=torch.tensor(sample["past_times_s"], dtype=torch.float32),
             future_times_s=torch.tensor(sample["future_times_s"], dtype=torch.float32),
             frame_key=frame_key,

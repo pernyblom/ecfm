@@ -27,6 +27,22 @@ data:
     size_px: [64, 64]  # used by fixed_pixels
     min_size_px: 1
     fill: 0.0
+  # Optional normalized center-size box jitter. It is disabled by default.
+  # `cache` perturbs each sample once before writing the sample cache; `live`
+  # draws fresh perturbations in Dataset.__getitem__ on every fetch. Both can
+  # be enabled together. Offsets are fractions of each box's width/height and
+  # width/height scales are sampled independently from size_scale_range.
+  box_augmentation:
+    enabled: false
+    splits: ["train"]  # split names used by train.py, or ["all"]
+    cache: false
+    live: false
+    center_offset_fraction: [0.0, 0.0]  # max absolute x/y offset
+    size_scale_range: [1.0, 1.0]
+    probability: 1.0  # independently per box unless shared_across_sequence
+    shared_across_sequence: false
+    target: all  # all, past, or future
+    clip_to_frame: true
   # Add "event_frames" to read dataset-native frames from
   # datasets/FRED/<folder>/Event/Frames when present.
   # Set [] to isolate filter-state/covariance inputs; this requires
