@@ -204,16 +204,18 @@ def _max_samples_label(cfg: Dict, split: str) -> str:
 
 def _spatial_cutout_label(cfg: Dict) -> str:
     cutout_cfg = dict(cfg["data"].get("spatial_cutout") or {})
+    override_names = list(dict(cutout_cfg.get("by_representation") or {}).keys())
+    override_label = f", overrides={override_names}" if override_names else ""
     mode = str(cutout_cfg.get("mode", "none")).lower()
     if mode in {"none", "disabled", "off", "false"}:
-        return "disabled"
+        return f"disabled by default{override_label}"
     if mode in {"box_scale", "box_fraction", "box"}:
         scale = cutout_cfg.get("scale", cutout_cfg.get("box_scale", cutout_cfg.get("fraction", 1.0)))
-        return f"{mode}, scale={float(scale):.4g}, centered on final history box"
+        return f"{mode}, scale={float(scale):.4g}, centered on final history box{override_label}"
     if mode in {"fixed", "fixed_pixels", "fixed_px"}:
         size = cutout_cfg.get("size_px", cutout_cfg.get("fixed_size_px", cutout_cfg.get("size", "<missing>")))
-        return f"{mode}, size_px={size}, centered on final history box"
-    return f"{mode} (will be validated by dataset loader)"
+        return f"{mode}, size_px={size}, centered on final history box{override_label}"
+    return f"{mode} (will be validated by dataset loader){override_label}"
 
 
 def _min_track_duration_label(cfg: Dict) -> str:

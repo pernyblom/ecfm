@@ -18,6 +18,7 @@ from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanFore
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
+    resolve_spatial_cutout_config,
     resolve_representation_image_sizes,
     resolve_representation_source_image_sizes,
 )
@@ -338,7 +339,7 @@ def main() -> None:
                 original_img,
                 rep=rep,
                 box=anchor_box,
-                cfg=cutout_cfg,
+                cfg=resolve_spatial_cutout_config(cutout_cfg, rep),
             )
             if args.draw_anchor_box:
                 cutout_img = _draw_anchor_box(

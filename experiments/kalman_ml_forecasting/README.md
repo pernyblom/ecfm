@@ -45,7 +45,29 @@ Data
   time. `box_scale`/`box_fraction` uses the current box size times `scale`;
   `fixed_pixels`/`fixed` uses `size_px` and returns real cropped tensors of
   that size. `xt*` cuts only the x axis, `yt*` cuts only the y axis, and
-  temporal axes keep their full length.
+  temporal axes keep their full length. Add `by_representation` to override
+  any cutout setting for an individual format. Values are always image-axis
+  values in `[width, height]` order: they are not swapped or otherwise
+  reinterpreted for XT/YT. Accordingly, XT uses the provided width while its
+  temporal height remains intact, and YT uses the provided height while its
+  temporal width remains intact. Exact representation names take precedence;
+  grid aliases such as `xt_my_10x10` fall back to an `xt_my` override.
+
+```yaml
+data:
+  spatial_cutout:
+    mode: fixed_pixels
+    size_px: [64, 64]  # default for representations without an override
+    fill: 0.0
+    by_representation:
+      cstr2:
+        size_px: [160, 120]
+      xt:
+        size_px: [192, 64]  # width is x; height is the unchanged t axis
+      yt:
+        size_px: [64, 144]  # width is the unchanged t axis; height is y
+```
+
 - `data.box_augmentation` optionally adds center-offset and size noise to boxes
   on selected splits. It is off by default. Set `enabled: true`, select split
   names with `splits`, and enable `cache`, `live`, or both. Cache augmentation

@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from ..utils.config import resolve_spatial_cutout_config
+
 
 @dataclass
 class KalmanForecastSample:
@@ -368,6 +370,7 @@ def _load_image(
     anchor_box: np.ndarray,
     spatial_cutout: Dict[str, Any],
 ) -> torch.Tensor:
+    spatial_cutout = resolve_spatial_cutout_config(spatial_cutout, rep)
     img = Image.open(path).convert("RGB")
     if img.size != (source_size[0], source_size[1]):
         img = img.resize(source_size, resample=Image.BILINEAR)

@@ -41,22 +41,54 @@ def _base_representation(rep: str) -> str:
     return base if base in _GRID_SPLIT_BASE_REPS else str(rep)
 
 
+def resolve_spatial_cutout_config(cutout_cfg: Dict[str, Any] | None, rep: str) -> Dict[str, Any]:
+    """Merge the global spatial-cutout defaults with an optional per-rep override."""
+    resolved = dict(cutout_cfg or {})
+    overrides = resolved.pop("by_representation", {}) or {}
+    if not isinstance(overrides, dict):
+        raise ValueError("data.spatial_cutout.by_representation must be a mapping.")
+
+    rep_name = str(rep)
+    base_rep = _base_representation(rep_name)
+    override = overrides.get(rep_name)
+    if override is None and base_rep != rep_name:
+        override = overrides.get(base_rep)
+    if override is None:
+        return resolved
+    if not isinstance(override, dict):
+        raise ValueError(
+            f"data.spatial_cutout.by_representation.{rep_name} must be a mapping."
+        )
+    resolved.update(override)
+    return resolved
+
+
 def _apply_fixed_spatial_cutout_sizes(
     resolved: Dict[str, tuple[int, int]],
     data_cfg: Dict[str, Any],
 ) -> Dict[str, tuple[int, int]]:
     cutout_cfg = dict(data_cfg.get("spatial_cutout") or {})
-    mode = str(cutout_cfg.get("mode", "none")).lower()
-    if mode not in {"fixed", "fixed_pixels", "fixed_px"}:
-        return resolved
-    size_value = cutout_cfg.get("size_px", cutout_cfg.get("fixed_size_px", cutout_cfg.get("size", None)))
-    if size_value is None:
-        raise ValueError("data.spatial_cutout fixed mode requires size_px or fixed_size_px.")
-    cut_w, cut_h = _size_pair_from_config(size_value, name="data.spatial_cutout.size_px")
-    if cut_w <= 0 or cut_h <= 0:
-        raise ValueError("data.spatial_cutout fixed size must be positive.")
     out = dict(resolved)
     for rep, current in resolved.items():
+        rep_cutout_cfg = resolve_spatial_cutout_config(cutout_cfg, rep)
+        mode = str(rep_cutout_cfg.get("mode", "none")).lower()
+        if mode not in {"fixed", "fixed_pixels", "fixed_px"}:
+            continue
+        size_value = rep_cutout_cfg.get(
+            "size_px", rep_cutout_cfg.get("fixed_size_px", rep_cutout_cfg.get("size", None))
+        )
+        if size_value is None:
+            raise ValueError(
+                f"data.spatial_cutout fixed mode for representation '{rep}' requires "
+                "size_px or fixed_size_px."
+            )
+        cut_w, cut_h = _size_pair_from_config(
+            size_value, name=f"data.spatial_cutout size_px for representation '{rep}'"
+        )
+        if cut_w <= 0 or cut_h <= 0:
+            raise ValueError(
+                f"data.spatial_cutout fixed size for representation '{rep}' must be positive."
+            )
         if rep.startswith("xt"):
             out[rep] = (cut_w, current[1])
         elif rep.startswith("yt"):

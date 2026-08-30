@@ -28,7 +28,10 @@ from experiments.kalman_ml_forecasting.optimize_kalman import (
     _parse_objective_weights,
 )
 from experiments.kalman_ml_forecasting.train import _box_augmentation_for_split
-from experiments.kalman_ml_forecasting.utils.config import resolve_representation_image_sizes
+from experiments.kalman_ml_forecasting.utils.config import (
+    resolve_representation_image_sizes,
+    resolve_spatial_cutout_config,
+)
 
 
 def _write_image(path: Path) -> None:
@@ -579,6 +582,51 @@ def test_kalman_residual_forecaster_rejects_empty_reps_without_filter_features()
 
 def test_kalman_config_resolves_empty_representation_sizes() -> None:
     assert resolve_representation_image_sizes({"representations": []}) == {}
+
+
+def test_spatial_cutout_supports_per_representation_overrides() -> None:
+    data_cfg = {
+        "representations": ["cstr2", "xt", "yt", "rgb"],
+        "image_sizes": {
+            "cstr2": [640, 360],
+            "xt": [640, 64],
+            "yt": [64, 360],
+            "rgb": [640, 360],
+        },
+        "spatial_cutout": {
+            "mode": "fixed_pixels",
+            "size_px": [64, 64],
+            "fill": 0.25,
+            "by_representation": {
+                "cstr2": {"size_px": [160, 120]},
+                "xt": {"size_px": [192, 999]},
+                "yt": {"size_px": [999, 144]},
+                "rgb": {"mode": "none"},
+            },
+        },
+    }
+
+    assert resolve_representation_image_sizes(data_cfg) == {
+        "cstr2": (160, 120),
+        "xt": (192, 64),
+        "yt": (64, 144),
+        "rgb": (640, 360),
+    }
+    assert resolve_spatial_cutout_config(data_cfg["spatial_cutout"], "cstr2") == {
+        "mode": "fixed_pixels",
+        "size_px": [160, 120],
+        "fill": 0.25,
+    }
+
+
+def test_spatial_cutout_grid_alias_uses_base_representation_override() -> None:
+    cutout = {
+        "mode": "fixed_pixels",
+        "size_px": [64, 64],
+        "by_representation": {"xt_my": {"size_px": [128, 32]}},
+    }
+
+    assert resolve_spatial_cutout_config(cutout, "xt_my_10x10")["size_px"] == [128, 32]
 
 
 def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:

@@ -27,6 +27,12 @@ data:
     size_px: [64, 64]  # used by fixed_pixels
     min_size_px: 1
     fill: 0.0
+    # Optional per-format overrides merge onto the defaults above. Values stay
+    # in literal image [width, height] order (XT is x,t and YT is t,y).
+    # by_representation:
+    #   cstr2: {size_px: [160, 120]}
+    #   xt: {size_px: [192, 64]}
+    #   yt: {size_px: [64, 144]}
   # Optional normalized center-size box jitter. It is disabled by default.
   # `cache` perturbs each sample once before writing the sample cache; `live`
   # draws fresh perturbations in Dataset.__getitem__ on every fetch. Both can
