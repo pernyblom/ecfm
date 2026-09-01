@@ -41,6 +41,27 @@ Data
   `datasets/FRED/<folder>/Event/Frames`. This representation is only usable for
   folders where that directory exists; with `filter_missing_representations:
   true`, folders/samples without it are skipped.
+- `data.representation_sequences` turns selected representations into causal
+  sequences ending at the anchor. `length` is the image count and `stride` is
+  measured in label frames. All frames use the same final-anchor spatial crop.
+  A shared 2-D encoder processes the frames, then
+  `model.temporal_aggregation.type` selects `mean`, `max`, `last`, or a
+  unidirectional `gru`.
+
+```yaml
+data:
+  representations: [cstr3_fixed, padded_rgb]
+  image_window_ms: 33.333
+  representation_sequences:
+    cstr3_fixed: {length: 12, stride: 1}
+    padded_rgb: {length: 12, stride: 1}
+model:
+  temporal_aggregation:
+    type: gru
+    hidden_dim: 128
+    layers: 1
+```
+
 - `data.spatial_cutout` can mask inputs around the box at the final history
   time. `box_scale`/`box_fraction` uses the current box size times `scale`;
   `fixed_pixels`/`fixed` uses `size_px` and returns real cropped tensors of
@@ -102,6 +123,21 @@ Render
 ```bash
 python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 400000 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --event-source raw --num-workers 6 --include-empty
 python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/test_split.txt --output-root outputs/fred_reps --representation "xt_my;yt_mx;cstr3" --window 400000 --window-mode trailing --temporal-bins 224 --retain-spatial-dimensions --event-source raw --num-workers 4 --include-empty
+```
+
+`cstr3_fixed` keeps the CSTR timestamp channels but normalizes its green count
+channel with a fixed value rather than each image's maximum. Estimate that
+value on the training split only; reported percentiles use active pixels:
+
+```bash
+python scripts/calculate_cstr3_max_count.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --window 33333 --window-mode trailing --event-source auto --output-json outputs/cstr3_count_scale.json
+```
+
+Render using the reported `recommended_max_count`. Counts at or above the
+provided value map to full green and are clipped:
+
+```bash
+python scripts/render_fred_splits.py --split-file datasets/FRED/dataset_splits/canonical/train_split.txt --output-root outputs/fred_reps --representation "cstr3_fixed" --cstr3-max-count 12 --window 33333 --window-mode trailing --retain-spatial-dimensions --event-source auto --num-workers 6 --include-empty
 ```
 
 Train

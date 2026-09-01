@@ -27,6 +27,7 @@ from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_c
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
+    resolve_representation_sequences,
     resolve_representation_image_sizes,
     resolve_representation_source_image_sizes,
 )
@@ -98,7 +99,7 @@ class Batch:
     frame_keys: List[str]
     frame_times_s: List[float]
     track_ids: List[int]
-    input_paths: List[Dict[str, str]]
+    input_paths: List[Dict[str, object]]
 
 
 def _collate(batch: List[KalmanForecastSample]) -> Batch:
@@ -187,6 +188,7 @@ def _build_dataset(
         sample_decorrelation=decorrelation_cfg,
         spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
         box_augmentation=box_augmentation_cfg,
+        representation_sequences=resolve_representation_sequences(data_cfg),
     )
 
 
@@ -349,6 +351,14 @@ def _print_training_plan(
         "- spatial cutout: "
         f"{_spatial_cutout_label(cfg)}; xt* cuts x only, yt* cuts y only, temporal axes are unchanged"
     )
+    sequence_cfg = resolve_representation_sequences(data_cfg)
+    if sequence_cfg:
+        temporal_type = str(
+            dict(model_cfg.get("temporal_aggregation") or {}).get("type", "mean")
+        ).lower()
+        print(f"- representation sequences: {sequence_cfg}; temporal aggregation={temporal_type}")
+    else:
+        print("- representation sequences: disabled (single image per representation)")
     print(f"- model box-history feature mode: {str(model_cfg.get('history_feature_mode', 'raw')).lower()}")
     print(f"- minimum track duration filter: {_min_track_duration_label(cfg)}")
     if _is_kalman_baseline_only(cfg):

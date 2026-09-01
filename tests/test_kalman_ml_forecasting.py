@@ -354,6 +354,35 @@ def test_kalman_residual_forecaster_forward_shapes() -> None:
     assert out["cv_boxes"].shape == (2, 3, 4)
 
 
+def test_kalman_residual_forecaster_encodes_image_sequence_with_gru() -> None:
+    model = KalmanResidualForecaster(
+        representations=["cstr3"],
+        image_sizes={"cstr3": (8, 8)},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        fusion_hidden_dim=16,
+        state_hidden_dim=8,
+        residual_hidden_dim=16,
+        representation_sequences={"cstr3": {"length": 3, "stride": 1}},
+        temporal_aggregation_cfg={"type": "gru", "hidden_dim": 12},
+    )
+    inputs = {"cstr3": torch.zeros((2, 3, 3, 8, 8))}
+    past = torch.tensor(
+        [
+            [[0.1, 0.2, 0.1, 0.1], [0.2, 0.3, 0.1, 0.1]],
+            [[0.4, 0.5, 0.2, 0.2], [0.5, 0.6, 0.2, 0.2]],
+        ],
+        dtype=torch.float32,
+    )
+    past_t = torch.tensor([[0.0, 1.0], [0.0, 1.0]])
+    future_t = torch.tensor([[2.0], [2.0]])
+
+    out = model(inputs, past, past_t, future_t)
+
+    assert out.shape == (2, 1, 4)
+    assert model.image_fusion[0].in_features == 12
+
+
 def test_kalman_residual_forecaster_can_fuse_single_rep_with_filter_state() -> None:
     model = KalmanResidualForecaster(
         representations=["cstr3"],
@@ -703,6 +732,49 @@ def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:
     assert sample.past_boxes.shape == (2, 4)
     assert sample.future_boxes.shape == (1, 4)
     assert sample.frame_key == "seq/Video_0_frame_1000000"
+
+
+def test_track_kalman_dataset_builds_causal_representation_sequence(tmp_path: Path) -> None:
+    labels = tmp_path / "labels" / "seq" / "Event_YOLO"
+    images = tmp_path / "images" / "seq"
+    for t in [0, 1000000, 2000000, 3000000]:
+        stem = f"Video_0_frame_{t}"
+        _write_text(labels / f"{stem}.txt", "0 0.5 0.5 0.1 0.1\n")
+        _write_image(images / f"{stem}_cstr3.png")
+    _write_text(
+        tmp_path / "labels" / "seq" / "cleaned_tracks.txt",
+        "\n".join(
+            [
+                "0.0,1,10,20,4,6",
+                "1.0,1,12,22,4,6",
+                "2.0,1,14,24,4,6",
+                "3.0,1,16,26,4,6",
+            ]
+        ),
+    )
+    dataset = TrackKalmanForecastDataset(
+        images_root=tmp_path / "images",
+        labels_root=tmp_path / "labels",
+        frame_size=(100, 100),
+        representations=["cstr3"],
+        image_sizes={"cstr3": (8, 8)},
+        history_ms=1000.0,
+        forecast_ms=1000.0,
+        folders=["seq"],
+        label_time_unit=1e-6,
+        track_time_unit=1.0,
+        time_align="none",
+        verify_render_manifest=False,
+        representation_sequences={"cstr3": {"length": 2, "stride": 1}},
+    )
+
+    sample = dataset[0]
+
+    assert sample.inputs["cstr3"].shape == (2, 3, 8, 8)
+    assert [Path(path).stem for path in sample.input_paths["cstr3"]] == [
+        "Video_0_frame_0_cstr3",
+        "Video_0_frame_1000000_cstr3",
+    ]
 
 
 def test_track_kalman_dataset_uses_dataset_event_frames(tmp_path: Path) -> None:

@@ -26,6 +26,7 @@ from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
     resolve_representation_image_sizes,
+    resolve_representation_sequences,
     resolve_representation_source_image_sizes,
 )
 
@@ -89,6 +90,7 @@ def _build_split_dataset(
         filter_missing_representations=False,
         require_representations=False,
         spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
+        representation_sequences=resolve_representation_sequences(data_cfg),
     )
 
 

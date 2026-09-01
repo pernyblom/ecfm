@@ -64,6 +64,42 @@ def test_histogram_grid_uses_explicit_output_size_as_native_size() -> None:
     assert img.shape == (224, 398, 3)
 
 
+def test_cstr3_fixed_uses_provided_count_scale() -> None:
+    events = np.array(
+        [[2.0, 3.0, float(index), 1.0] for index in range(4)],
+        dtype=np.float32,
+    )
+
+    local = _render_histogram_grid(
+        events,
+        width=8,
+        height=8,
+        t0=0.0,
+        dt=5.0,
+        plane="cstr3",
+        time_bins=1,
+        patch_size=8,
+        grid_x=1,
+        grid_y=1,
+    )
+    fixed = _render_histogram_grid(
+        events,
+        width=8,
+        height=8,
+        t0=0.0,
+        dt=5.0,
+        plane="cstr3_fixed",
+        time_bins=1,
+        patch_size=8,
+        grid_x=1,
+        grid_y=1,
+        cstr3_max_count=8,
+    )
+
+    assert local[3, 2, 1] == 255
+    assert fixed[3, 2, 1] == 127
+
+
 def test_frame_slices_use_event_count_windows() -> None:
     assert _frame_slices(
         10,

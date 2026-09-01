@@ -5,7 +5,7 @@ from typing import Dict
 import torch
 
 from .kalman_residual import KalmanResidualForecaster
-from ..utils.config import resolve_representation_image_sizes
+from ..utils.config import resolve_representation_image_sizes, resolve_representation_sequences
 
 
 def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
@@ -38,4 +38,6 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         cell_local_first_conv_representations=list(
             model_cfg.get("cell_local_first_conv_representations") or []
         ),
+        representation_sequences=resolve_representation_sequences(data_cfg),
+        temporal_aggregation_cfg=dict(model_cfg.get("temporal_aggregation") or {}),
     ).to(device)

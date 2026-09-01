@@ -18,7 +18,9 @@ _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
-_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "xt_my", "yt_mx", "events"}
+_GRID_SPLIT_BASE_REPS = {
+    "xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"
+}
 
 
 def _progress_items(items: list[Path], *, desc: str, enabled: bool) -> Iterator[Path]:
@@ -251,6 +253,12 @@ def _finalize_manifest_render_params(manifest: dict) -> dict:
 def _manifest_params_match(existing: dict, current: dict) -> bool:
     old_params = dict(existing.get("render_params") or {})
     new_params = dict(current["render_params"])
+    old_reps = _representation_list(";".join(str(v) for v in old_params.get("representation", [])))
+    new_reps = _representation_list(";".join(str(v) for v in new_params.get("representation", [])))
+    old_has_fixed = any(_resolve_representation_alias(rep)[0] == "cstr3_fixed" for rep in old_reps)
+    new_has_fixed = any(_resolve_representation_alias(rep)[0] == "cstr3_fixed" for rep in new_reps)
+    if old_has_fixed and new_has_fixed and old_params.get("cstr3_max_count") != new_params.get("cstr3_max_count"):
+        return False
     old_image_sizes = dict(old_params.get("image_sizes") or {})
     new_image_sizes = dict(new_params.get("image_sizes") or {})
     for rep in set(old_image_sizes) & set(new_image_sizes):
@@ -266,6 +274,10 @@ def _manifest_params_match(existing: dict, current: dict) -> bool:
     new_params.pop("representation_grid_specs", None)
     old_params.pop("image_sizes", None)
     new_params.pop("image_sizes", None)
+    # This parameter belongs only to cstr3_fixed and must not prevent other
+    # representations from being added to the same manifest later.
+    old_params.pop("cstr3_max_count", None)
+    new_params.pop("cstr3_max_count", None)
     return old_params == new_params
 
 
@@ -293,6 +305,8 @@ def _merge_manifest(existing: Optional[dict], current: dict) -> dict:
     merged["render_params"]["crop_representations"] = _canonical_rep_list(old_crop + new_crop)
     merged["render_params"]["max_label_files"] = current["render_params"]["max_label_files"]
     merged["render_params"]["image_sizes"] = current["render_params"].get("image_sizes", {})
+    if any(_resolve_representation_alias(rep)[0] == "cstr3_fixed" for rep in new_reps):
+        merged["render_params"]["cstr3_max_count"] = new_params.get("cstr3_max_count")
 
     files_by_stem = {
         entry.get("label_stem"): dict(entry)
@@ -839,7 +853,7 @@ def _apply_transform(
     if transform == "none":
         return img
     if transform == "spectrogram":
-        if rep in {"events", "xy", "cstr2", "cstr3", "rgb", "grayscale", "gray"}:
+        if rep in {"events", "xy", "cstr2", "cstr3", "cstr3_fixed", "rgb", "grayscale", "gray"}:
             print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
             return img
         return _spectrogram_from_image(
@@ -848,7 +862,7 @@ def _apply_transform(
     if transform == "spectrum2d":
         return _spectrum2d(img, scale_mode=scale_mode, eps=eps)
     if transform == "spectrogram_bin":
-        if rep in {"events", "xy", "cstr2", "cstr3", "rgb", "grayscale", "gray"}:
+        if rep in {"events", "xy", "cstr2", "cstr3", "cstr3_fixed", "rgb", "grayscale", "gray"}:
             print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
             return img
         return _spectrogram_from_image_bin(
@@ -866,6 +880,7 @@ def _cstr_patch(
     patch_size: int,
     output_size: tuple[int, int] | None = None,
     include_count: bool,
+    max_count: float | None = None,
 ) -> np.ndarray:
     # events are expected to be [x, y, t, p] with t in the same units as region.t/dt
     mask = (
@@ -917,9 +932,9 @@ def _cstr_patch(
     img[:, :, 2] = mean_neg
     if include_count:
         cnt = cnt_pos + cnt_neg
-        maxv = float(cnt.max()) if cnt.size else 0.0
+        maxv = float(max_count) if max_count is not None else float(cnt.max()) if cnt.size else 0.0
         if maxv > 0:
-            img[:, :, 1] = cnt / maxv
+            img[:, :, 1] = np.clip(cnt / maxv, 0.0, 1.0)
 
     img = np.clip(img * 255.0, 0.0, 255.0).astype(np.uint8)
     if output_size is not None:
@@ -992,6 +1007,7 @@ def _render_histogram_grid(
     grid_y: int,
     retain_spatial_dimensions: bool = False,
     output_size: tuple[int, int] | None = None,
+    cstr3_max_count: float | None = None,
 ) -> np.ndarray:
     x_edges = np.linspace(0, width, grid_x + 1, dtype=np.int64)
     y_edges = np.linspace(0, height, grid_y + 1, dtype=np.int64)
@@ -1041,13 +1057,14 @@ def _render_histogram_grid(
                 dt=dt,
                 plane=plane,
             )
-            if plane in {"cstr2", "cstr3"}:
+            if plane in {"cstr2", "cstr3", "cstr3_fixed"}:
                 patch_img = _cstr_patch(
                     events,
                     region,
                     patch_size=patch_size,
                     output_size=(cell_w, cell_h),
-                    include_count=plane == "cstr3",
+                    include_count=plane in {"cstr3", "cstr3_fixed"},
+                    max_count=cstr3_max_count if plane == "cstr3_fixed" else None,
                 )
             elif plane in {"xt_my", "yt_mx"}:
                 base_plane = "xt" if plane == "xt_my" else "yt"
@@ -1118,6 +1135,10 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         for rep in representations
         if rep_specs[rep][0] not in {"rgb", "grayscale", "gray"}
     ]
+    cstr3_max_count = getattr(args, "cstr3_max_count", None)
+    if any(rep_specs[rep][0] == "cstr3_fixed" for rep in representations):
+        if cstr3_max_count is None or float(cstr3_max_count) <= 0:
+            raise ValueError("Rendering cstr3_fixed requires --cstr3-max-count > 0.")
 
     ts_shift_us = args.ts_shift_us
     if ts_shift_us is None:
@@ -1269,6 +1290,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "transform": args.transform,
                 "transform_scale": args.transform_scale,
                 "transform_eps": float(args.transform_eps),
+                "cstr3_max_count": None if cstr3_max_count is None else float(cstr3_max_count),
                 "max_label_files": None
                 if getattr(args, "max_label_files", None) is None
                 else int(args.max_label_files),
@@ -1326,6 +1348,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "yt_m45",
                 "cstr2",
                 "cstr3",
+                "cstr3_fixed",
                 "rgb",
                 "grayscale",
                 "gray",
@@ -1414,6 +1437,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                             getattr(args, "retain_spatial_dimensions", False)
                         ),
                         output_size=native_output_size,
+                        cstr3_max_count=cstr3_max_count,
                     )
                 time_horizontal = base_rep.startswith("yt")
                 img = _apply_transform(
@@ -1465,6 +1489,8 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                     "grid_x": int(render_grid_x),
                     "grid_y": int(render_grid_y),
                 }
+                if base_rep == "cstr3_fixed":
+                    file_entry["representations"][rep]["cstr3_max_count"] = float(cstr3_max_count)
             if file_entry["representations"]:
                 manifest["files"].append(file_entry)
 
@@ -1579,7 +1605,7 @@ def main() -> None:
         default="events",
         help=(
             "Representation(s) to render, separated by ';' (default: events). "
-            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, "
+            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, cstr3_fixed, "
             "xt_my, yt_mx, rgb, grayscale."
         ),
     )
@@ -1594,6 +1620,15 @@ def main() -> None:
         type=int,
         default=64,
         help="Temporal bins for histogram representations (default: 64)",
+    )
+    parser.add_argument(
+        "--cstr3-max-count",
+        type=float,
+        default=None,
+        help=(
+            "Fixed per-pixel event count mapped to full green for cstr3_fixed. "
+            "Counts above it are clipped. Required when rendering cstr3_fixed."
+        ),
     )
     parser.add_argument(
         "--transform",

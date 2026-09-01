@@ -20,6 +20,7 @@ from experiments.kalman_ml_forecasting.utils.config import (
     read_split_file,
     resolve_spatial_cutout_config,
     resolve_representation_image_sizes,
+    resolve_representation_sequences,
     resolve_representation_source_image_sizes,
 )
 
@@ -50,6 +51,11 @@ def _build_dataset(
     data_cfg = dict(cfg["data"])
     if representations is not None:
         data_cfg["representations"] = list(representations)
+        data_cfg["representation_sequences"] = {
+            rep: spec
+            for rep, spec in dict(data_cfg.get("representation_sequences") or {}).items()
+            if rep in representations
+        }
     return TrackKalmanForecastDataset(
         images_root=Path(data_cfg["images_root"]),
         labels_root=Path(data_cfg["labels_root"]),
@@ -78,6 +84,7 @@ def _build_dataset(
         cache_dir=Path(data_cfg["cache_dir"]) if data_cfg.get("cache_dir") else None,
         filter_missing_representations=bool(data_cfg.get("filter_missing_representations", True)),
         spatial_cutout=dict(data_cfg.get("spatial_cutout") or {}),
+        representation_sequences=resolve_representation_sequences(data_cfg),
     )
 
 
@@ -334,7 +341,11 @@ def main() -> None:
         for rep in reps:
             if rep not in meta["input_paths"]:
                 continue
-            original_img = _load_original(meta["input_paths"][rep], source_image_sizes[rep])
+            rep_paths = meta["input_paths"][rep]
+            # The inspector remains a one-cutout-per-representation summary;
+            # for sequences it shows the anchor (last) frame.
+            rep_path = rep_paths[-1] if isinstance(rep_paths, list) else rep_paths
+            original_img = _load_original(rep_path, source_image_sizes[rep])
             cutout_img, crop = _spatial_cutout_image(
                 original_img,
                 rep=rep,

@@ -156,6 +156,15 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=None)
     parser.add_argument("--pixel-size", type=int, default=1)
     parser.add_argument("--temporal-bins", type=int, default=224)
+    parser.add_argument(
+        "--cstr3-max-count",
+        type=float,
+        default=None,
+        help=(
+            "Fixed per-pixel count mapped to full green for cstr3_fixed. "
+            "Required when cstr3_fixed is requested."
+        ),
+    )
     parser.add_argument("--spatial-bins", type=int, default=224)
     parser.add_argument("--output-size", type=int, nargs=2, default=None)
     parser.add_argument(

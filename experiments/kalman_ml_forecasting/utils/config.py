@@ -7,7 +7,38 @@ import re
 import yaml
 
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
-_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "xt_my", "yt_mx", "events"}
+_GRID_SPLIT_BASE_REPS = {
+    "xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"
+}
+
+
+def resolve_representation_sequences(data_cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """Validate temporal image-sequence settings from the data config."""
+    raw = data_cfg.get("representation_sequences") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("data.representation_sequences must be a mapping.")
+    configured = {str(rep) for rep in data_cfg.get("representations", [])}
+    result: Dict[str, Dict[str, int]] = {}
+    for rep, value in raw.items():
+        rep = str(rep)
+        if rep not in configured:
+            raise ValueError(
+                f"data.representation_sequences contains unconfigured representation {rep!r}."
+            )
+        if value is False or value is None:
+            continue
+        if isinstance(value, dict):
+            length = int(value.get("length", 1))
+            stride = int(value.get("stride", 1))
+        else:
+            length = int(value)
+            stride = 1
+        if length < 2:
+            raise ValueError(f"Sequence length for {rep!r} must be at least 2.")
+        if stride < 1:
+            raise ValueError(f"Sequence stride for {rep!r} must be at least 1.")
+        result[rep] = {"length": length, "stride": stride}
+    return result
 
 
 def load_config(path: Path) -> Dict[str, Any]:

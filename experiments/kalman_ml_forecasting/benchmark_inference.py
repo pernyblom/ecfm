@@ -28,7 +28,11 @@ from experiments.kalman_ml_forecasting.models.kalman_filter import (
     kalman_cv_forecast_tensor_params,
     kalman_std_tensors_from_config,
 )
-from experiments.kalman_ml_forecasting.utils.config import load_config, resolve_representation_image_sizes
+from experiments.kalman_ml_forecasting.utils.config import (
+    load_config,
+    resolve_representation_image_sizes,
+    resolve_representation_sequences,
+)
 
 
 def _is_kalman_only(cfg: dict[str, Any]) -> bool:
@@ -70,8 +74,12 @@ def _make_inputs(cfg: dict[str, Any], device: torch.device, batch_size: int, his
     )
     channels = int(cfg["model"].get("backbone", {}).get("in_channels", 3))
     inputs = {}
+    sequence_cfg = resolve_representation_sequences(cfg["data"])
     for rep, (width, height) in resolve_representation_image_sizes(cfg["data"]).items():
-        inputs[rep] = torch.randn((batch_size, channels, height, width), generator=generator).to(device)
+        shape = (batch_size, channels, height, width)
+        if rep in sequence_cfg:
+            shape = (batch_size, sequence_cfg[rep]["length"], channels, height, width)
+        inputs[rep] = torch.randn(shape, generator=generator).to(device)
     return inputs, past_boxes, past_times, future_times
 
 

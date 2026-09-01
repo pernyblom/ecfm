@@ -27,7 +27,7 @@ class KalmanForecastSample:
     frame_key: str
     frame_time_s: float
     track_id: int
-    input_paths: Dict[str, str]
+    input_paths: Dict[str, Any]
 
 
 @dataclass
@@ -432,7 +432,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackKalmanForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 4
+    CACHE_VERSION = 5
 
     def __init__(
         self,
@@ -467,6 +467,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         sample_decorrelation: Optional[Dict[str, Any]] = None,
         spatial_cutout: Optional[Dict[str, Any]] = None,
         box_augmentation: Optional[Dict[str, Any]] = None,
+        representation_sequences: Optional[Dict[str, Dict[str, int]]] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -501,6 +502,13 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.sample_decorrelation = dict(sample_decorrelation or {})
         self.spatial_cutout = dict(spatial_cutout or {})
         self.box_augmentation = dict(box_augmentation or {})
+        self.representation_sequences = {
+            str(rep): {
+                "length": int(spec["length"]),
+                "stride": int(spec.get("stride", 1)),
+            }
+            for rep, spec in dict(representation_sequences or {}).items()
+        }
         self._folder_manifests: Dict[str, Optional[dict]] = {}
         self._folder_manifest_entries: Dict[str, Optional[Dict[str, dict]]] = {}
         self._folder_rgb_indices: Dict[Tuple[str, str], List[Tuple[float, Path]]] = {}
@@ -521,6 +529,17 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         if self.image_window_mode not in {"trailing", "center", "leading"}:
             raise ValueError(f"Unknown image_window_mode: {self.image_window_mode}")
         _validate_box_augmentation(self.box_augmentation)
+        unknown_sequence_reps = sorted(set(self.representation_sequences) - set(self.representations))
+        if unknown_sequence_reps:
+            raise ValueError(
+                "representation_sequences contains unconfigured representations: "
+                f"{unknown_sequence_reps}"
+            )
+        for rep, spec in self.representation_sequences.items():
+            if spec["length"] < 2 or spec["stride"] < 1:
+                raise ValueError(
+                    f"Invalid sequence settings for {rep!r}: length must be >= 2 and stride >= 1."
+                )
 
         self.frames_by_folder = self._discover_frames()
         self.allowed_tracks = self._select_track_subset()
@@ -654,6 +673,34 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         if _is_dataset_event_frame_rep(rep):
             return self._find_event_frame(folder, stem, label_time_s)
         return None
+
+    def _resolve_input_paths(
+        self,
+        folder: str,
+        frames: List[FrameItem],
+        anchor_frame_idx: int,
+        rep: str,
+    ) -> Optional[str | List[str]]:
+        """Resolve one image or a causal sequence ending at the anchor frame."""
+        spec = self.representation_sequences.get(rep)
+        if spec is None:
+            item = frames[anchor_frame_idx]
+            path = self._resolve_input_path(folder, item.stem, rep, item.time_s)
+            return None if path is None else str(path)
+        indices = [
+            anchor_frame_idx - offset * spec["stride"]
+            for offset in range(spec["length"] - 1, -1, -1)
+        ]
+        if indices[0] < 0:
+            return None
+        paths: List[str] = []
+        for frame_idx in indices:
+            item = frames[frame_idx]
+            path = self._resolve_input_path(folder, item.stem, rep, item.time_s)
+            if path is None:
+                return None
+            paths.append(str(path))
+        return paths
 
     def _has_all_reps(self, folder: str, stem: str, label_time_s: float) -> bool:
         return all(self._resolve_input_path(folder, stem, rep, label_time_s) is not None for rep in self.representations)
@@ -833,10 +880,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     anchor_idx = history_steps
                     anchor_stem = stems[start + anchor_idx]
                     anchor_time = float(query_times[start + anchor_idx])
-                    input_paths = {}
+                    input_paths: Dict[str, Any] = {}
                     if self.require_representations:
+                        anchor_frame_idx = int(idxs[start + anchor_idx])
                         resolved_paths = {
-                            rep: self._resolve_input_path(folder, anchor_stem, rep, anchor_time)
+                            rep: self._resolve_input_paths(folder, frames, anchor_frame_idx, rep)
                             for rep in self.representations
                         }
                         missing = [rep for rep, path in resolved_paths.items() if path is None]
@@ -848,8 +896,19 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                             raise FileNotFoundError(
                                 f"Missing representation file(s) for '{folder}/{anchor_stem}': {missing}"
                             )
-                        self._validate_manifest_entry(folder, anchor_stem)
-                        input_paths = {rep: str(path) for rep, path in resolved_paths.items() if path is not None}
+                        manifest_stems = {anchor_stem}
+                        for rep, spec in self.representation_sequences.items():
+                            if _is_dataset_native_rep(rep):
+                                continue
+                            manifest_stems.update(
+                                frames[anchor_frame_idx - offset * spec["stride"]].stem
+                                for offset in range(spec["length"])
+                            )
+                        for manifest_stem in manifest_stems:
+                            self._validate_manifest_entry(folder, manifest_stem)
+                        input_paths = {
+                            rep: path for rep, path in resolved_paths.items() if path is not None
+                        }
                     samples.append(
                         {
                             "folder": folder,
@@ -883,7 +942,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             return
         kept = []
         for sample in self.samples:
-            if all(Path(path).exists() for path in sample.get("input_paths", {}).values()):
+            if all(
+                all(Path(item).exists() for item in path) if isinstance(path, list) else Path(path).exists()
+                for path in sample.get("input_paths", {}).values()
+            ):
                 kept.append(sample)
             elif not self.filter_missing_representations:
                 raise FileNotFoundError(f"Missing cached representation for {sample.get('anchor_stem')}")
@@ -1231,6 +1293,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "require_representations": self.require_representations,
             "sample_decorrelation": self.sample_decorrelation,
             "box_augmentation": self.box_augmentation,
+            "representation_sequences": self.representation_sequences,
             "seed": self.seed,
             "cache_version": self.CACHE_VERSION,
         }
@@ -1274,18 +1337,22 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         else:
             past_boxes = np.asarray(sample["past_boxes"], dtype=np.float32)
             future_boxes = np.asarray(sample["future_boxes"], dtype=np.float32)
-        inputs = {
-            rep: _load_image(
-                Path(path),
-                self.image_sizes[rep],
-                source_size=self.source_image_sizes[rep],
-                rep=rep,
-                frame_size=self.frame_size,
-                anchor_box=past_boxes[-1],
-                spatial_cutout=self.spatial_cutout,
-            )
-            for rep, path in sample["input_paths"].items()
-        }
+        inputs = {}
+        for rep, path_or_paths in sample["input_paths"].items():
+            paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
+            images = [
+                _load_image(
+                    Path(path),
+                    self.image_sizes[rep],
+                    source_size=self.source_image_sizes[rep],
+                    rep=rep,
+                    frame_size=self.frame_size,
+                    anchor_box=past_boxes[-1],
+                    spatial_cutout=self.spatial_cutout,
+                )
+                for path in paths
+            ]
+            inputs[rep] = torch.stack(images, dim=0) if isinstance(path_or_paths, list) else images[0]
         folder = sample["folder"]
         frame_key = f"{folder}/{sample['anchor_stem']}" if folder else sample["anchor_stem"]
         return KalmanForecastSample(

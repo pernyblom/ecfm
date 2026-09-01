@@ -15,6 +15,12 @@ data:
     eval_count:
     seed: 123
   representations: ["xt_my", "yt_mx", "cstr3", "padded_rgb"]
+  # Optional causal sequences ending at the forecast anchor. Stride is in
+  # label frames; omitted representations remain single images.
+  # representation_sequences:
+  #   cstr3_fixed: {length: 12, stride: 1}
+  #   padded_rgb: {length: 12, stride: 1}
+  representation_sequences: {}
   # Optional fixed-shape spatial masking around the final history box, just
   # before prediction starts. fixed_pixels returns real cropped tensors with
   # this output size. For xt* representations only the x axis is cut and the
@@ -64,6 +70,7 @@ data:
     yt: [64, 360]
     cstr2: [640, 360]
     cstr3: [640, 360]
+    cstr3_fixed: [640, 360]
     rgb: [640, 360]
     padded_rgb: [640, 360]
   label_time_unit: 1.0e-6
@@ -133,6 +140,13 @@ model:
     in_channels: 3
     channels: [32, 64, 128]
     out_dim: 128
+  # Used after the shared 2-D frame encoder for representation sequences.
+  # Options: mean, max, last, gru.
+  temporal_aggregation:
+    type: gru
+    hidden_dim: 128
+    layers: 1
+    dropout: 0.0
   # Number of box-history samples passed to the learned residual head. If the
   # dataset history window has fewer samples, the model pads with the earliest box.
   history_steps: 12

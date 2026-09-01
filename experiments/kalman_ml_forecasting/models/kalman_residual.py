@@ -190,9 +190,18 @@ class KalmanResidualForecaster(nn.Module):
         kalman_params: Dict | None = None,
         cell_local_first_conv: bool = False,
         cell_local_first_conv_representations: List[str] | None = None,
+        representation_sequences: Dict[str, Dict[str, int]] | None = None,
+        temporal_aggregation_cfg: Dict | None = None,
     ) -> None:
         super().__init__()
         self.representations = list(representations)
+        self.representation_sequences = dict(representation_sequences or {})
+        unknown_sequence_reps = sorted(set(self.representation_sequences) - set(self.representations))
+        if unknown_sequence_reps:
+            raise ValueError(
+                "representation_sequences contains unconfigured representations: "
+                f"{unknown_sequence_reps}"
+            )
         self.image_sizes = {
             str(rep): (int(size[0]), int(size[1])) for rep, size in dict(image_sizes).items()
         }
@@ -254,7 +263,30 @@ class KalmanResidualForecaster(nn.Module):
             }
         )
         per_rep_dim = int(backbone_cfg.get("out_dim", 128))
-        fused_dim = per_rep_dim * len(self.representations)
+        temporal_cfg = dict(temporal_aggregation_cfg or {})
+        temporal_type = str(temporal_cfg.get("type", "mean")).lower()
+        if temporal_type not in {"mean", "max", "last", "gru"}:
+            raise ValueError("model.temporal_aggregation.type must be one of: mean, max, last, gru.")
+        self.temporal_aggregation_type = temporal_type
+        self.temporal_aggregators = nn.ModuleDict()
+        rep_feature_dims = {rep: per_rep_dim for rep in self.representations}
+        if temporal_type == "gru":
+            hidden_dim = int(temporal_cfg.get("hidden_dim", per_rep_dim))
+            layers = int(temporal_cfg.get("layers", 1))
+            dropout = float(temporal_cfg.get("dropout", 0.0)) if layers > 1 else 0.0
+            if hidden_dim <= 0 or layers <= 0:
+                raise ValueError("GRU temporal hidden_dim and layers must be positive.")
+            for rep in self.representation_sequences:
+                self.temporal_aggregators[rep] = nn.GRU(
+                    input_size=per_rep_dim,
+                    hidden_size=hidden_dim,
+                    num_layers=layers,
+                    dropout=dropout,
+                    batch_first=True,
+                    bidirectional=False,
+                )
+                rep_feature_dims[rep] = hidden_dim
+        fused_dim = sum(rep_feature_dims.values())
         filter_state_dim = len(self.filter_state_feature_indices)
         if self.use_filter_state_features:
             fused_dim += filter_state_dim
@@ -325,7 +357,35 @@ class KalmanResidualForecaster(nn.Module):
         filter_state: torch.Tensor | None = None,
         filter_cov: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
-        enc = [self.encoders[rep](inputs[rep]).pooled for rep in self.representations]
+        enc = []
+        for rep in self.representations:
+            value = inputs[rep]
+            is_sequence = rep in self.representation_sequences
+            if is_sequence:
+                if value.ndim != 5:
+                    raise ValueError(
+                        f"Sequence representation {rep!r} must have shape [B,T,C,H,W], got {tuple(value.shape)}."
+                    )
+                batch, steps, channels, height, width = value.shape
+                frame_features = self.encoders[rep](
+                    value.reshape(batch * steps, channels, height, width)
+                ).pooled.reshape(batch, steps, -1)
+                if self.temporal_aggregation_type == "mean":
+                    rep_features = frame_features.mean(dim=1)
+                elif self.temporal_aggregation_type == "max":
+                    rep_features = frame_features.amax(dim=1)
+                elif self.temporal_aggregation_type == "last":
+                    rep_features = frame_features[:, -1]
+                else:
+                    _, hidden = self.temporal_aggregators[rep](frame_features)
+                    rep_features = hidden[-1]
+            else:
+                if value.ndim != 4:
+                    raise ValueError(
+                        f"Single-image representation {rep!r} must have shape [B,C,H,W], got {tuple(value.shape)}."
+                    )
+                rep_features = self.encoders[rep](value).pooled
+            enc.append(rep_features)
         if self.use_filter_state_features:
             if filter_state is None:
                 raise ValueError("filter_state is required when use_filter_state_features=True.")
