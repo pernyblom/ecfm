@@ -229,6 +229,43 @@ Notes:
 - mIoU is piecewise differentiable and can have weak gradients when boxes do
   not overlap, so distance-based terms are often useful in the weighted loss
 
+Coupled Transition-Matrix Experiment
+
+`optimize_coupled_kalman.py` is a standalone experiment for learning connections
+between the four box channels. Its state is `[cx, cy, w, h, vx, vy, vw, vh]`.
+Instead of four independent constant-velocity transitions, it learns every entry
+of a continuous-time 8x8 dynamics generator `A` and uses
+`F(dt) = matrix_exp(A * dt)`. The initialization is exactly the ordinary
+constant-velocity model, while the learned matrix can couple center motion, box
+size, and all four velocities.
+
+It reads tracklets from each FRED sequence's `cleaned_tracks.txt` through
+`data.tracks_file`. It deliberately does not require rendered representations or
+use detector labels as measurements. The training split is divided by
+`(folder, track_id)`, so windows from one cleaned track cannot leak between the
+internal training and validation subsets.
+
+Learn only the coupled transition and evaluate ADE/FDE (both box and center) and
+mIoU on the validation-selected test model:
+
+```bash
+python experiments/kalman_ml_forecasting/optimize_coupled_kalman.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1e-3 --objective fde_center_px --run-test-on-best --output-json outputs/coupled_kalman.json
+```
+
+Jointly learn the transition plus initial, process, and measurement noise:
+
+```bash
+python experiments/kalman_ml_forecasting/optimize_coupled_kalman.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1e-3 --optimize-noise --objective-weights "ade_bbox_px=0.25,fde_bbox_px=1,miou=-25" --run-test-on-best --output-json outputs/coupled_kalman_joint.json
+```
+
+
+
+The JSON records the learned generator, its transition matrix at the median
+training timestep (or `--reference-dt`), all noise values, epoch history, and
+ADE/FDE/mIoU metrics. `--transition-l2` can regularize the generator toward its
+constant-velocity initialization; gradient clipping and a dynamics-entry bound
+are enabled by default for safer exploratory runs.
+
 Generate a directly comparable CV/CA optimization sweep with the repository's
 normal sweep system:
 

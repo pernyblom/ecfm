@@ -19,6 +19,10 @@ from experiments.kalman_ml_forecasting.models.kalman_filter import (
     kalman_filter_history,
     kalman_std_tensors_from_config,
 )
+from experiments.kalman_ml_forecasting.models.coupled_kalman_filter import (
+    CoupledBoxKalmanFilter,
+    constant_velocity_generator,
+)
 from experiments.kalman_ml_forecasting.models.kalman_residual import (
     KalmanResidualForecaster,
     constant_velocity_forecast,
@@ -42,6 +46,36 @@ def _write_image(path: Path) -> None:
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def test_coupled_kalman_starts_at_constant_velocity_transition() -> None:
+    model = CoupledBoxKalmanFilter()
+    dt = torch.tensor([0.1, 0.25])
+
+    transition = model.transition(dt)
+    expected = torch.eye(8).unsqueeze(0).repeat(2, 1, 1)
+    expected[:, :4, 4:] = torch.eye(4).unsqueeze(0) * dt[:, None, None]
+
+    assert torch.allclose(model.dynamics_generator, constant_velocity_generator())
+    assert torch.allclose(transition, expected, atol=1.0e-6)
+
+
+def test_coupled_kalman_backpropagates_into_transition_and_optional_noise() -> None:
+    past = torch.tensor(
+        [[[0.40, 0.40, 0.10, 0.10], [0.42, 0.41, 0.11, 0.10], [0.45, 0.43, 0.12, 0.11]]]
+    )
+    past_times = torch.tensor([[0.0, 0.1, 0.2]])
+    future_times = torch.tensor([[0.3, 0.4]])
+
+    fixed_noise = CoupledBoxKalmanFilter(optimize_noise=False)
+    fixed_noise(past, past_times, future_times).sum().backward()
+    assert fixed_noise.dynamics_generator.grad is not None
+    assert all(parameter.grad is None for parameter in fixed_noise.log_std.values())
+
+    learned_noise = CoupledBoxKalmanFilter(optimize_noise=True)
+    learned_noise(past, past_times, future_times).sum().backward()
+    assert learned_noise.dynamics_generator.grad is not None
+    assert all(parameter.grad is not None for parameter in learned_noise.log_std.values())
 
 
 def test_box_augmentation_changes_offset_and_size_within_configured_bounds() -> None:
