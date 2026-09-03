@@ -1495,7 +1495,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 manifest["files"].append(file_entry)
 
         if any(counters.values()):
-            print("Ignored word types:")
+            print("EVT3 auxiliary/decoder counters:")
             for k, v in counters.items():
                 if v:
                     print(f"  {k}: {v}")

@@ -360,7 +360,7 @@ def render_event_representations(args: argparse.Namespace) -> None:
                 print(f"rendered {frame_idx + 1}/{len(frame_ranges)} frames")
 
         if any(counters.values()):
-            print("Ignored word types:")
+            print("EVT3 auxiliary/decoder counters:")
             for key, value in counters.items():
                 if value:
                     print(f"  {key}: {value}")

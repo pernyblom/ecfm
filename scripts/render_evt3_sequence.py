@@ -109,7 +109,7 @@ def main() -> None:
         print(f"Wrote {final_path}  [{t0:.6f}s, {t1:.6f}s)")
 
     if any(counters.values()):
-        print("Ignored word types:")
+        print("EVT3 auxiliary/decoder counters:")
         for k, v in counters.items():
             if v:
                 print(f"  {k}: {v}")
