@@ -21,20 +21,21 @@ def _make_test_root() -> Path:
     return root
 
 
-def _build_dataset(tmp_path: Path) -> TrackProjectionDataset:
+def _build_dataset(tmp_path: Path, *, initialize_files: bool = True) -> TrackProjectionDataset:
     images_root = tmp_path / "images"
     labels_root = tmp_path / "labels"
     folder = "seq_001"
     labels_dir = labels_root / folder / "Event_YOLO"
     images_dir = images_root / folder
 
-    _write_text(labels_dir / "cam_frame_000001.txt", "frame\n")
-    _write_text(labels_dir / "cam_frame_000002.txt", "frame\n")
-    _write_text(labels_root / folder / "cleaned_tracks.txt", "0.0,1,10,20,4,6\n1.0,1,12,22,4,6\n")
-    _write_png_stub(images_dir / "cam_frame_000001_xt_my.png")
-    _write_png_stub(images_dir / "cam_frame_000001_yt_mx.png")
-    _write_png_stub(images_dir / "cam_frame_000002_xt_my.png")
-    _write_png_stub(images_dir / "cam_frame_000002_yt_mx.png")
+    if initialize_files:
+        _write_text(labels_dir / "cam_frame_000001.txt", "frame\n")
+        _write_text(labels_dir / "cam_frame_000002.txt", "frame\n")
+        _write_text(labels_root / folder / "cleaned_tracks.txt", "0.0,1,10,20,4,6\n1.0,1,12,22,4,6\n")
+        _write_png_stub(images_dir / "cam_frame_000001_xt_my.png")
+        _write_png_stub(images_dir / "cam_frame_000001_yt_mx.png")
+        _write_png_stub(images_dir / "cam_frame_000002_xt_my.png")
+        _write_png_stub(images_dir / "cam_frame_000002_yt_mx.png")
 
     return TrackProjectionDataset(
         images_root=images_root,
@@ -61,7 +62,7 @@ def test_cache_key_changes_when_track_file_changes():
         tracks_path = tmp_path / "labels" / "seq_001" / "cleaned_tracks.txt"
         tracks_path.write_text("0.0,1,10,20,4,6\n2.0,1,12,22,4,6\n", encoding="utf-8")
 
-        dataset_after = _build_dataset(tmp_path)
+        dataset_after = _build_dataset(tmp_path, initialize_files=False)
         key_after = dataset_after._cache_key()
 
         assert key_after != key_before
@@ -78,7 +79,7 @@ def test_cache_key_changes_when_representation_availability_changes():
         rep_path = tmp_path / "images" / "seq_001" / "cam_frame_000002_yt_mx.png"
         rep_path.unlink()
 
-        dataset_after = _build_dataset(tmp_path)
+        dataset_after = _build_dataset(tmp_path, initialize_files=False)
         key_after = dataset_after._cache_key()
 
         assert key_after != key_before

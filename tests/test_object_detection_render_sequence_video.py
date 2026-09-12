@@ -76,6 +76,7 @@ def test_resolve_model_input_path_uses_nearest_dataset_rgb_frame(tmp_path: Path)
         rep="rgb",
         label_time_s=0.033333,
         rgb_indices={},
+        event_frame_indices={},
         label_time_unit=1.0e-6,
     )
 
@@ -98,6 +99,7 @@ def test_find_frame_stems_allows_dataset_rgb_model_input(tmp_path: Path) -> None
         required_reps=["cstr3", "rgb"],
         label_time_unit=1.0e-6,
         rgb_indices={},
+        event_frame_indices={},
     )
 
     assert stems == ["frame_000000_000000033333"]
@@ -109,6 +111,14 @@ def test_find_image_stems_requires_all_rendered_reps(tmp_path: Path) -> None:
     _write_rgb(images_dir / "frame_000000_000000010000_xt_my.png", (10, 20, 30))
     _write_rgb(images_dir / "frame_000001_000000020000_cstr3.png", (10, 20, 30))
 
-    stems = _find_image_stems(images_dir=images_dir, required_reps=["cstr3", "xt_my"])
+    stems = _find_image_stems(
+        images_dir=images_dir,
+        dataset_folder_dir=tmp_path / "dataset",
+        labels_dir=None,
+        required_reps=["cstr3", "xt_my"],
+        label_time_unit=1.0e-6,
+        rgb_indices={},
+        event_frame_indices={},
+    )
 
     assert stems == ["frame_000000_000000010000"]
