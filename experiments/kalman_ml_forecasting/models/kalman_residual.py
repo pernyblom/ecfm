@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from experiments.object_detection.models.backbones import build_single_encoder, grid_split_from_rep_name
-from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_filter_history
+from experiments.kalman_ml_forecasting.models.kalman_filter import ConfiguredBoxKalmanFilter
 
 
 def _fit_recent_velocity(
@@ -187,6 +187,7 @@ class KalmanResidualForecaster(nn.Module):
         filter_state_center_position_normalization: str = "none",
         filter_covariance_features: str = "none",
         initial_state_source: str = "last_four",
+        rollout_transition: str = "constant_velocity",
         kalman_params: Dict | None = None,
         cell_local_first_conv: bool = False,
         cell_local_first_conv_representations: List[str] | None = None,
@@ -218,6 +219,8 @@ class KalmanResidualForecaster(nn.Module):
         self.filter_covariance_features = str(filter_covariance_features).lower()
         self.initial_state_source = str(initial_state_source).lower()
         self.kalman_params = dict(kalman_params or {})
+        self.kalman_filter = ConfiguredBoxKalmanFilter(self.kalman_params)
+        self.rollout_transition = str(rollout_transition).lower()
         if self.filter_state_center_position_normalization not in {"none", "frame_centered"}:
             raise ValueError(
                 "filter_state_center_position_normalization must be one of: none, frame_centered."
@@ -228,6 +231,15 @@ class KalmanResidualForecaster(nn.Module):
             )
         if self.initial_state_source not in {"last_four", "kalman_filter"}:
             raise ValueError("initial_state_source must be one of: last_four, kalman_filter.")
+        if self.rollout_transition not in {"constant_velocity", "configured_kalman"}:
+            raise ValueError(
+                "rollout_transition must be one of: constant_velocity, configured_kalman."
+            )
+        if self.rollout_transition == "configured_kalman" and self.kalman_filter.state_dim != 8:
+            raise ValueError(
+                "configured_kalman residual rollout currently requires an 8-D "
+                "constant-velocity or coupled Kalman state."
+            )
         if int(fusion_layers) < 0:
             raise ValueError("fusion_layers must be >= 0.")
         if int(state_layers) < 0:
@@ -433,7 +445,9 @@ class KalmanResidualForecaster(nn.Module):
             or self.initial_state_source == "kalman_filter"
         )
         if needs_filter:
-            filter_state, filter_cov = kalman_filter_history(past_boxes, past_times_s, self.kalman_params)
+            filter_state, filter_cov = self.kalman_filter.filter_history(
+                past_boxes, past_times_s
+            )
         image_feat = self._image_features(inputs, filter_state, filter_cov)
         history_feat = (
             self._history_features(past_boxes, past_times_s)
@@ -465,10 +479,16 @@ class KalmanResidualForecaster(nn.Module):
             accel = self.residual_head(step_feat) * self.residual_scale
             if not self.predict_size_residuals:
                 accel = torch.cat([accel, torch.zeros_like(accel)], dim=-1)
-            pos = state[:, :4]
-            vel = state[:, 4:]
-            next_pos = pos + vel * dt.unsqueeze(-1) + 0.5 * accel * dt.square().unsqueeze(-1)
-            next_vel = vel + accel * dt.unsqueeze(-1)
+            if self.rollout_transition == "configured_kalman":
+                base_state = self.kalman_filter.transition_state(state, dt)
+            else:
+                pos = state[:, :4]
+                vel = state[:, 4:]
+                base_state = torch.cat(
+                    [pos + vel * dt.unsqueeze(-1), vel], dim=-1
+                )
+            next_pos = base_state[:, :4] + 0.5 * accel * dt.square().unsqueeze(-1)
+            next_vel = base_state[:, 4:] + accel * dt.unsqueeze(-1)
             next_pos = next_pos.clamp(0.0, 1.0)
             state = torch.cat([next_pos, next_vel], dim=-1)
             current_time = next_time
@@ -483,6 +503,7 @@ class KalmanResidualForecaster(nn.Module):
             "last4_boxes": last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
             "last2_boxes": last_two_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
             "cv_boxes": last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s),
+            "kalman_boxes": self.kalman_filter(past_boxes, past_times_s, future_times_s),
         }
         if filter_state is not None:
             debug["filter_state"] = filter_state

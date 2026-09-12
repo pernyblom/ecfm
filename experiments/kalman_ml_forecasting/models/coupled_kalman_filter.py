@@ -6,7 +6,12 @@ from typing import Any, Dict
 import torch
 from torch import nn
 
-from .kalman_filter import DEFAULT_KALMAN_CONFIG
+from .kalman_filter import (
+    DEFAULT_KALMAN_CONFIG,
+    constant_velocity_generator,
+    predict_kalman_state,
+    update_kalman_state,
+)
 
 
 NOISE_PARAM_KEYS = [
@@ -22,13 +27,6 @@ NOISE_PARAM_KEYS = [
 ]
 
 
-def constant_velocity_generator(*, device=None, dtype=None) -> torch.Tensor:
-    """Continuous-time CV generator for [cx, cy, w, h, vx, vy, vw, vh]."""
-    generator = torch.zeros((8, 8), device=device, dtype=dtype)
-    generator[:4, 4:] = torch.eye(4, device=device, dtype=dtype)
-    return generator
-
-
 class CoupledBoxKalmanFilter(nn.Module):
     """Differentiable box Kalman filter with a fully coupled transition.
 
@@ -41,6 +39,7 @@ class CoupledBoxKalmanFilter(nn.Module):
         self,
         kalman_cfg: Dict[str, Any] | None = None,
         *,
+        optimize_dynamics: bool = True,
         optimize_noise: bool = False,
         min_std: float = 1.0e-6,
         max_std: float = 10.0,
@@ -51,14 +50,23 @@ class CoupledBoxKalmanFilter(nn.Module):
         cfg = dict(DEFAULT_KALMAN_CONFIG)
         if kalman_cfg:
             cfg.update({key: value for key, value in kalman_cfg.items() if key in cfg})
+        self.optimize_dynamics = bool(optimize_dynamics)
         self.optimize_noise = bool(optimize_noise)
         self.min_std = float(min_std)
         self.max_std = float(max_std)
         if self.min_std <= 0 or self.max_std < self.min_std:
             raise ValueError("Expected 0 < min_std <= max_std.")
 
-        self.dynamics_generator = nn.Parameter(
+        configured_generator = None if kalman_cfg is None else kalman_cfg.get("dynamics_generator")
+        initial_generator = (
             constant_velocity_generator(device=device, dtype=dtype)
+            if configured_generator is None
+            else torch.as_tensor(configured_generator, device=device, dtype=dtype)
+        )
+        if initial_generator.shape != (8, 8) or not torch.isfinite(initial_generator).all():
+            raise ValueError("kalman.dynamics_generator must be a finite 8x8 matrix.")
+        self.dynamics_generator = nn.Parameter(
+            initial_generator.clone(), requires_grad=self.optimize_dynamics
         )
         self.log_std = nn.ParameterDict()
         for key in NOISE_PARAM_KEYS:
@@ -101,15 +109,14 @@ class CoupledBoxKalmanFilter(nn.Module):
         dt: torch.Tensor,
         process_std: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        transition = self.transition(dt).to(device=state.device, dtype=state.dtype)
-        state = torch.bmm(transition, state.unsqueeze(-1)).squeeze(-1)
-        q_scale = torch.stack([dt] * 4 + [torch.ones_like(dt)] * 4, dim=1)
-        q_diag = (process_std.unsqueeze(0) * q_scale.clamp(min=1.0e-6)).square()
-        covariance = (
-            torch.bmm(torch.bmm(transition, covariance), transition.transpose(1, 2))
-            + torch.diag_embed(q_diag)
+        return predict_kalman_state(
+            state,
+            covariance,
+            dt,
+            process_std,
+            "coupled",
+            self.dynamics_generator,
         )
-        return state, covariance
 
     @staticmethod
     def _update(
@@ -118,22 +125,7 @@ class CoupledBoxKalmanFilter(nn.Module):
         measurement: torch.Tensor,
         measurement_std: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch = int(state.shape[0])
-        h = torch.zeros((batch, 4, 8), device=state.device, dtype=state.dtype)
-        h[:, :, :4] = torch.eye(4, device=state.device, dtype=state.dtype)
-        r = torch.diag_embed(measurement_std.unsqueeze(0).expand(batch, -1).square())
-        residual = measurement - torch.bmm(h, state.unsqueeze(-1)).squeeze(-1)
-        innovation_cov = torch.bmm(torch.bmm(h, covariance), h.transpose(1, 2)) + r
-        gain = torch.linalg.solve(innovation_cov, torch.bmm(h, covariance)).transpose(1, 2)
-        state = state + torch.bmm(gain, residual.unsqueeze(-1)).squeeze(-1)
-        eye = torch.eye(8, device=state.device, dtype=state.dtype).unsqueeze(0).expand(batch, -1, -1)
-        correction = eye - torch.bmm(gain, h)
-        covariance = (
-            torch.bmm(torch.bmm(correction, covariance), correction.transpose(1, 2))
-            + torch.bmm(torch.bmm(gain, r), gain.transpose(1, 2))
-        )
-        state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
-        return state, covariance
+        return update_kalman_state(state, covariance, measurement, measurement_std)
 
     def filter_history(
         self, past_boxes: torch.Tensor, past_times_s: torch.Tensor
@@ -185,6 +177,12 @@ class CoupledBoxKalmanFilter(nn.Module):
             generator = self.dynamics_generator.detach().cpu()
             transition = torch.matrix_exp(generator * float(reference_dt))
             noise = {key: float(value.exp().detach().cpu()) for key, value in self.log_std.items()}
+        runtime_config = {
+            "enabled": True,
+            "motion_model": "coupled",
+            "dynamics_generator": generator.tolist(),
+            **noise,
+        }
         return {
             "state_layout": ["cx", "cy", "w", "h", "vx", "vy", "vw", "vh"],
             "parameterization": "F(dt) = matrix_exp(dynamics_generator * dt)",
@@ -192,4 +190,5 @@ class CoupledBoxKalmanFilter(nn.Module):
             "dynamics_generator": generator.tolist(),
             "reference_transition": transition.tolist(),
             "noise": noise,
+            "kalman_config": runtime_config,
         }

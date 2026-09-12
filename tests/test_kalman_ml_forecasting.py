@@ -16,7 +16,10 @@ from experiments.kalman_ml_forecasting.data.track_dataset import (
     _normalize_event_count_channels,
 )
 from experiments.kalman_ml_forecasting.models.kalman_filter import (
+    ConfiguredBoxKalmanFilter,
     kalman_cv_forecast,
+    kalman_config_from_dict,
+    kalman_forecast,
     kalman_cv_forecast_tensor_params,
     kalman_filter_history,
     kalman_std_tensors_from_config,
@@ -27,8 +30,10 @@ from experiments.kalman_ml_forecasting.models.coupled_kalman_filter import (
 )
 from experiments.kalman_ml_forecasting.models.kalman_residual import (
     KalmanResidualForecaster,
+    box_sequence_to_state,
     constant_velocity_forecast,
 )
+from experiments.kalman_ml_forecasting.coupled_report_to_config import kalman_config_from_report
 from experiments.kalman_ml_forecasting.optimize_kalman import (
     _objective_score,
     _parse_objective_weights,
@@ -78,6 +83,93 @@ def test_coupled_kalman_backpropagates_into_transition_and_optional_noise() -> N
     learned_noise(past, past_times, future_times).sum().backward()
     assert learned_noise.dynamics_generator.grad is not None
     assert all(parameter.grad is not None for parameter in learned_noise.log_std.values())
+
+
+def test_coupled_config_requires_a_finite_8x8_generator() -> None:
+    try:
+        kalman_config_from_dict({"motion_model": "coupled"})
+    except ValueError as exc:
+        assert "requires kalman.dynamics_generator" in str(exc)
+    else:
+        raise AssertionError("Expected a missing coupled generator to fail.")
+
+    try:
+        kalman_config_from_dict(
+            {"motion_model": "coupled", "dynamics_generator": [[0.0] * 8] * 7}
+        )
+    except ValueError as exc:
+        assert "shape [8, 8]" in str(exc)
+    else:
+        raise AssertionError("Expected a malformed coupled generator to fail.")
+
+
+def test_coupled_cv_generator_matches_constant_velocity_filter() -> None:
+    past = torch.tensor(
+        [[[0.3, 0.4, 0.1, 0.2], [0.32, 0.41, 0.11, 0.19], [0.35, 0.43, 0.12, 0.18]]]
+    )
+    past_t = torch.tensor([[0.0, 0.1, 0.25]])
+    future_t = torch.tensor([[0.35, 0.55]])
+    coupled_cfg = {
+        "motion_model": "coupled",
+        "dynamics_generator": constant_velocity_generator().tolist(),
+    }
+
+    expected = kalman_forecast(past, past_t, future_t)
+    actual = kalman_forecast(past, past_t, future_t, coupled_cfg)
+
+    assert torch.allclose(actual, expected, atol=1.0e-6)
+
+
+def test_coupled_optimizer_snapshot_reproduces_configured_runtime() -> None:
+    generator = constant_velocity_generator()
+    generator[0, 1] = 0.15
+    generator[5, 4] = -0.2
+    model = CoupledBoxKalmanFilter(
+        {"dynamics_generator": generator.tolist()}, optimize_dynamics=False
+    )
+    past = torch.tensor(
+        [[[0.3, 0.4, 0.1, 0.2], [0.32, 0.41, 0.11, 0.19], [0.35, 0.43, 0.12, 0.18]]]
+    )
+    past_t = torch.tensor([[0.0, 0.1, 0.25]])
+    future_t = torch.tensor([[0.35, 0.55]])
+    runtime = ConfiguredBoxKalmanFilter(
+        model.snapshot(reference_dt=0.1)["kalman_config"]
+    )
+
+    assert torch.allclose(
+        runtime(past, past_t, future_t), model(past, past_t, future_t), atol=1.0e-6
+    )
+
+
+def test_coupled_report_converts_to_runtime_config() -> None:
+    generator = constant_velocity_generator().tolist()
+    noise = {
+        "initial_pos_std": 0.01,
+        "initial_size_std": 0.02,
+        "initial_vel_std": 0.03,
+        "process_pos_std": 0.04,
+        "process_size_std": 0.05,
+        "process_vel_std": 0.06,
+        "process_size_vel_std": 0.07,
+        "measurement_pos_std": 0.08,
+        "measurement_size_std": 0.09,
+    }
+    report = {
+        "best": {
+            "model": {
+                "state_layout": ["cx", "cy", "w", "h", "vx", "vy", "vw", "vh"],
+                "parameterization": "F(dt) = matrix_exp(dynamics_generator * dt)",
+                "dynamics_generator": generator,
+                "noise": noise,
+            }
+        }
+    }
+
+    config = kalman_config_from_report(report)
+
+    assert config["motion_model"] == "coupled"
+    assert config["dynamics_generator"] == generator
+    assert config["measurement_size_std"] == 0.09
 
 
 def test_box_augmentation_changes_offset_and_size_within_configured_bounds() -> None:
@@ -354,6 +446,42 @@ def test_kalman_residual_forecaster_forward_shapes() -> None:
     assert out["boxes"].shape == (2, 3, 4)
     assert out["residual_accel"].shape == (2, 3, 4)
     assert out["cv_boxes"].shape == (2, 3, 4)
+
+
+def test_kalman_residual_forecaster_can_roll_out_coupled_transition() -> None:
+    generator = constant_velocity_generator()
+    generator[0, 0] = 0.2
+    kalman_cfg = {
+        "motion_model": "coupled",
+        "dynamics_generator": generator.tolist(),
+    }
+    model = KalmanResidualForecaster(
+        representations=[],
+        image_sizes={},
+        backbone_cfg={"type": "small_cnn", "in_channels": 3, "channels": [4, 8], "out_dim": 16},
+        history_steps=2,
+        history_feature_mode="raw",
+        state_layers=0,
+        residual_layers=0,
+        rollout_transition="configured_kalman",
+        kalman_params=kalman_cfg,
+    )
+    for parameter in model.residual_head.parameters():
+        torch.nn.init.zeros_(parameter)
+    past = torch.tensor([[[0.2, 0.3, 0.1, 0.1], [0.25, 0.31, 0.1, 0.1]]])
+    past_t = torch.tensor([[0.0, 0.5]])
+    future_t = torch.tensor([[0.75]])
+    initial_state = box_sequence_to_state(past, past_t)
+    runtime = ConfiguredBoxKalmanFilter(kalman_cfg)
+    expected_state = runtime.transition_state(initial_state, torch.tensor([0.25]))
+
+    out = model({}, past, past_t, future_t, return_debug=True)
+
+    assert torch.allclose(out["boxes"][:, 0], expected_state[:, :4].clamp(0.0, 1.0))
+    assert out["kalman_boxes"].shape == (1, 1, 4)
+    assert not any(
+        name.startswith("kalman_filter") for name, _ in model.named_parameters()
+    )
 
 
 def test_kalman_residual_forecaster_encodes_image_sequence_with_gru() -> None:

@@ -33,6 +33,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         ),
         filter_covariance_features=str(model_cfg.get("filter_covariance_features", "none")),
         initial_state_source=str(model_cfg.get("initial_state_source", "last_four")),
+        rollout_transition=str(model_cfg.get("rollout_transition", "constant_velocity")),
         kalman_params=dict(cfg.get("kalman") or {}),
         cell_local_first_conv=bool(model_cfg.get("cell_local_first_conv", False)),
         cell_local_first_conv_representations=list(

@@ -22,7 +22,7 @@ from experiments.kalman_ml_forecasting.compose_track_layers import (
     write_mp4_iter,
 )
 from experiments.kalman_ml_forecasting.models.factory import build_model
-from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_cv_forecast
+from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_forecast
 from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
@@ -559,7 +559,7 @@ def main() -> None:
                 future_boxes = sample.future_boxes.unsqueeze(0).to(device)
                 past_times_s = sample.past_times_s.unsqueeze(0).to(device)
                 future_times_s = sample.future_times_s.unsqueeze(0).to(device)
-                kalman_boxes = kalman_cv_forecast(past_boxes, past_times_s, future_times_s, kalman_cfg)
+                kalman_boxes = kalman_forecast(past_boxes, past_times_s, future_times_s, kalman_cfg)
                 last4_boxes = last_four_constant_velocity_forecast(past_boxes, past_times_s, future_times_s)
                 want_cv_layer = "cv_boxes" in composition_order or args.include_cv or args.include_last4
                 if args.baseline_only:

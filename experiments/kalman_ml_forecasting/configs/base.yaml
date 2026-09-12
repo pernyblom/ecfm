@@ -175,6 +175,10 @@ model:
   # "kalman_filter" starts the learned residual rollout from the configured
   # Kalman filter's final history state.
   initial_state_source: kalman_filter
+  # Future transition underneath the learned acceleration residuals.
+  # constant_velocity preserves historical behavior; configured_kalman uses
+  # the selected 8-D Kalman transition, including motion_model: coupled.
+  rollout_transition: constant_velocity
   # If true, append the configured Kalman filter's final history state
   # to the encoder features before image fusion.
   use_filter_state_features: true
@@ -218,6 +222,9 @@ inference:
 #   process_size_accel_std: 0.1
 #   measurement_pos_std: 0.01
 #   measurement_size_std: 0.01
+# A coupled filter instead uses motion_model: coupled plus an 8x8 continuous-
+# time dynamics_generator. Generate this block from an optimizer report with
+# experiments/kalman_ml_forecasting/coupled_report_to_config.py.
 
 
 

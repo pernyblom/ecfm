@@ -51,6 +51,12 @@ class KalmanStdParameters(nn.Module):
         super().__init__()
         params = kalman_config_from_dict(cfg)
         self.motion_model = str(params["motion_model"])
+        self.register_buffer(
+            "dynamics_generator",
+            None
+            if params.get("dynamics_generator") is None
+            else torch.tensor(params["dynamics_generator"], dtype=torch.float32, device=device),
+        )
         self.optimized_param_keys = COMMON_PARAM_KEYS + (
             ACCELERATION_PARAM_KEYS if self.motion_model == "constant_acceleration" else []
         )
@@ -64,8 +70,10 @@ class KalmanStdParameters(nn.Module):
     def tensors(self) -> dict[str, torch.Tensor]:
         return {key: self.log_std[key].exp() for key in self.optimized_param_keys}
 
-    def as_config(self) -> dict[str, float | bool | str]:
-        out: dict[str, float | bool | str] = {"enabled": True, "motion_model": self.motion_model}
+    def as_config(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"enabled": True, "motion_model": self.motion_model}
+        if self.dynamics_generator is not None:
+            out["dynamics_generator"] = self.dynamics_generator.detach().cpu().tolist()
         with torch.no_grad():
             for key in self.optimized_param_keys:
                 out[key] = float(self.log_std[key].exp().detach().cpu().item())
@@ -133,7 +141,9 @@ def _evaluate(
             batch_indices = indices[start : start + batch_size]
             past_boxes, future_boxes, past_times, future_times = _stack_batch(samples, batch_indices, device=device)
             pred = kalman_cv_forecast_tensor_params(
-                past_boxes, past_times, future_times, model.tensors(), motion_model=model.motion_model
+                past_boxes, past_times, future_times, model.tensors(),
+                motion_model=model.motion_model,
+                dynamics_generator=model.dynamics_generator,
             )
             metrics_t = _metric_tensors(pred, future_boxes, frame_size)
             rows.append({key: float(value.detach().cpu().item()) for key, value in metrics_t.items()})
@@ -186,7 +196,9 @@ def _train_epoch(
         batch_indices = shuffled[start : start + batch_size]
         past_boxes, future_boxes, past_times, future_times = _stack_batch(samples, batch_indices, device=device)
         pred = kalman_cv_forecast_tensor_params(
-            past_boxes, past_times, future_times, model.tensors(), motion_model=model.motion_model
+            past_boxes, past_times, future_times, model.tensors(),
+            motion_model=model.motion_model,
+            dynamics_generator=model.dynamics_generator,
         )
         loss = _weighted_loss(_metric_tensors(pred, future_boxes, frame_size), objective_weights)
         optimizer.zero_grad(set_to_none=True)

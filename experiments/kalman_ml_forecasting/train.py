@@ -22,7 +22,7 @@ from experiments.kalman_ml_forecasting.data.track_dataset import (
 )
 from experiments.kalman_ml_forecasting.metrics import summarize_forecast_metrics
 from experiments.kalman_ml_forecasting.models.factory import build_model
-from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_cv_forecast, kalman_config_from_dict
+from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_forecast
 from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
@@ -409,7 +409,6 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     frame_size = tuple(cfg["data"]["frame_size"])
     loss_fn = nn.SmoothL1Loss(beta=float(train_cfg.get("smooth_l1_beta", 0.05)))
     residual_weight = float(train_cfg.get("residual_l2_weight", 0.0))
-    kalman_cfg = kalman_config_from_dict(cfg.get("kalman"))
     model.train(mode=train)
     rows: List[Dict[str, float]] = []
     accumulation_steps = int(train_cfg.get("accumulation_steps", 1)) if train else 1
@@ -448,12 +447,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
                     optimizer.step()
         with torch.no_grad():
             metrics = summarize_forecast_metrics(pred.detach(), future_boxes, frame_size)
-            kalman_boxes = kalman_cv_forecast(
-                past_boxes,
-                past_times_s,
-                future_times_s,
-                kalman_cfg,
-            )
+            kalman_boxes = out["kalman_boxes"]
             kalman_metrics = summarize_forecast_metrics(kalman_boxes.detach(), future_boxes, frame_size)
             last4_metrics = summarize_forecast_metrics(out["last4_boxes"].detach(), future_boxes, frame_size)
             row = {"loss": float(loss.item()), **metrics}
@@ -484,7 +478,7 @@ def _run_baseline_epoch(*, loader, device: torch.device, cfg: Dict) -> Dict[str,
         past_times_s = batch.past_times_s.to(device, non_blocking=True)
         future_times_s = batch.future_times_s.to(device, non_blocking=True)
         with torch.no_grad():
-            kalman_boxes = kalman_cv_forecast(
+            kalman_boxes = kalman_forecast(
                 past_boxes,
                 past_times_s,
                 future_times_s,

@@ -24,9 +24,7 @@ if str(ROOT) not in sys.path:
 
 from experiments.kalman_ml_forecasting.models.factory import build_model
 from experiments.kalman_ml_forecasting.models.kalman_filter import (
-    kalman_config_from_dict,
-    kalman_cv_forecast_tensor_params,
-    kalman_std_tensors_from_config,
+    ConfiguredBoxKalmanFilter,
 )
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
@@ -108,20 +106,9 @@ def benchmark(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     parameter_count = 0
     kalman_only = _is_kalman_only(cfg)
     if kalman_only:
-        kalman_cfg = kalman_config_from_dict(cfg.get("kalman"))
-        # Keep parameters resident on the benchmark device. This uses the same
-        # differentiable, batched implementation as optimize_kalman_backprop.py
-        # and avoids rebuilding device tensors inside every timed invocation.
-        params = kalman_std_tensors_from_config(
-            cfg.get("kalman"), device=device, dtype=past_boxes.dtype
-        )
-        motion_model = str(kalman_cfg["motion_model"])
-        operation: Callable[[], Any] = lambda: kalman_cv_forecast_tensor_params(
-            past_boxes,
-            past_times,
-            future_times,
-            params,
-            motion_model=motion_model,
+        kalman_model = ConfiguredBoxKalmanFilter(cfg.get("kalman")).to(device).eval()
+        operation: Callable[[], Any] = lambda: kalman_model(
+            past_boxes, past_times, future_times
         )
     else:
         model = build_model(cfg, device).eval()
@@ -145,7 +132,7 @@ def benchmark(cfg: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     mean_ms = statistics.fmean(elapsed_ms)
     return {
         "path": "kalman_only" if kalman_only else "ml",
-        "implementation": "tensor_params" if kalman_only else "model_forward",
+        "implementation": "configured_kalman" if kalman_only else "model_forward",
         "device": str(device),
         "device_name": torch.cuda.get_device_name(device) if device.type == "cuda" else platform.processor(),
         "torch_version": torch.__version__,

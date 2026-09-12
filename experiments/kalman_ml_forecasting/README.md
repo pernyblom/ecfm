@@ -1,13 +1,14 @@
 Kalman ML Forecasting
 
-This experiment forecasts UAV boxes with a configurable constant-velocity or
-constant-acceleration Kalman
+This experiment forecasts UAV boxes with a configurable constant-velocity,
+constant-acceleration, or coupled Kalman
 baseline plus learned residual dynamics from rendered FRED images.
 
 Model
 - State is `[cx, cy, w, h, vx, vy, vw, vh]` in normalized box coordinates.
-- The learned residual model uses a fixed constant-velocity transition:
-  `p_{t+1} = p_t + v_t dt`.
+- The learned residual model defaults to a fixed constant-velocity transition,
+  `p_{t+1} = p_t + v_t dt`; `model.rollout_transition: configured_kalman`
+  instead uses the configured 8-D Kalman transition.
 - The learned branch predicts acceleration residuals from `event_images` and
   optional RGB:
   `x_{t+1} = F x_t + delta_x_t`.
@@ -317,6 +318,39 @@ training timestep (or `--reference-dt`), all noise values, epoch history, and
 ADE/FDE/mIoU metrics. `--transition-l2` can regularize the generator toward its
 constant-velocity initialization; gradient clipping and a dynamics-entry bound
 are enabled by default for safer exploratory runs.
+
+Convert an existing report to a directly usable `kalman:` YAML block:
+
+```bash
+python experiments/kalman_ml_forecasting/coupled_report_to_config.py outputs/coupled_kalman_joint.json
+```
+
+Or replace the Kalman section in a complete training config:
+
+```bash
+python experiments/kalman_ml_forecasting/coupled_report_to_config.py outputs/coupled_kalman_joint.json --base-config experiments/kalman_ml_forecasting/configs/base.yaml --use-for-residual-rollout --output configs/coupled_residual.yaml
+```
+
+The converter validates the report and copies the continuous-time
+`dynamics_generator` plus all optimized noise standard deviations. It does not
+copy `reference_transition`, because that matrix is tied to `reference_dt_s`.
+Output files are not overwritten unless `--force` is supplied.
+`--use-for-residual-rollout` also applies the two model settings shown below.
+
+To use the coupled filter for residual-model history initialization and for the
+future transition underneath the learned acceleration residual, set:
+
+```yaml
+model:
+  initial_state_source: kalman_filter
+  rollout_transition: configured_kalman
+```
+
+The imported generator and Kalman noise remain fixed while the residual model
+is trained. `rollout_transition: constant_velocity` remains the default and
+preserves existing model behavior. `configured_kalman` currently supports the
+8-D constant-velocity and coupled states; the 12-D constant-acceleration state
+can still be used for filter initialization/features but not residual rollout.
 
 Generate a directly comparable CV/CA optimization sweep with the repository's
 normal sweep system:
@@ -690,9 +724,10 @@ python experiments/kalman_ml_forecasting/benchmark_inference.py --config path/to
 The timed region includes the complete history filtering and future rollout for
 Kalman-only, and the complete backbone, feature fusion, and future rollout for
 the learned path. Dataset reads, crop creation, and host-to-device copies are
-excluded equally. The Kalman path uses the batched tensor-parameter implementation
-from `optimize_kalman_backprop.py`, with parameters created once on the selected
-device outside the timed region. CUDA is synchronized around every measurement. Use the same
+excluded equally. The Kalman path uses the same configured runtime as training
+and supports constant-velocity, constant-acceleration, and coupled filters, with
+tensors created once on the selected device outside the timed region. CUDA is
+synchronized around every measurement. Use the same
 device, batch size, history/future step counts, warm-up, and iteration count for
 comparisons; an ML checkpoint is optional because weights do not change the
 compute graph (`--checkpoint`). Whether the script runs Kalman-only or ML, the
@@ -744,6 +779,10 @@ Extension points
 - Set `model.initial_state_source: kalman_filter` to start the learned residual
   rollout from the configured Kalman filter's final history state instead of
   the default last-four linear-fit state.
+- Set `model.rollout_transition: configured_kalman` to apply the configured 8-D
+  Kalman transition at every future step before adding the learned acceleration
+  residual. This makes a coupled generator the residual model's base dynamics.
+  The backward-compatible default is `constant_velocity`.
 - Set `model.use_filter_state_features: true` to append the configured Kalman
   filter's final history state to the CNN encoder features before image fusion.
   The residual rollout still starts from the last-four linear-fit state; the

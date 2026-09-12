@@ -181,7 +181,7 @@ def _log_uniform(rng: random.Random, lo: float, hi: float) -> float:
     return 10.0 ** rng.uniform(math.log10(lo), math.log10(hi))
 
 
-def _sample_params(rng: random.Random, base_cfg: Dict[str, Any]) -> dict[str, float | bool | str]:
+def _sample_params(rng: random.Random, base_cfg: Dict[str, Any]) -> dict[str, Any]:
     params = kalman_config_from_dict(base_cfg)
     params["enabled"] = True
     for key, bounds in SEARCH_RANGES.items():
@@ -197,10 +197,16 @@ def _format_yaml(params: Dict[str, Any]) -> str:
         if key not in params:
             continue
         value = params[key]
+        if value is None:
+            continue
         if isinstance(value, bool):
             lines.append(f"  {key}: {str(value).lower()}")
         elif isinstance(value, str):
             lines.append(f"  {key}: {value}")
+        elif key == "dynamics_generator":
+            lines.append("  dynamics_generator:")
+            for row in value:
+                lines.append("    - [" + ", ".join(f"{float(item):.9g}" for item in row) + "]")
         else:
             lines.append(f"  {key}: {float(value):.8g}")
     return "\n".join(lines)
