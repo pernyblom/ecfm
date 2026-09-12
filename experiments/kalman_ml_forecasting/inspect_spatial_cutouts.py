@@ -14,7 +14,10 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
+from experiments.kalman_ml_forecasting.data.track_dataset import (
+    TrackKalmanForecastDataset,
+    _normalize_event_count_channels,
+)
 from experiments.kalman_ml_forecasting.utils.config import (
     load_config,
     read_split_file,
@@ -351,6 +354,13 @@ def main() -> None:
                 rep=rep,
                 box=anchor_box,
                 cfg=resolve_spatial_cutout_config(cutout_cfg, rep),
+            )
+            rep_cutout_cfg = resolve_spatial_cutout_config(cutout_cfg, rep)
+            cutout_arr = np.asarray(cutout_img, dtype=np.float32) / 255.0
+            cutout_arr = _normalize_event_count_channels(cutout_arr, rep=rep, cfg=rep_cutout_cfg)
+            cutout_img = Image.fromarray(
+                np.clip(np.rint(cutout_arr * 255.0), 0.0, 255.0).astype(np.uint8),
+                mode="RGB",
             )
             if args.draw_anchor_box:
                 cutout_img = _draw_anchor_box(

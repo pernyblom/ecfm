@@ -12,6 +12,8 @@ if str(ROOT) not in sys.path:
 from experiments.kalman_ml_forecasting.data.track_dataset import (
     TrackKalmanForecastDataset,
     _augment_boxes,
+    _load_image,
+    _normalize_event_count_channels,
 )
 from experiments.kalman_ml_forecasting.models.kalman_filter import (
     kalman_cv_forecast,
@@ -690,6 +692,78 @@ def test_spatial_cutout_grid_alias_uses_base_representation_override() -> None:
     }
 
     assert resolve_spatial_cutout_config(cutout, "xt_my_10x10")["size_px"] == [128, 32]
+
+
+def test_event_count_min_max_normalization_runs_after_fixed_cutout(tmp_path: Path) -> None:
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    image[:, :, 0] = 17
+    image[:, :, 2] = 23
+    image[:, :, 1] = 250
+    image[1:3, 1:3, 1] = np.asarray([[10, 20], [30, 40]], dtype=np.uint8)
+    path = tmp_path / "sample_cstr3.png"
+    Image.fromarray(image).save(path)
+
+    loaded = _load_image(
+        path,
+        (2, 2),
+        source_size=(4, 4),
+        rep="cstr3",
+        frame_size=(4, 4),
+        anchor_box=np.asarray([0.5, 0.5, 0.5, 0.5], dtype=np.float32),
+        spatial_cutout={
+            "mode": "fixed_pixels",
+            "size_px": [2, 2],
+            "event_count_normalization": "min_max",
+        },
+    )
+
+    torch.testing.assert_close(
+        loaded[1],
+        torch.tensor([[0.0, 1.0 / 3.0], [2.0 / 3.0, 1.0]]),
+        atol=1.0e-6,
+        rtol=1.0e-6,
+    )
+    torch.testing.assert_close(loaded[0], torch.full((2, 2), 17.0 / 255.0))
+    torch.testing.assert_close(loaded[2], torch.full((2, 2), 23.0 / 255.0))
+
+
+def test_event_count_normalization_preserves_xt_my_position_channel() -> None:
+    arr = np.asarray(
+        [
+            [[0.0, 0.2, 0.0], [0.05, 0.4, 0.1]],
+            [[0.1, 0.6, 0.05], [0.2, 0.8, 0.2]],
+        ],
+        dtype=np.float32,
+    )
+
+    normalized = _normalize_event_count_channels(
+        arr,
+        rep="xt_my_10x10",
+        cfg={"event_count_normalization": "max"},
+    )
+
+    np.testing.assert_array_equal(normalized[:, :, 1], arr[:, :, 1])
+    np.testing.assert_allclose(normalized[:, :, 0], arr[:, :, 0] / 0.2)
+    np.testing.assert_allclose(normalized[:, :, 2], arr[:, :, 2] / 0.2)
+
+
+def test_event_count_normalization_supports_joint_and_explicit_channels() -> None:
+    arr = np.asarray([[[1.0, 4.0, 2.0], [3.0, 8.0, 5.0]]], dtype=np.float32)
+
+    normalized = _normalize_event_count_channels(
+        arr,
+        rep="custom",
+        cfg={
+            "event_count_normalization": {
+                "mode": "joint_min_max",
+                "channels": ["red", "blue"],
+            }
+        },
+    )
+
+    np.testing.assert_allclose(normalized[:, :, 0], [[0.0, 0.5]])
+    np.testing.assert_allclose(normalized[:, :, 2], [[0.25, 1.0]])
+    np.testing.assert_array_equal(normalized[:, :, 1], arr[:, :, 1])
 
 
 def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:

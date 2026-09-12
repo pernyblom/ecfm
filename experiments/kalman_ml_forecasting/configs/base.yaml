@@ -33,6 +33,11 @@ data:
     size_px: [64, 64]  # used by fixed_pixels
     min_size_px: 1
     fill: 0.0
+    # Normalize only known event-count channels after cropping/masking. `none`
+    # preserves rendered values. Other modes: min_max, max, joint_min_max,
+    # joint_max. Per-channel modes scale each polarity independently; joint
+    # modes preserve their relative scale.
+    event_count_normalization: none
     # Optional per-format overrides merge onto the defaults above. Values stay
     # in literal image [width, height] order (XT is x,t and YT is t,y).
     # by_representation:

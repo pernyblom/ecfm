@@ -73,6 +73,19 @@ model:
   temporal height remains intact, and YT uses the provided height while its
   temporal width remains intact. Exact representation names take precedence;
   grid aliases such as `xt_my_10x10` fall back to an `xt_my` override.
+  `event_count_normalization` optionally rescales event-count channels after
+  the crop/mask is made. It accepts `none` (the backward-compatible default),
+  `min_max`, `max`, `joint_min_max`, or `joint_max`. Per-channel modes scale
+  each count channel separately; joint modes use one scale across all count
+  channels and therefore preserve the relative strength of positive and
+  negative events. The output range is `[0, 255]` in image terms (`[0, 1]` in
+  the loaded tensors). Automatic channel selection covers CSTR3's green count
+  channel and the red/blue count channels in XY, XT, YT, `xt_my`, `yt_mx`, and
+  their grid aliases; timestamp/position channels are left unchanged. For a
+  custom rendered format, use the mapping form with explicit RGB indices or
+  names, for example `{mode: min_max, channels: [red, blue]}`. A
+  `by_representation` override can select a different mode or disable it for a
+  particular format.
 
 ```yaml
 data:
@@ -80,6 +93,7 @@ data:
     mode: fixed_pixels
     size_px: [64, 64]  # default for representations without an override
     fill: 0.0
+    event_count_normalization: min_max
     by_representation:
       cstr2:
         size_px: [160, 120]
@@ -87,6 +101,8 @@ data:
         size_px: [192, 64]  # width is x; height is the unchanged t axis
       yt:
         size_px: [64, 144]  # width is the unchanged t axis; height is y
+      cstr3_fixed:
+        event_count_normalization: none  # retain its render-time fixed scale
 ```
 
 - `data.box_augmentation` optionally adds center-offset and size noise to boxes

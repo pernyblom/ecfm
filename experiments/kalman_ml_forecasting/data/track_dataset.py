@@ -41,6 +41,21 @@ _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 _DATASET_RGB_REPS = {"rgb": "RGB", "padded_rgb": "PADDED_RGB"}
 _DATASET_EVENT_FRAME_REPS = {"event_frames", "event_frame"}
+_AUTO_EVENT_COUNT_CHANNELS = {
+    "events": (0, 2),
+    "xy": (0, 2),
+    "xy_p45": (0, 2),
+    "xy_m45": (0, 2),
+    "xt": (0, 2),
+    "xt_my": (0, 2),
+    "yt": (0, 2),
+    "yt_mx": (0, 2),
+    "yt_p45": (0, 2),
+    "yt_m45": (0, 2),
+    "cstr3": (1,),
+    "cstr3_fixed": (1,),
+}
+_CHANNEL_NAME_TO_INDEX = {"red": 0, "r": 0, "green": 1, "g": 1, "blue": 2, "b": 2}
 
 
 def _pair(value: Any, *, name: str) -> tuple[float, float]:
@@ -360,6 +375,87 @@ def _spatial_cutout_bounds(
     return x0, y0, x1, y1
 
 
+def _normalize_event_count_channels(
+    arr: np.ndarray,
+    *,
+    rep: str,
+    cfg: Dict[str, Any],
+) -> np.ndarray:
+    """Normalize rendered event-count channels after the spatial cutout."""
+    normalization = cfg.get("event_count_normalization", "none")
+    if isinstance(normalization, dict):
+        normalization_cfg = dict(normalization)
+        mode = normalization_cfg.get("mode", "none")
+    else:
+        normalization_cfg = {}
+        mode = normalization
+    if isinstance(mode, bool):
+        mode = "min_max" if mode else "none"
+    mode = str(mode).lower().replace("-", "_")
+    mode_aliases = {
+        "off": "none",
+        "disabled": "none",
+        "false": "none",
+        "minmax": "min_max",
+        "per_channel_min_max": "min_max",
+        "per_channel_max": "max",
+        "global_min_max": "joint_min_max",
+        "global_max": "joint_max",
+    }
+    mode = mode_aliases.get(mode, mode)
+    if mode == "none":
+        return arr
+    if mode not in {"min_max", "max", "joint_min_max", "joint_max"}:
+        raise ValueError(
+            "data.spatial_cutout.event_count_normalization mode must be one of: "
+            "none, min_max, max, joint_min_max, joint_max."
+        )
+
+    channels_value = normalization_cfg.get("channels", "auto")
+    if channels_value == "auto" or channels_value is None:
+        channels = _AUTO_EVENT_COUNT_CHANNELS.get(_base_representation_name(rep).lower(), ())
+    else:
+        values = channels_value if isinstance(channels_value, (list, tuple)) else [channels_value]
+        channels_list: list[int] = []
+        for value in values:
+            if isinstance(value, str) and not value.strip().isdigit():
+                key = value.strip().lower()
+                if key not in _CHANNEL_NAME_TO_INDEX:
+                    raise ValueError(f"Unknown event-count channel {value!r} for representation {rep!r}.")
+                channel = _CHANNEL_NAME_TO_INDEX[key]
+            else:
+                channel = int(value)
+            if channel < 0 or channel >= arr.shape[2]:
+                raise ValueError(
+                    f"Event-count channel {channel} is out of range for representation {rep!r} "
+                    f"with {arr.shape[2]} channels."
+                )
+            if channel not in channels_list:
+                channels_list.append(channel)
+        channels = tuple(channels_list)
+    if not channels:
+        return arr
+
+    out = arr.copy()
+
+    def _scale(values: np.ndarray, *, subtract_min: bool) -> np.ndarray:
+        minimum = float(values.min()) if subtract_min else 0.0
+        maximum = float(values.max())
+        denominator = maximum - minimum
+        if denominator <= 0.0:
+            return np.zeros_like(values) if subtract_min else values.copy()
+        return np.clip((values - minimum) / denominator, 0.0, 1.0)
+
+    if mode in {"joint_min_max", "joint_max"}:
+        selected = out[:, :, list(channels)]
+        out[:, :, list(channels)] = _scale(selected, subtract_min=mode == "joint_min_max")
+    else:
+        subtract_min = mode == "min_max"
+        for channel in channels:
+            out[:, :, channel] = _scale(out[:, :, channel], subtract_min=subtract_min)
+    return out
+
+
 def _load_image(
     path: Path,
     size: Tuple[int, int],
@@ -388,6 +484,7 @@ def _load_image(
                 f"Fixed spatial cutout for representation '{rep}' produced "
                 f"{arr.shape[1]}x{arr.shape[0]}, but resolved image size is {size[0]}x{size[1]}."
             )
+        arr = _normalize_event_count_channels(arr, rep=rep, cfg=spatial_cutout)
         return torch.from_numpy(arr).permute(2, 0, 1)
     if img.size != (size[0], size[1]):
         img = img.resize(size, resample=Image.BILINEAR)
@@ -405,6 +502,7 @@ def _load_image(
         cut = np.full_like(arr, fill)
         cut[y0:y1, x0:x1, :] = arr[y0:y1, x0:x1, :]
         arr = cut
+    arr = _normalize_event_count_channels(arr, rep=rep, cfg=spatial_cutout)
     return torch.from_numpy(arr).permute(2, 0, 1)
 
 
