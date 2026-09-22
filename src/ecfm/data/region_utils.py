@@ -36,9 +36,12 @@ def sample_region(
         dt = float(rng.choice(region_time_scales))
     dx = min(dx, image_width)
     dy = min(dy, image_height)
-    x = int(rng.integers(0, max(1, image_width - dx)))
-    y = int(rng.integers(0, max(1, image_height - dy)))
-    t = float(rng.random() * max(1e-6, 1.0 - dt))
+    dt = min(dt, 1.0)
+    # NumPy's upper bound is exclusive; add one so edge-aligned regions are
+    # sampled as well. Full-frame regions still have the sole valid origin 0.
+    x = int(rng.integers(0, image_width - dx + 1))
+    y = int(rng.integers(0, image_height - dy + 1))
+    t = float(rng.random() * max(0.0, 1.0 - dt))
     plane = str(rng.choice(plane_types_active))
     return Region(x=x, y=y, t=t, dx=dx, dy=dy, dt=dt, plane=plane)
 

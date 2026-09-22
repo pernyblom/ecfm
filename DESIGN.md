@@ -5,6 +5,7 @@ event camera streams represented as (x, y, t, p) tuples. It targets fast
 iteration with small models and supports multi-scale spatio-temporal regions.
 
 ## Goals
+
 - Tokenize event streams into histogram patches over arbitrary regions.
 - Embed region position/size explicitly for flexible masking and scaling.
 - Train with MAE-style masked reconstruction over sampled regions, which may overlap.
@@ -12,19 +13,29 @@ iteration with small models and supports multi-scale spatio-temporal regions.
 - Keep a simple, modular PyTorch codebase that scales later.
 
 ## Data Representation
+
 ### Event Stream
+
 Each event is `(x, y, t, p)` where `p` is polarity. Input events are assumed to
-be sorted by time or can be sorted at load time.
+use pixel coordinates, normalized sequence time, and polarity IDs 0 or 1. The
+histogram builders do not require time-sorted input.
 
 ### Region Definition
+
 Regions are defined by `(x, y, t, dx, dy, dt)` with an aggregation plane:
-- `xy`: integrate over time bins to produce spatial histograms per region.
+
+- `xy`: integrate over the region's time interval to produce a spatial histogram.
 - `xt`: integrate over y to produce x-vs-time histograms.
 - `yt`: integrate over x to produce y-vs-time histograms.
+- `xy_p45`, `xy_m45`, `yt_p45`, and `yt_m45`: supported rotated projections.
 
-Region selection is flexible and can be random, grid-based, or dataset-specific.
+Region selection is random or grid-based. Random regions independently sample
+their spatial size, duration, origin, and plane and may overlap. Spatial and
+temporal origins are constrained so the complete region remains in bounds;
+full-frame and full-duration regions start at zero.
 
 ### Histogram Patch
+
 1) Aggregate event counts into a histogram H over the chosen plane.
 2) Normalize per polarity channel using the configured normalization mode
    (`region_max`, `region_sum`, `region_mean`, `none`, or a fixed divider).
@@ -33,7 +44,9 @@ Region selection is flexible and can be random, grid-based, or dataset-specific.
 5) Create a two-channel patch tensor for negative and positive polarity.
 
 ## Tokenization
+
 Each region yields one token with:
+
 - Patch: resized two-channel polarity histogram.
 - Metadata: normalized position/size, normalized time, corresponding times in
   seconds, and total sequence duration.
@@ -46,8 +59,13 @@ are also included in metadata.
 Metadata is injected with an MLP and added to the patch embedding together with
 a learned plane embedding.
 
+The separate density target is
+`log1p(total_events / (dx * dy * dt_seconds))`. It is not part of the token
+metadata and only contributes to training when `count_loss_weight > 0`.
+
 ## Model Architecture
-- Patch encoder: small CNN or linear projection on flattened patch.
+
+- Patch encoder: two convolution/ReLU blocks followed by a linear projection.
 - Metadata encoder: MLP for region attributes.
 - Token vector: sum patch, metadata, and plane embeddings in `d_model`.
 - Transformer encoder with optional learned relative attention bias.
@@ -71,6 +89,7 @@ returns a `valid_mask`; padded keys are excluded from encoder and decoder
 attention, and padded model outputs are zeroed.
 
 Small-model starting point:
+
 - `d_model`: 192
 - `n_layers`: 4
 - `n_heads`: 3
@@ -83,40 +102,47 @@ receives a learned mask token together with that region's metadata and plane
 identity. This is a masked-token autoencoder, not the original MAE design where
 the encoder receives visible tokens only. The decoder reconstructs masked
 tokens using:
-- Patch reconstruction loss: L1 or MSE on normalized patches.
-- Optional event-rate loss: L1 on the log event-rate target.
-Optionally use a contrastive term to keep representations stable across scales.
 
-Mask sampling variants:
-- Random subsets across planes (xy/xt/yt).
-- Scale-aware masks (mask larger regions more often).
-- Coverage constraints to avoid leaving large gaps.
+- Patch reconstruction loss: summed MSE, divided by the number of masked
+  regions. An optional Gaussian blur can be applied to prediction and target.
+- Optional density loss: L1 between `log1p(softplus(prediction))` and the log
+  event-density target.
+
+Masking is uniform over valid tokens. For `V` valid regions, the implementation
+masks `int(V * mask_ratio)` regions. Padding is never selected as a target.
 
 ## Multi-Scale Strategy
+
 Represent multiple region sizes within the same sequence:
+
 - Sample a mix of dx/dy/dt scales per batch.
 - Encode scale explicitly in metadata.
-- Optionally add a scale token per scale group.
+- Configure scales as absolute pixels or fractions of image dimensions.
+- Optionally sample the token count from `num_regions_choices`; samples are
+  padded to the largest configured count.
 
 ## Augmentations
-All augmentations operate on events:
-- Spatial rotations (90/180/270 or arbitrary with interpolation).
-- Spatial flips.
-- Time warp: non-linear t->t' with monotonic mapping.
-- Optional polarity flips.
 
-Temporal jitter can be optional; scale diversity may be sufficient.
+The currently wired training augmentation is arbitrary spatial rotation of
+event coordinates using nearest-neighbor rounding. It is enabled with
+`augmentations: ["rotate"]` and `rotation_max_deg > 0`. Rotation preserves time
+and polarity and clips coordinates to image bounds.
 
 ## Datasets
-Support heterogeneous datasets:
-- Stationary vs moving sensors.
-- Varying resolutions and time spans.
-- Normalize coordinates to dataset-specific bounds.
 
-## Evaluation Ideas
+The pretraining loader currently supports synthetic events, THU-EACT, and
+DVS-Lip. Dataset configuration supplies sensor resolution and timestamp units;
+each loaded sequence is normalized to `[0, 1]` in time before region sampling.
+
+## Evaluation and Diagnostics
+
 - Reconstruction error across masked regions and scales.
-- Downstream tasks: classification, optical flow, detection.
-- Probe representation consistency across planes.
+- Saved ground-truth/prediction images for a fixed masked sample across epochs.
+- Linear probing and supervised fine-tuning for supported classification paths.
+
+Optical flow, representation consistency across planes, and a contrastive
+pretraining term remain possible future work; they are not implemented in the
+region-MAE training path.
 
 ## Implemented Components
 
@@ -128,6 +154,7 @@ Support heterogeneous datasets:
    and fine-tuning entrypoints.
 
 ## Open Questions
-- Best loss weighting between patch vs event count.
+
+- Best loss weighting between patch reconstruction and event density.
 - Patch size vs region size tradeoffs.
 - How to mix plane types per batch for stable training.

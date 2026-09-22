@@ -1,7 +1,9 @@
 import pytest
 import torch
 
+from ecfm.models.rel_attention import RelativeBias
 from ecfm.models.mae import EventMAE
+from ecfm.training.train import train_one_epoch
 
 
 def _model(use_relative_bias: bool) -> EventMAE:
@@ -73,3 +75,112 @@ def test_valid_mask_shape_is_checked() -> None:
             plane_ids,
             valid_mask=torch.ones(1, 5),
         )
+
+
+def test_relative_bias_shape_and_gradients() -> None:
+    module = RelativeBias(num_heads=3, hidden_dim=8)
+    metadata = (torch.rand(2, 4, 9) + 0.1).requires_grad_()
+
+    bias = module(metadata)
+    assert bias.shape == (2, 3, 4, 4)
+    assert torch.isfinite(bias).all()
+
+    bias.square().mean().backward()
+    assert metadata.grad is not None
+    assert torch.isfinite(metadata.grad).all()
+    for parameter in module.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+
+
+def test_relative_bias_encoder_is_permutation_equivariant() -> None:
+    model = _model(use_relative_bias=True)
+    torch.manual_seed(2)
+    patches = torch.randn(2, 6, 2, 8, 8)
+    metadata = torch.rand(2, 6, 9) + 0.1
+    plane_ids = torch.randint(0, 3, (2, 6))
+    valid_mask = torch.tensor(
+        [[1, 1, 1, 1, 0, 0], [1, 1, 1, 1, 1, 1]],
+        dtype=torch.float32,
+    )
+    permutation = torch.tensor([2, 5, 0, 4, 1, 3])
+
+    with torch.no_grad():
+        encoded = model.encode(
+            patches,
+            metadata,
+            plane_ids,
+            valid_mask=valid_mask,
+        )
+        permuted = model.encode(
+            patches[:, permutation],
+            metadata[:, permutation],
+            plane_ids[:, permutation],
+            valid_mask=valid_mask[:, permutation],
+        )
+
+    torch.testing.assert_close(permuted, encoded[:, permutation])
+
+
+def test_masked_relative_bias_forward_backward() -> None:
+    model = _model(use_relative_bias=True).train()
+    torch.manual_seed(3)
+    patches = torch.randn(2, 6, 2, 8, 8)
+    metadata = torch.rand(2, 6, 9) + 0.1
+    plane_ids = torch.randint(0, 3, (2, 6))
+    valid_mask = torch.tensor(
+        [[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 0]],
+        dtype=torch.float32,
+    )
+    mask = torch.tensor(
+        [[1, 0, 0, 0, 0, 0], [0, 1, 0, 1, 0, 0]],
+        dtype=torch.bool,
+    )
+
+    pred_patch, pred_count, decoded = model(
+        patches,
+        metadata,
+        plane_ids,
+        mask=mask,
+        valid_mask=valid_mask,
+    )
+    assert pred_patch.shape == (2, 6, 2, 8, 8)
+    assert pred_count.shape == (2, 6, 1)
+    assert decoded.shape == (2, 6, 16)
+
+    loss = pred_patch[mask].square().mean() + pred_count[mask].square().mean()
+    loss.backward()
+    assert model.mask_token.grad is not None
+    assert torch.isfinite(model.mask_token.grad).all()
+    assert model.rel_bias.mlp[0].weight.grad is not None
+    assert torch.isfinite(model.rel_bias.mlp[0].weight.grad).all()
+
+
+def test_train_one_epoch_handles_variable_region_counts() -> None:
+    model = _model(use_relative_bias=True).train()
+    torch.manual_seed(4)
+    batch = {
+        "patches": torch.randn(2, 6, 2, 8, 8),
+        "metadata": torch.rand(2, 6, 9) + 0.1,
+        "plane_ids": torch.randint(0, 3, (2, 6)),
+        "event_counts": torch.rand(2, 6, 1),
+        "valid_mask": torch.tensor(
+            [[1, 1, 1, 0, 0, 0], [1, 1, 1, 1, 1, 0]],
+            dtype=torch.float32,
+        ),
+    }
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    before = model.mask_token.detach().clone()
+
+    metrics = train_one_epoch(
+        model,
+        [batch],
+        optimizer,
+        torch.device("cpu"),
+        mask_ratio=0.5,
+        count_loss_weight=0.1,
+    )
+
+    assert metrics["loss"] > 0
+    assert torch.isfinite(torch.tensor(metrics["loss"]))
+    assert not torch.equal(before, model.mask_token.detach())

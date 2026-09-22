@@ -69,6 +69,9 @@ def main() -> None:
     ema_alpha = 0.9
     probe_cache = None
     probe_enabled = cfg.train.probe_every > 0
+    recon_batch = None
+    recon_mask = None
+    recon_generator = torch.Generator().manual_seed(cfg.train.seed + 1)
 
     if probe_enabled and cfg.data.dataset_name != "thu-eact":
         print("Linear probe only supports thu-eact right now; disabling.")
@@ -100,30 +103,38 @@ def main() -> None:
 
         if cfg.train.recon_every > 0 and step % cfg.train.recon_every == 0:
             model.eval()
-            batch = next(iter(loader))
-            patches = batch["patches"].to(device)
-            metadata = batch["metadata"].to(device)
-            plane_ids = batch["plane_ids"].to(device)
-            valid_mask = batch.get("valid_mask")
+            if recon_batch is None:
+                sampled_batch = next(iter(loader))
+                recon_batch = {
+                    key: value[:1].clone()
+                    for key, value in sampled_batch.items()
+                    if key in {"patches", "metadata", "plane_ids", "valid_mask"}
+                }
+                valid = recon_batch.get("valid_mask")
+                if valid is None:
+                    recon_mask = random_mask(
+                        recon_batch["patches"].shape[1],
+                        cfg.model.mask_ratio,
+                        generator=recon_generator,
+                    ).unsqueeze(0)
+                else:
+                    valid_tokens = valid[0].bool()
+                    recon_mask = torch.zeros_like(valid, dtype=torch.bool)
+                    if valid_tokens.any():
+                        sampled = random_mask(
+                            int(valid_tokens.sum()),
+                            cfg.model.mask_ratio,
+                            generator=recon_generator,
+                        )
+                        recon_mask[0, valid_tokens] = sampled
+
+            patches = recon_batch["patches"].to(device)
+            metadata = recon_batch["metadata"].to(device)
+            plane_ids = recon_batch["plane_ids"].to(device)
+            valid_mask = recon_batch.get("valid_mask")
             if valid_mask is not None:
                 valid_mask = valid_mask.to(device)
-            mask_list = []
-            if valid_mask is None:
-                for _ in range(patches.shape[0]):
-                    mask_list.append(
-                        random_mask(patches.shape[1], cfg.model.mask_ratio).to(device)
-                    )
-            else:
-                for i in range(patches.shape[0]):
-                    valid = valid_mask[i].bool()
-                    if valid.sum() == 0:
-                        mask_list.append(torch.zeros_like(valid, dtype=torch.bool))
-                    else:
-                        sampled = random_mask(int(valid.sum()), cfg.model.mask_ratio).to(device)
-                        full_mask = torch.zeros_like(valid, dtype=torch.bool)
-                        full_mask[valid] = sampled
-                        mask_list.append(full_mask)
-            mask = torch.stack(mask_list, dim=0)
+            mask = recon_mask.to(device)
             with torch.no_grad():
                 pred_patches, _, _ = model(
                     patches,

@@ -23,14 +23,16 @@ visible-tokens-only MAE architecture: masked region tokens remain in the
 encoder after their patch content has been hidden.
 
 ## Layout
+
 - `src/ecfm`: library code
 - `configs`: YAML configs
 - `scripts`: training and utility entrypoints
 - `data`: placeholder for datasets
-- `tests`: basic unit tests
+- `tests`: unit and training-path regression tests
 - `docs`: extra docs
 
 ## Quick Start
+
 1) Create a venv and install dependencies.
 2) Run a dry training loop with synthetic events.
 
@@ -40,6 +42,10 @@ python -m venv .venv
 pip install -e .
 python scripts\train.py --config configs\small.yaml
 ```
+
+In the current trainer, `train.num_steps` is the number of complete passes over
+the data loader. Console `step` values and reconstruction `step_*` directories
+therefore correspond to zero-based epochs.
 
 ## CUDA Setup (Windows)
 
@@ -93,6 +99,7 @@ PyTorch later, upgrade Triton to the matching minor version as documented by
 the `triton-windows` project and retest `torch.compile`.
 
 ## THU-EACT-50-CHL Smoke Run
+
 If the dataset is placed at `datasets/THU-EACT-50-CHL`, run:
 ```powershell
 python scripts\train.py --config configs\thu_smoke.yaml
@@ -104,6 +111,31 @@ relative-attention-bias path. For DVS-Lip, use:
 ```powershell
 python scripts\train.py --config configs\dvslip_pretrain_small.yaml
 ```
+
+For a bounded THU learning check with random `xt`/`yt` regions, variable token
+counts, and reconstruction images after every epoch, run:
+
+```powershell
+python scripts\train.py --config configs\thu_pretrain_relative_bias_recon.yaml
+```
+
+The run writes a fixed example and mask to
+`outputs/thu_relative_bias_recon/recon/step_*/`. Each masked token has a
+`*_gt.png` and `*_pred.png` image, making reconstruction changes comparable
+across epochs. Periodic checkpoints are written under
+`outputs/thu_relative_bias_recon/checkpoints/`.
+
+## Tests
+
+Run the complete suite from the repository root:
+
+```powershell
+python -m pytest -q
+```
+
+The region-MAE tests cover relative-bias shapes and gradients, token-order
+equivariance, masked forward/backward execution, variable region counts, and
+padding isolation. Region sampling tests cover spatial and temporal boundaries.
 
 ## Image Folder Media
 Convert a name-sorted slice of an image folder to MP4 or GIF:

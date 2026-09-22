@@ -1,0 +1,88 @@
+train:
+  batch_size: 32
+  num_steps: 500
+  lr: 0.0002
+  device: cuda
+  seed: 0
+  # One outer training step is one pass over the loader, so this dumps every epoch.
+  recon_every: 1
+  recon_num_patches: 16
+  recon_out_dir: outputs/thu_relative_bias_recon/recon
+  recon_upscale: 8
+  probe_every: 0
+  probe_subset_size: 16
+  probe_subset_seed: 0
+  probe_region_seed: 0
+  probe_regions_per_sample: 32
+  probe_epochs: 10
+  probe_batch_size: 32
+  probe_lr: 0.001
+  probe_cache_dir: outputs/thu_relative_bias_recon/linear_probe_cache
+  patch_loss_blur_radius: 1
+  count_loss_weight: 0.0
+  checkpoint_dir: outputs/thu_relative_bias_recon/checkpoints
+  checkpoint_every: 5
+  resume_path: ""
+  load_model_only: false
+
+model:
+  patch_size: 32
+  embed_dim: 256
+  num_heads: 4
+  num_layers: 6
+  decoder_embed_dim: 128
+  decoder_num_heads: 4
+  decoder_num_layers: 2
+  mlp_ratio: 4.0
+  plane_embed_dim: 64
+  metadata_dim: 9
+  mask_ratio: 0.5
+  use_pos_embedding: false
+  use_relative_bias: true
+  rel_bias_hidden_dim: 64
+
+data:
+  dataset_name: "thu-eact"
+  dataset_path: "datasets/THU-EACT-50-CHL"
+  split: "train"
+  num_samples: 0
+  # A bounded subset makes this a practical learning/visualization check.
+  max_samples: 512
+  max_events: 250000
+  image_width: 346
+  image_height: 260
+  time_unit: 0.000001
+  time_bins: 64
+  region_scale_mode: fraction
+  region_scales: [0.25, 0.5, 0.75]
+  region_scales_x: [0.25, 0.5, 0.75]
+  region_scales_y: [0.25, 0.5, 0.75]
+  region_time_scales: [0.25, 0.5, 0.75]
+  region_sampling: random
+  grid_x: 4
+  grid_y: 4
+  grid_t: 1
+  grid_plane_mode: cycle
+  fixed_region_sizes: false
+  plane_types: ["xt", "yt"]
+  plane_types_active: []
+  num_regions: 0
+  # Variable counts deliberately exercise valid_mask and padded attention.
+  num_regions_choices: [8, 16, 24, 32]
+  subset_seed: 17336
+  fixed_region_seed: -1
+  fixed_region_positions_global: false
+  fixed_single_region: false
+  patch_divider: 0
+  patch_norm: region_max
+  patch_norm_eps: 0.000001
+  augmentations: []
+  rotation_max_deg: 0.0
+  augmentation_invalidate_prob: 0.0
+  cache_max_samples: 0
+  cache_token_max_samples: 0
+  cache_token_variants_per_sample: 0
+  cache_token_dir: outputs/thu_relative_bias_recon/token_cache
+  cache_token_variant_mode: random
+  cache_token_clear_on_start: false
+  cache_token_drop_prob: 0.0
