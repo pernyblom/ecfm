@@ -417,7 +417,13 @@ def run_epoch(
         if valid_mask is not None:
             valid_mask = valid_mask.to(device)
         with torch.set_grad_enabled(train_mode):
-            encoded = model.encode(patches, metadata, plane_ids, mask=None)
+            encoded = model.encode(
+                patches,
+                metadata,
+                plane_ids,
+                mask=None,
+                valid_mask=valid_mask,
+            )
             if valid_mask is None:
                 pooled = encoded.mean(dim=1)
             else:

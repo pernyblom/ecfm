@@ -125,7 +125,13 @@ def main() -> None:
                         mask_list.append(full_mask)
             mask = torch.stack(mask_list, dim=0)
             with torch.no_grad():
-                pred_patches, _, _ = model(patches, metadata, plane_ids, mask=mask)
+                pred_patches, _, _ = model(
+                    patches,
+                    metadata,
+                    plane_ids,
+                    mask=mask,
+                    valid_mask=valid_mask,
+                )
             dump_reconstructions(
                 step=step,
                 patches=patches,

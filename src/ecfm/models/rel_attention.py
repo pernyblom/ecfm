@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import torch
@@ -65,8 +64,13 @@ class BiasMultiheadAttention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, attn_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-        # x: [B, N, D], attn_bias: [B, H, N, N]
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_bias: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        # x: [B, N, D], attn_bias: [B, H, N, N], key_padding_mask: [B, N]
         bsz, num_tokens, _ = x.shape
         qkv = self.in_proj(x)
         qkv = qkv.view(bsz, num_tokens, 3, self.num_heads, self.head_dim)
@@ -76,12 +80,22 @@ class BiasMultiheadAttention(nn.Module):
         attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
         if attn_bias is not None:
             attn = attn + attn_bias
+        if key_padding_mask is not None:
+            if key_padding_mask.shape != (bsz, num_tokens):
+                raise ValueError("key_padding_mask must have shape [B, N]")
+            attn = attn.masked_fill(
+                key_padding_mask[:, None, None, :],
+                torch.finfo(attn.dtype).min,
+            )
         attn = F.softmax(attn, dim=-1)
         attn = self.dropout(attn)
 
         out = torch.matmul(attn, v)
         out = out.transpose(1, 2).reshape(bsz, num_tokens, self.embed_dim)
-        return self.out_proj(out)
+        out = self.out_proj(out)
+        if key_padding_mask is not None:
+            out = out.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
+        return out
 
 
 class RelTransformerEncoderLayer(nn.Module):
@@ -95,9 +109,20 @@ class RelTransformerEncoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.activation = nn.GELU()
 
-    def forward(self, x: torch.Tensor, attn_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = x + self.self_attn(self.norm1(x), attn_bias=attn_bias)
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_bias: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x = x + self.self_attn(
+            self.norm1(x),
+            attn_bias=attn_bias,
+            key_padding_mask=key_padding_mask,
+        )
         x = x + self.dropout(self.linear2(self.activation(self.linear1(self.norm2(x)))))
+        if key_padding_mask is not None:
+            x = x.masked_fill(key_padding_mask.unsqueeze(-1), 0.0)
         return x
 
 
@@ -116,7 +141,16 @@ class RelTransformerEncoder(nn.Module):
             ]
         )
 
-    def forward(self, x: torch.Tensor, attn_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_bias: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         for layer in self.layers:
-            x = layer(x, attn_bias=attn_bias)
+            x = layer(
+                x,
+                attn_bias=attn_bias,
+                key_padding_mask=key_padding_mask,
+            )
         return x

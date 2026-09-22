@@ -1,7 +1,26 @@
 # Event Camera Foundation Model (ECFM)
 
-This repo scaffolds a PyTorch project for a transformer-based foundation model
-over event camera data. See `DESIGN.md` for the design draft.
+This repo contains a PyTorch project for learning representations from event
+camera streams. The main pretraining path is a masked region-token autoencoder
+with learned relative attention bias. See `DESIGN.md` for architecture details.
+
+## Region MAE Path
+
+An event stream is sampled into spatio-temporal regions. Each region becomes a
+two-channel histogram patch plus normalized `(x, y, dx, dy, t, dt)` metadata
+and a projection-plane ID. During pretraining, selected patch contents are
+replaced by a learned mask token. Region metadata and plane identity remain
+visible so the model knows which region it is reconstructing.
+
+With `use_relative_bias: true`, every encoder attention head receives a learned
+pairwise bias based on relative position and log scale ratios. Absolute token
+position embeddings are normally disabled for this path because token order is
+not spatial order. Padded regions are excluded from encoder and decoder
+attention through each sample's `valid_mask`.
+
+The implementation is MAE-style but intentionally differs from the original
+visible-tokens-only MAE architecture: masked region tokens remain in the
+encoder after their patch content has been hidden.
 
 ## Layout
 - `src/ecfm`: library code
@@ -77,6 +96,13 @@ the `triton-windows` project and retest `torch.compile`.
 If the dataset is placed at `datasets/THU-EACT-50-CHL`, run:
 ```powershell
 python scripts\train.py --config configs\thu_smoke.yaml
+```
+
+Both `configs/thu_smoke.yaml` and `configs/thu_pretrain_small.yaml` exercise the
+relative-attention-bias path. For DVS-Lip, use:
+
+```powershell
+python scripts\train.py --config configs\dvslip_pretrain_small.yaml
 ```
 
 ## Image Folder Media

@@ -279,7 +279,13 @@ def train_one_epoch(
                     mask_list.append(full_mask)
         mask = torch.stack(mask_list, dim=0)
 
-        pred_patches, pred_counts, _ = model(patches, metadata, plane_ids, mask=mask)
+        pred_patches, pred_counts, _ = model(
+            patches,
+            metadata,
+            plane_ids,
+            mask=mask,
+            valid_mask=valid_mask,
+        )
 
         mask_patch = mask.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
         if blur_kernel is not None:
