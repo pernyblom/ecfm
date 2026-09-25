@@ -184,6 +184,91 @@ cache is shared with other experiments. This favors correct action pairing over
 throughput. Validation costs roughly one rendering pair per recording/action.
 Increase `num_workers` if I/O/tokenization dominates, accounting for worker RAM.
 
+## Fixed downstream layouts
+
+Downstream region sampling can be configured independently of pretraining with
+`downstream.regions`. Without this block, the existing random sampler remains
+in use. Grid and multiscale layouts have the same geometry for every recording
+and every epoch, including finetuning. Time coordinates are fractions of each
+recording; absolute durations and observed contents still differ.
+
+Two example configs provide equal **27-token** budgets:
+
+| Config | Volumetric windows | Projection tokens |
+| --- | --- | --- |
+| `configs/thu_downstream_grid.yaml` | `3 x 3 x 1` grid: 9 windows | 9 x 3 = 27 |
+| `configs/thu_downstream_multiscale.yaml` | Full volume + `2 x 2 x 2`: 9 windows | 9 x 3 = 27 |
+
+Each window is projected in XY, XT, and YT. This pair compares a spatial grid
+with a hierarchy that also splits time; it is not a controlled isolation of
+scale alone. Customize grid dimensions/levels for other comparisons.
+
+```yaml
+downstream:
+  regions:
+    mode: grid
+    grid: [3, 3, 1]       # x, y, t subdivisions
+    plane_mode: all
+    num_regions: 27      # optional assertion of the resulting token count
+```
+
+For multiscale, replace `grid` with `levels`:
+
+```yaml
+downstream:
+  regions:
+    mode: multiscale
+    levels: [[1, 1, 1], [2, 2, 2]]
+    plane_mode: all
+    num_regions: 27
+```
+
+Every level tiles the entire volume. Spatial boundaries use integer pixel
+partitions; temporal boundaries divide normalized time uniformly. Different
+levels overlap intentionally. The token count is derived from the layout, never
+achieved by randomly selecting or duplicating windows. An explicit `num_regions`
+must match it. With `plane_mode: all`, count is the sum of grid-cell counts times
+`len(data.plane_types)`. With `cycle`, each cell gets one projection, cycling
+through the plane list within each level, and the count is just the cell total.
+All layout tokens are valid, including windows with no events.
+
+A fixed-count random baseline is also supported:
+
+```yaml
+downstream:
+  regions: {mode: random, num_regions: 27}
+```
+
+This retains fixed per-recording draws for probing/evaluation and per-epoch
+resampling for finetuning. Random spatial/time scales still come from `data`.
+Grid/multiscale modes ignore those random scale/count settings. None of these
+downstream settings changes SSL sampling. If `data.max_events` is nonzero,
+finetuning can still resample events each epoch even with fixed window geometry.
+
+```powershell
+python -m experiments.region_worldmodel.downstream --config experiments/region_worldmodel/configs/thu_downstream_grid.yaml --checkpoint outputs/region_worldmodel/best.pt --mode linear_probe
+python -m experiments.region_worldmodel.downstream --config experiments/region_worldmodel/configs/thu_downstream_multiscale.yaml --checkpoint outputs/region_worldmodel/best.pt --mode linear_probe
+```
+
+Use `--mode finetune` for either layout. Configs inherit the current `thu.yaml`
+training/data settings; no new pretraining is required. Explicit layouts write
+to directories such as `linear_probe_grid_27` and `finetune_multiscale_27` under
+`train.output_dir`; use `--output-dir` when comparing multiple layouts of the
+same type and count. Results record the region specification and maximum token
+count. These configs do not change the current default sampler.
+
+Existing region-world-model checkpoints work with larger or smaller downstream
+token counts because the encoder uses relative attention and disables absolute
+position embeddings. The unused absolute embedding tensors retain their original
+checkpoint shapes. Downstream checkpoints therefore include `backbone_config`
+alongside the run `config`: construct `RegionWorldModel(backbone_config)`, wrap
+it in `Classifier`, and load the classifier state. Dataset construction uses the
+run `config`. Plane IDs, patch dimensions and normalization must still agree.
+This compatibility does not guarantee equal accuracy when the region distribution
+differs from pretraining. All tokens retain equal weight in mean pooling, so the
+multiscale example gives the eight fine windows more combined weight than the
+single global window.
+
 ## How to decide whether it works
 
 Validation reports prediction MSE, latent standard deviation, per-action MSE,

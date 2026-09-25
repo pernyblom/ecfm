@@ -6,6 +6,7 @@ import math
 import yaml
 
 from .actions import parse_actions
+from .regions import downstream_layout
 
 
 def load_config(path):
@@ -28,6 +29,7 @@ def load_config(path):
 
 def validate(cfg):
     parse_actions(cfg['actions'])
+    downstream_layout(cfg)
     d, m, t, loss = (cfg[k] for k in ('data', 'model', 'train', 'loss'))
     for key in ('image_width', 'image_height', 'time_bins'):
         if not isinstance(d[key], int) or d[key] < 1:

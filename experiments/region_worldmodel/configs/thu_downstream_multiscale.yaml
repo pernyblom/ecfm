@@ -1,0 +1,7 @@
+extends: thu.yaml
+downstream:
+  regions:
+    mode: multiscale
+    levels: [[1, 1, 1], [2, 2, 2]]
+    plane_mode: all
+    num_regions: 27

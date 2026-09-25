@@ -8,6 +8,7 @@ from torch.utils.data import Dataset
 from ecfm.data.region_utils import sample_region, resolve_region_scales
 from ecfm.data.tokenizer import build_patch
 from .actions import parse_actions, transform_region
+from .regions import downstream_layout
 
 
 def read_entries(root: Path, split: str) -> list[tuple[Path, int]]:
@@ -73,6 +74,15 @@ class RegionActionDataset(Dataset):
             d.get('region_scales_y', []), self.width, self.height,
             d.get('region_scale_mode', 'fraction'))
         self.max_regions = max(d['num_regions_choices'])
+        self.fixed_regions = downstream_layout(cfg) if not paired else None
+        self.region_counts = d['num_regions_choices']
+        if not paired:
+            count = cfg.get('downstream', {}).get('regions', {}).get('num_regions')
+            if self.fixed_regions is not None:
+                self.max_regions = len(self.fixed_regions)
+            elif count is not None:
+                self.region_counts = [count]
+                self.max_regions = count
 
     def __len__(self):
         # Validation enumerates every action on identical source regions.
@@ -108,9 +118,11 @@ class RegionActionDataset(Dataset):
         limit = d.get('max_events', 0)
         if limit > 0 and len(events) > limit:
             events = events[rng.choice(len(events), limit, replace=False)]
-        count = int(rng.choice(d['num_regions_choices']))
-        regions = [sample_region(rng, self.width, self.height, *self.scales,
-                   d['region_time_scales'], d['plane_types'], False) for _ in range(count)]
+        regions = self.fixed_regions
+        if regions is None:
+            count = int(rng.choice(self.region_counts))
+            regions = [sample_region(rng, self.width, self.height, *self.scales,
+                       d['region_time_scales'], d['plane_types'], False) for _ in range(count)]
         result = {'source': self.render(events, duration, regions), 'label': label}
         if self.paired:
             if action_index is None:

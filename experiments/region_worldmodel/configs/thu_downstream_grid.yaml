@@ -1,0 +1,7 @@
+extends: thu.yaml
+downstream:
+  regions:
+    mode: grid
+    grid: [3, 3, 1]
+    plane_mode: all
+    num_regions: 27

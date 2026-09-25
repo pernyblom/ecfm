@@ -5,7 +5,7 @@ data:
   val_fraction: 0.15
   split_seed: 42
   region_seed: 123
-  max_samples: 0
+  max_samples: 512
   max_events: 0
   image_width: 346
   image_height: 260
@@ -26,8 +26,8 @@ model:
 train:
   device: cuda
   seed: 7
-  batch_size: 32
-  epochs: 50
+  batch_size: 128
+  epochs: 2
   lr: 0.0002
   weight_decay: 0.01
   num_workers: 0
@@ -40,7 +40,7 @@ loss:
   integration_steps: 17
   reconstruction_weight: 0.0
 downstream:
-  epochs: 30
+  epochs: 2
   batch_size: 32
   lr: 0.001
   encoder_lr: 0.00002

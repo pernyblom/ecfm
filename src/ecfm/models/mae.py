@@ -139,7 +139,9 @@ class EventMAE(nn.Module):
         valid_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         bsz, num_tokens = patches.shape[:2]
-        if num_tokens != self.num_tokens:
+        # Relative attention has no token-count-dependent parameters. The
+        # checkpoint's unused absolute embeddings may retain their old length.
+        if self.use_pos_embedding and num_tokens != self.num_tokens:
             raise ValueError("num_tokens mismatch with configured model")
         padding_mask = self._padding_mask(valid_mask, bsz, num_tokens)
 

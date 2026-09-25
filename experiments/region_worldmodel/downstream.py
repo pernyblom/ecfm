@@ -69,10 +69,12 @@ def run(cfg, checkpoint, mode, output_dir=None):
     if cfg['model'] != state['config']['model']:
         raise ValueError('Model config differs from pretrained checkpoint')
     for key in ('image_width', 'image_height', 'time_unit', 'time_bins',
-                'plane_types', 'num_regions_choices', 'patch_norm'):
+                'plane_types', 'patch_norm'):
         if cfg['data'].get(key) != state['config']['data'].get(key):
             raise ValueError(f'Data feature config differs in {key}')
-    backbone = RegionWorldModel(cfg)
+    # Keep unused absolute embedding shapes compatible with the checkpoint;
+    # relative attention supports downstream sequences of a different length.
+    backbone = RegionWorldModel(state['config'])
     backbone.load_state_dict(state['model'])
     settings = cfg['downstream']
     device = torch.device(cfg['train']['device'])
@@ -86,7 +88,7 @@ def run(cfg, checkpoint, mode, output_dir=None):
     for _, label in train_entries + val_entries + test_entries:
         if not 0 <= label < settings['num_classes']:
             raise ValueError('Labels must be zero-based class indices within num_classes')
-    # Fixed regions for the probe keep the feature extraction protocol stable.
+    # Explicit grid/multiscale layouts are fixed even during finetuning.
     train_ds = RegionActionDataset(cfg, train_entries, training=mode == 'finetune', paired=False)
     val_ds = RegionActionDataset(cfg, val_entries, paired=False)
     test_ds = RegionActionDataset(cfg, test_entries, paired=False)
@@ -98,7 +100,10 @@ def run(cfg, checkpoint, mode, output_dir=None):
         groups.append({'params': [p for p in backbone.parameters() if p.requires_grad],
                        'lr': settings['encoder_lr']})
     optimizer = torch.optim.AdamW(groups, weight_decay=settings['weight_decay'])
-    output = Path(output_dir or Path(cfg['train']['output_dir']) / mode)
+    region_spec = settings.get('regions', {})
+    layout_name = region_spec.get('mode', 'random')
+    run_name = mode if not region_spec else f'{mode}_{layout_name}_{train_ds.max_regions}'
+    output = Path(output_dir or Path(cfg['train']['output_dir']) / run_name)
     output.mkdir(parents=True, exist_ok=True)
     best = float('inf')
     for epoch in range(settings['epochs']):
@@ -112,12 +117,14 @@ def run(cfg, checkpoint, mode, output_dir=None):
         if validation['loss'] < best:
             best = validation['loss']
             torch.save(dict(model=model.state_dict(), config=cfg, mode=mode,
+                            backbone_config=state['config'],
                             epoch=epoch, validation=validation,
                             pretrained_checkpoint=str(checkpoint)), output / 'best.pt')
     best_state = torch.load(output / 'best.pt', map_location=device, weights_only=True)
     model.load_state_dict(best_state['model'])
     test = classification_epoch(model, test_loader, device)
     result = dict(mode=mode, checkpoint=str(checkpoint), best_epoch=best_state['epoch'],
+                  regions=region_spec, max_region_tokens=train_ds.max_regions,
                   validation=best_state['validation'], test=test)
     (output / 'results.json').write_text(json.dumps(result, indent=2))
     print(json.dumps(result), flush=True)

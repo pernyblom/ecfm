@@ -12,6 +12,7 @@ from experiments.region_worldmodel.data import RegionActionDataset, load_events,
 from experiments.region_worldmodel.downstream import Classifier, run as downstream_run
 from experiments.region_worldmodel.model import RegionWorldModel, objective
 from experiments.region_worldmodel.train import make_loader, run
+from experiments.region_worldmodel.regions import downstream_layout
 
 
 def action(**kwargs):
@@ -151,3 +152,76 @@ def test_end_to_end_checkpoints_and_resume(cfg):
     run(cfg, output / 'last.pt')
     state = torch.load(output / 'last.pt', weights_only=True)
     assert state['epoch'] == 1
+
+
+@pytest.mark.parametrize('spec', [
+    dict(mode='grid', grid=[3, 3, 1], num_regions=27),
+    dict(mode='multiscale', levels=[[1, 1, 1], [2, 2, 2]], num_regions=27)])
+def test_fixed_layout_coverage_and_epoch_independence(cfg, spec):
+    cfg['downstream']['regions'] = spec
+    regions = downstream_layout(cfg)
+    assert len(regions) == 27
+    for r in regions:
+        assert 0 <= r.x < r.x + r.dx <= 20
+        assert 0 <= r.y < r.y + r.dy <= 20
+        assert 0 <= r.t < r.t + r.dt <= 1
+    # Every level covers the volume exactly once per projection plane.
+    groups = [regions] if spec['mode'] == 'grid' else [regions[:3], regions[3:]]
+    for group in groups:
+        for plane in cfg['data']['plane_types']:
+            assert sum(r.dx * r.dy * r.dt for r in group if r.plane == plane) == pytest.approx(400)
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, training=True, paired=False)
+    first = ds[0]['source']
+    ds.epoch = 20
+    for key, value in first.items():
+        torch.testing.assert_close(value, ds[0]['source'][key])
+    torch.testing.assert_close(first['metadata'][:, :6], ds[1]['source']['metadata'][:, :6])
+    assert first['valid_mask'].all() and first['patches'].shape[0] == 27
+    # Downstream settings must not affect pretraining's random region budget.
+    assert RegionActionDataset(cfg, train, training=True).max_regions == 3
+
+
+@pytest.mark.parametrize('spec', [
+    dict(mode='grid', grid=[2, 2, 2], num_regions=27),
+    dict(mode='multiscale', levels=[]),
+    dict(mode='multiscale', levels=[[1, 1, 1], [1, 1, 1]]),
+    dict(mode='grid', grid=[0, 2, 2]),
+    dict(mode='grid', grid=[21, 2, 2]),
+    dict(mode='grid', grid=[1, 1, 1], plane_mode='unknown'),
+    dict(mode='random', num_regions=0)])
+def test_reject_invalid_downstream_layouts(cfg, spec):
+    cfg['downstream']['regions'] = spec
+    with pytest.raises(ValueError):
+        downstream_layout(cfg)
+
+
+def test_fixed_random_count_and_cycle_planes(cfg):
+    cfg['downstream']['regions'] = dict(mode='random', num_regions=7)
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, paired=False)
+    assert ds[0]['source']['valid_mask'].sum() == 7
+    cfg['downstream']['regions'] = dict(mode='grid', grid=[2, 2, 2], plane_mode='cycle', num_regions=8)
+    regions = downstream_layout(cfg)
+    assert len(regions) == 8
+    assert [r.plane for r in regions[:3]] == cfg['data']['plane_types']
+
+
+@pytest.mark.parametrize('mode', ['linear_probe', 'finetune'])
+@pytest.mark.parametrize('layout', ['grid', 'multiscale'])
+def test_different_downstream_count_from_pretrained_checkpoint(cfg, mode, layout):
+    output = Path(cfg['train']['output_dir'])
+    output.mkdir()
+    backbone = RegionWorldModel(cfg)
+    torch.save(dict(model=backbone.state_dict(), config=deepcopy(cfg)), output / 'pretrained.pt')
+    spec = dict(mode=layout, num_regions=27)
+    spec.update(grid=[3, 3, 1]) if layout == 'grid' else spec.update(levels=[[1, 1, 1], [2, 2, 2]])
+    cfg['downstream']['regions'] = spec
+    result = downstream_run(cfg, output / 'pretrained.pt', mode)
+    assert result['max_region_tokens'] == 27 and result['test']['samples'] == 2
+    state = torch.load(output / f'{mode}_{layout}_27' / 'best.pt', weights_only=True)
+    restored = Classifier(RegionWorldModel(state['backbone_config']), 2, mode == 'linear_probe')
+    restored.load_state_dict(state['model'])
+    train, _ = partition_entries(cfg)
+    view = next(iter(make_loader(RegionActionDataset(cfg, train, paired=False), 2)))['source']
+    assert restored(view).shape == (2, 2)

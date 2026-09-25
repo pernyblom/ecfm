@@ -6,6 +6,19 @@ from ecfm.models.mae import EventMAE
 from ecfm.training.train import train_one_epoch
 
 
+def test_variable_token_count_without_absolute_positions():
+    model = _model(True)
+    patches = torch.rand(2, 9, 2, 8, 8)
+    metadata = torch.rand(2, 9, 9)
+    planes = torch.zeros(2, 9, dtype=torch.long)
+    valid = torch.ones(2, 9, dtype=torch.bool)
+    reconstructed, _, _ = model(patches, metadata, planes, valid_mask=valid)
+    assert reconstructed.shape == patches.shape
+    model.use_pos_embedding = True
+    with pytest.raises(ValueError, match='num_tokens mismatch'):
+        model(patches, metadata, planes, valid_mask=valid)
+
+
 def _model(use_relative_bias: bool) -> EventMAE:
     torch.manual_seed(0)
     return EventMAE(
