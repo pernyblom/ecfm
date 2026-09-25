@@ -1,0 +1,7 @@
+# Evaluate only: these magnitudes are absent from the default training catalog.
+actions:
+  - {name: t_ccw15, type: rotate, axis: t, degrees: 15}
+  - {name: t_cw15, type: rotate, axis: t, degrees: -15}
+  - {name: custom_ccw15, type: rotate, axis: [1, 2, 1], degrees: 15}
+  - {name: shrink15, type: scale, factor: 0.85}
+  - {name: enlarge15, type: scale, factor: 1.15}

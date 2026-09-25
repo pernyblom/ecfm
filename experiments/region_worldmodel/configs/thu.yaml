@@ -1,0 +1,70 @@
+data:
+  root: datasets/THU-EACT-50-CHL
+  train_split: train
+  test_split: test
+  val_fraction: 0.15
+  split_seed: 42
+  region_seed: 123
+  max_samples: 0
+  max_events: 0
+  image_width: 346
+  image_height: 260
+  time_unit: 0.000001
+  time_bins: 32
+  region_scale_mode: fraction
+  region_scales: [0.2, 0.4, 0.6]
+  region_time_scales: [0.2, 0.4, 0.6]
+  plane_types: [xy, xt, yt]
+  num_regions_choices: [8, 12, 16]
+  patch_norm: region_max
+model:
+  patch_size: 16
+  embed_dim: 128
+  num_heads: 4
+  num_layers: 3
+  decoder_embed_dim: 64
+train:
+  device: cuda
+  seed: 7
+  batch_size: 32
+  epochs: 50
+  lr: 0.0002
+  weight_decay: 0.01
+  num_workers: 0
+  mask_ratio: 0.25
+  max_batches: 0
+  output_dir: outputs/region_worldmodel
+loss:
+  regularizer_weight: 1.0
+  projections: 64
+  integration_steps: 17
+  reconstruction_weight: 0.1
+downstream:
+  epochs: 30
+  batch_size: 32
+  lr: 0.001
+  encoder_lr: 0.00002
+  weight_decay: 0.0001
+  num_classes: 50
+  max_batches: 0
+  max_test_samples: 0
+# Signed degrees follow the right-hand rule in normalized x,y,t coordinates.
+# +degrees = CCW viewed from the positive axis toward the origin.
+actions:
+  - {name: identity, type: identity}
+  - {name: x_ccw10, type: rotate, axis: x, degrees: 10}
+  - {name: x_cw10, type: rotate, axis: x, degrees: -10}
+  - {name: x_ccw20, type: rotate, axis: x, degrees: 20}
+  - {name: x_cw20, type: rotate, axis: x, degrees: -20}
+  - {name: y_ccw10, type: rotate, axis: y, degrees: 10}
+  - {name: y_cw10, type: rotate, axis: y, degrees: -10}
+  - {name: y_ccw20, type: rotate, axis: y, degrees: 20}
+  - {name: y_cw20, type: rotate, axis: y, degrees: -20}
+  - {name: t_ccw10, type: rotate, axis: t, degrees: 10}
+  - {name: t_cw10, type: rotate, axis: t, degrees: -10}
+  - {name: t_ccw20, type: rotate, axis: t, degrees: 20}
+  - {name: t_cw20, type: rotate, axis: t, degrees: -20}
+  - {name: diagonal_ccw10, type: rotate, axis: [1, 1, 1], degrees: 10}
+  - {name: shrink10, type: scale, factor: 0.9}
+  - {name: enlarge10, type: scale, factor: 1.1}
+  - {name: shift_x, type: translate, offset: [0.05, 0, 0]}

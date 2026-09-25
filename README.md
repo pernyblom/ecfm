@@ -125,6 +125,14 @@ The run writes a fixed example and mask to
 across epochs. Periodic checkpoints are written under
 `outputs/thu_relative_bias_recon/checkpoints/`.
 
+## Region Sensing World Model
+
+The separate [region world-model experiment](experiments/region_worldmodel/README.md)
+learns action-conditioned latent changes by rotating or resizing sensing regions
+and extracting new patches from the same THU event volume. It includes configurable
+axes and magnitudes, masked region-token encoding, latent anti-collapse training,
+THU linear probing and finetuning, and held-out-action evaluation.
+
 ## Tests
 
 Run the complete suite from the repository root:

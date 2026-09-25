@@ -1,0 +1,24 @@
+extends: thu.yaml
+data:
+  max_samples: 12
+  max_events: 20000
+  num_regions_choices: [4, 6]
+model:
+  patch_size: 8
+  embed_dim: 32
+  num_heads: 4
+  num_layers: 1
+  decoder_embed_dim: 32
+train:
+  batch_size: 4
+  epochs: 1
+  max_batches: 2
+  output_dir: outputs/region_worldmodel_smoke
+loss:
+  projections: 8
+  integration_steps: 9
+downstream:
+  epochs: 1
+  batch_size: 4
+  max_batches: 2
+  max_test_samples: 8
