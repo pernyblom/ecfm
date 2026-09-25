@@ -31,14 +31,14 @@ train:
   lr: 0.0002
   weight_decay: 0.01
   num_workers: 0
-  mask_ratio: 0.25
+  mask_ratio: 0.0
   max_batches: 0
   output_dir: outputs/region_worldmodel
 loss:
   regularizer_weight: 1.0
   projections: 64
   integration_steps: 17
-  reconstruction_weight: 0.1
+  reconstruction_weight: 0.0
 downstream:
   epochs: 30
   batch_size: 32
