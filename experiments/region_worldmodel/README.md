@@ -196,6 +196,7 @@ weights remain fixed. Existing command lines automatically use caching.
 downstream:
   feature_cache:
     enabled: true
+    storage: disk  # disk, memory, or temporary
     dir: outputs/region_worldmodel_features
     batch_size: 32  # extraction only; defaults to downstream.batch_size
     rebuild: false
@@ -225,6 +226,110 @@ old caches are retained. All selected features are extracted even when
 `downstream.max_batches` limits classifier training. Downstream checkpoint format
 and classification behavior are unchanged; only the frozen feature computation
 is reused.
+
+`storage: memory` extracts features into CPU RAM without creating feature files.
+They are released when the probe returns, so a later invocation extracts again.
+`storage: temporary` uses a private temporary directory, reuses its feature tensors
+throughout the probe, and removes that directory on completion or a handled
+exception. All storage modes hold extracted tensors in RAM; temporary mode is
+not an out-of-core loader. Persistent `disk` remains the standalone default.
+Validation/test caches also include blank-patch features when diagnostics are
+enabled; training caches need only the normal features.
+
+## Duration-free training and periodic probes
+
+For the next unmasked, two-term experiment:
+
+```powershell
+python -m experiments.region_worldmodel.train --config experiments/region_worldmodel/configs/thu_no_duration.yaml
+```
+
+This config uses a separate output directory, excludes absolute-duration metadata,
+and runs a validation-only 27-token grid probe after every ten completed epochs.
+It inherits dataset/model/training settings from `thu.yaml` and explicitly sets
+masking and reconstruction weight to zero. It does not introduce MAE supervision.
+
+```yaml
+data:
+  include_absolute_duration: false
+train:
+  linear_probe:
+    every: 10
+    epochs: 50
+    feature_cache:
+      enabled: true
+      storage: memory
+    blank_diagnostic: true
+downstream:
+  regions:
+    mode: grid
+    grid: [3, 3, 1]
+    plane_mode: all
+    num_regions: 27
+```
+
+`include_absolute_duration: false` zeros metadata columns 6-8 (`t_seconds`,
+`dt_seconds`, `sequence_seconds`) in source, target and downstream observations.
+The six normalized geometry values are unchanged, and histogram extraction is
+unchanged. Keeping nine columns preserves the architecture's tensor shapes.
+The option defaults to `true` for compatibility with older configurations and
+checkpoints. Downstream checks that this setting matches pretraining; toggling
+it requires a fresh training experiment rather than resuming the old run.
+This removes direct duration metadata, not timing clues implicit in event content.
+
+Periodic probes are off unless `train.linear_probe.every` is positive. With
+`every: 10`, they run after zero-based SSL epochs 9, 19, 29, etc. Each uses the
+just-saved `last.pt`, not the potentially older `best.pt`. The probe creates a
+separate frozen encoder and a freshly initialized linear head, trains on the
+training partition, selects its head on validation loss, and does not open the
+test split. It runs synchronously, so probing adds time at that epoch.
+
+Settings inherit from `downstream`, with optional overrides under
+`train.linear_probe`: `epochs`, `batch_size`, `lr`, `weight_decay`, `max_batches`,
+`regions`, `feature_cache`, and `blank_diagnostic`. Periodic caching defaults to
+enabled and **memory-only**, even if standalone probes use disk storage. A
+`train.linear_probe.feature_cache.storage` override may select persistent disk
+or temporary files instead. Features are recomputed for each evaluated encoder;
+they are not reused across changing SSL weights. The SSL model, optimizer and
+random-number streams are isolated from probe training.
+
+The pretraining output gains `probe_metrics.jsonl` and
+`probes/epoch_XXXX/{metrics.jsonl,results.json}`. Results include `pretrained_epoch`
+and the best linear-head epoch, so their meanings cannot be confused. Automatic
+probes retain metrics only, not extra model checkpoints or feature files in
+memory mode. The ordinary SSL `best.pt`/`last.pt` policy is unchanged. Use the
+standalone downstream command for a saved classifier and final test evaluation.
+
+## Blank-input diagnostics
+
+SSL validation retains the existing `blank_source` prediction error and now also
+logs `validation.blank_features` every epoch. This compares pooled source
+embeddings with embeddings obtained by zeroing patches while preserving metadata,
+planes and validity masks. It adds no extra encoder pass beyond the previous
+blank-source check.
+
+Standalone and periodic probes enable `downstream.blank_diagnostic: true` by
+default. After selecting the best head they report `blank_validation`; standalone
+runs also report `blank_test`. The **same trained head** is applied to normal
+and blank features; a separate head is not fitted to the blank inputs.
+
+| Field | Meaning |
+| --- | --- |
+| `accuracy`, `blank_accuracy` | Normal and blank-input classification accuracy (probes only) |
+| `prediction_agreement` | Fraction of identical class predictions (probes only) |
+| `feature_mse` | Mean squared difference between normal and blank pooled features |
+| `feature_variance` | Mean per-dimension variance of normal features across observations |
+| `mse_over_variance` | Feature difference normalized by between-observation variance |
+| `full_std`, `blank_std` | Mean per-dimension standard deviations |
+
+Very small `mse_over_variance` together with similar normal/blank accuracy is a
+warning that metadata dominates event content. If feature variance is effectively
+zero, the ratio is logged as `null`, rather than reporting a misleading finite
+score. These are diagnostics, not extra losses or checkpoint-selection criteria.
+There is no universal good threshold. A fixed grid/multiscale probe makes them
+easier to interpret; the SSL metric also includes variation in sampled geometry
+and repeated source observations across actions. Zero patches represent absence
+of event input here, not the MAE's learned mask token.
 
 ## Fixed downstream layouts
 

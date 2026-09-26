@@ -100,6 +100,8 @@ class RegionActionDataset(Dataset):
             metadata[i] = torch.tensor([r.x / self.width, r.y / self.height,
                 r.dx / self.width, r.dy / self.height, r.t, r.dt,
                 r.t * duration, r.dt * duration, duration])
+            if not d.get('include_absolute_duration', True):
+                metadata[i, 6:] = 0
             planes[i] = d['plane_types'].index(r.plane)
             valid[i] = True
         return dict(patches=patches, metadata=metadata, plane_ids=planes, valid_mask=valid)

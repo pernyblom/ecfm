@@ -1,0 +1,24 @@
+extends: thu.yaml
+data:
+  include_absolute_duration: false
+train:
+  output_dir: outputs/region_worldmodel_no_duration
+  mask_ratio: 0.0
+  linear_probe:
+    every: 2
+    epochs: 50
+    feature_cache:
+      enabled: true
+      storage: memory
+    blank_diagnostic: true
+loss:
+  reconstruction_weight: 0.0
+downstream:
+  regions:
+    mode: grid
+    grid: [3, 3, 1]
+    plane_mode: all
+    num_regions: 27
+  feature_cache:
+    storage: memory
+  blank_diagnostic: true

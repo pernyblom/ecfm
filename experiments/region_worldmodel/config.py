@@ -27,12 +27,19 @@ def load_config(path):
     return cfg
 
 
-def validate(cfg):
-    parse_actions(cfg['actions'])
+def validate_downstream(cfg):
     downstream_layout(cfg)
-    cache = cfg.get('downstream', {}).get('feature_cache', {})
-    if not isinstance(cache, dict) or set(cache) - {'enabled', 'dir', 'batch_size', 'rebuild'}:
+    settings = cfg.get('downstream', {})
+    for key in ('epochs', 'batch_size'):
+        if key in settings and (type(settings[key]) is not int or settings[key] < 1):
+            raise ValueError(f'downstream.{key} must be a positive integer')
+    if type(settings.get('blank_diagnostic', True)) is not bool:
+        raise ValueError('blank_diagnostic must be boolean')
+    cache = settings.get('feature_cache', {})
+    if not isinstance(cache, dict) or set(cache) - {'enabled', 'dir', 'batch_size', 'rebuild', 'storage'}:
         raise ValueError('Invalid downstream.feature_cache settings')
+    if cache.get('storage', 'disk') not in ('disk', 'memory', 'temporary'):
+        raise ValueError('feature_cache.storage must be disk, memory or temporary')
     for key in ('enabled', 'rebuild'):
         if key in cache and type(cache[key]) is not bool:
             raise ValueError(f'feature_cache.{key} must be boolean')
@@ -40,7 +47,31 @@ def validate(cfg):
         raise ValueError('feature_cache.batch_size must be a positive integer')
     if 'dir' in cache and (not isinstance(cache['dir'], str) or not cache['dir'].strip()):
         raise ValueError('feature_cache.dir must be a nonempty path')
+
+
+def validate(cfg):
+    parse_actions(cfg['actions'])
+    validate_downstream(cfg)
     d, m, t, loss = (cfg[k] for k in ('data', 'model', 'train', 'loss'))
+    if type(d.get('include_absolute_duration', True)) is not bool:
+        raise ValueError('data.include_absolute_duration must be boolean')
+    probe = t.get('linear_probe', {})
+    allowed_probe = {'every', 'epochs', 'batch_size', 'lr', 'weight_decay', 'regions',
+                     'feature_cache', 'blank_diagnostic', 'max_batches'}
+    if not isinstance(probe, dict) or set(probe) - allowed_probe:
+        raise ValueError('Invalid train.linear_probe settings')
+    if type(probe.get('every', 0)) is not int or probe.get('every', 0) < 0:
+        raise ValueError('train.linear_probe.every must be a nonnegative integer')
+    probe_cfg = deepcopy(cfg)
+    for key, value in probe.items():
+        if key != 'every':
+            if key == 'feature_cache':
+                if not isinstance(value, dict):
+                    raise ValueError('linear_probe.feature_cache must be a mapping')
+                probe_cfg['downstream'].setdefault(key, {}).update(value)
+            else:
+                probe_cfg['downstream'][key] = value
+    validate_downstream(probe_cfg)
     for key in ('image_width', 'image_height', 'time_bins'):
         if not isinstance(d[key], int) or d[key] < 1:
             raise ValueError(f'data.{key} must be a positive integer')

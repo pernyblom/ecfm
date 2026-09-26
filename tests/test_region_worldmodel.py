@@ -300,3 +300,109 @@ def test_feature_cache_rebuild_and_guard(cfg, monkeypatch):
     ds.training = True
     with pytest.raises(ValueError, match='fixed'):
         cached_features(backbone, ds, 'checkpoint', settings, 'cpu', 0, 'train')
+
+
+def test_duration_option_preserves_patches_and_normalized_geometry(cfg):
+    cfg['downstream']['regions'] = dict(mode='grid', grid=[1, 1, 1])
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, paired=False)
+    events, duration = load_events(train[0][0], cfg['data']['time_unit'])
+    original = ds.render(events, duration, ds.fixed_regions)
+    cfg['data']['include_absolute_duration'] = False
+    hidden = ds.render(events, duration, ds.fixed_regions)
+    changed_duration = ds.render(events, duration * 20, ds.fixed_regions)
+    torch.testing.assert_close(original['patches'], hidden['patches'])
+    torch.testing.assert_close(original['metadata'][:, :6], hidden['metadata'][:, :6])
+    assert original['metadata'][:, 6:].abs().sum() > 0
+    assert hidden['metadata'][:, 6:].abs().sum() == 0
+    torch.testing.assert_close(hidden['metadata'], changed_duration['metadata'])
+
+
+def test_blank_features_cache_and_memory_storage(cfg, monkeypatch):
+    from experiments.region_worldmodel.diagnostics import probe_blank_diagnostic
+    train, val = partition_entries(cfg)
+    cfg['data']['include_absolute_duration'] = False
+    cfg['downstream']['regions'] = dict(mode='grid', grid=[1, 1, 1])
+    cfg['downstream']['feature_cache']['storage'] = 'memory'
+    ds = RegionActionDataset(cfg, val, paired=False)
+    model = Classifier(RegionWorldModel(cfg), 2, True)
+    features = cached_features(model.backbone, ds, '', cfg['downstream'], 'cpu', 0, 'validation')
+    assert not Path(cfg['downstream']['feature_cache']['dir']).exists()
+    torch.testing.assert_close(features.blank_features[0], features.blank_features[1])
+    online = probe_blank_diagnostic(model, make_loader(ds, 2), 'cpu')
+    cached = probe_blank_diagnostic(model, make_loader(features, 2), 'cpu')
+    assert online == pytest.approx(cached, abs=1e-6)
+    cfg['downstream']['feature_cache']['storage'] = 'disk'
+    saved = cached_features(model.backbone, ds, 'checkpoint', cfg['downstream'], 'cpu', 0, 'validation')
+    def fail(*args):
+        pytest.fail('Cache hit should include blank features')
+    monkeypatch.setattr(model.backbone, 'features', fail)
+    reused = cached_features(model.backbone, ds, 'checkpoint', cfg['downstream'], 'cpu', 0, 'validation')
+    torch.testing.assert_close(saved.blank_features, reused.blank_features)
+
+
+def test_periodic_probe_isolated_and_validation_only(cfg):
+    import json
+    cfg['train']['epochs'] = 2
+    cfg['data']['include_absolute_duration'] = False
+    # Periodic probing must not even open the test split.
+    (Path(cfg['data']['root']) / 'test.txt').unlink()
+    control_cfg = deepcopy(cfg)
+    control_cfg['train']['output_dir'] += '_control'
+    control = run(control_cfg)
+    cfg['train']['linear_probe'] = dict(every=1, epochs=2,
+        regions=dict(mode='grid', grid=[1, 1, 1]), feature_cache=dict(storage='memory'))
+    with_probe = run(cfg)
+    for key, value in control.state_dict().items():
+        torch.testing.assert_close(value, with_probe.state_dict()[key], rtol=0, atol=0)
+    output = Path(cfg['train']['output_dir'])
+    rows = [json.loads(line) for line in (output / 'probe_metrics.jsonl').read_text().splitlines()]
+    assert [row['pretrained_epoch'] for row in rows] == [0, 1]
+    assert all('blank_validation' in row and 'test' not in row for row in rows)
+    assert not list((output / 'probes').rglob('*.pt'))
+    assert not Path(cfg['downstream']['feature_cache']['dir']).exists()
+    ssl_rows = [json.loads(line) for line in (output / 'metrics.jsonl').read_text().splitlines()]
+    assert 'mse_over_variance' in ssl_rows[0]['validation']['blank_features']
+
+
+def test_temporary_probe_cache_cleanup(cfg, monkeypatch):
+    from experiments.region_worldmodel import downstream
+    from experiments.region_worldmodel.train import save_checkpoint
+    checkpoint = Path(cfg['data']['root']) / 'pretrained.pt'
+    save_checkpoint(checkpoint, RegionWorldModel(cfg), cfg, 3)
+    cfg['downstream']['feature_cache']['storage'] = 'temporary'
+    directories = []
+    original = downstream.tempfile.TemporaryDirectory
+    def temporary(*args, **kwargs):
+        instance = original(*args, **kwargs)
+        directories.append(Path(instance.name))
+        return instance
+    monkeypatch.setattr(downstream.tempfile, 'TemporaryDirectory', temporary)
+    result = downstream_run(cfg, checkpoint, 'linear_probe')
+    assert result['pretrained_epoch'] == 3
+    assert 'blank_validation' in result and 'blank_test' in result
+    assert directories and all(not path.exists() for path in directories)
+    cfg['data']['include_absolute_duration'] = False
+    with pytest.raises(ValueError, match='include_absolute_duration'):
+        downstream_run(cfg, checkpoint, 'linear_probe')
+    assert all(not path.exists() for path in directories)
+
+
+def test_diagnostic_zero_variance_is_explicit():
+    from experiments.region_worldmodel.diagnostics import feature_diagnostic
+    result = feature_diagnostic(torch.ones(3, 4), torch.ones(3, 4))
+    assert result['mse_over_variance'] is None
+    assert result['feature_mse'] == 0
+
+
+@pytest.mark.parametrize('overrides', [
+    {'data': {'include_absolute_duration': 'false'}},
+    {'downstream': {'feature_cache': {'storage': 'unknown'}}},
+    {'train': {'linear_probe': {'every': -1}}},
+    {'train': {'linear_probe': {'every': 2, 'epochs': 0}}}])
+def test_invalid_probe_options(cfg, overrides):
+    from experiments.region_worldmodel.config import validate
+    for key, value in overrides.items():
+        cfg[key].update(value)
+    with pytest.raises(ValueError):
+        validate(cfg)

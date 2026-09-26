@@ -14,6 +14,7 @@ import yaml
 from .config import load_config
 from .data import RegionActionDataset, partition_entries
 from .model import RegionWorldModel, objective, pool
+from .diagnostics import feature_diagnostic
 
 
 def seed_all(seed):
@@ -42,6 +43,7 @@ def save_checkpoint(path, model, cfg, epoch, **extra):
 def evaluate(model, loader, cfg, device):
     model.eval()
     totals, count, latents = {}, 0, []
+    source_latents, blank_latents = [], []
     by_action = {a.name: [] for a in loader.dataset.actions}
     catalog = torch.tensor(np.stack([a.vector() for a in loader.dataset.actions]), device=device)
     for raw in loader:
@@ -61,7 +63,10 @@ def evaluate(model, loader, cfg, device):
                        zero_action=float(error(model.predict(source, torch.zeros_like(batch['action']))).mean()),
                        wrong_action=float(error(model.predict(source, catalog[(batch['action_id'] + 1) % len(catalog)])).mean()))
         blank = dict(batch['source'], patches=torch.zeros_like(batch['source']['patches']))
-        metrics['blank_source'] = float(error(model.predict(model.encode(blank), batch['action'])).mean())
+        blank_encoded = model.encode(blank)
+        metrics['blank_source'] = float(error(model.predict(blank_encoded, batch['action'])).mean())
+        source_latents.append(pool(source, valid).cpu())
+        blank_latents.append(pool(blank_encoded, valid).cpu())
         for aid, err in zip(raw['action_id'].tolist(), errors.cpu().tolist()):
             by_action[loader.dataset.actions[aid].name].append(err)
         latents.append(pool(target, valid).cpu())
@@ -72,6 +77,7 @@ def evaluate(model, loader, cfg, device):
     result = {k: v / count for k, v in totals.items()}
     z = torch.cat(latents)
     result['latent_std'] = float(z.std(0, unbiased=False).mean())
+    result['blank_features'] = feature_diagnostic(torch.cat(source_latents), torch.cat(blank_latents))
     result['score'] = result['prediction'] + cfg['loss']['regularizer_weight'] * result['regularizer']
     result['per_action_prediction'] = {k: sum(v) / len(v) for k, v in by_action.items() if v}
     return result
@@ -136,6 +142,12 @@ def run(cfg, resume=None):
         save_checkpoint(output / 'last.pt', model, cfg, epoch, **extra)
         if improved:
             save_checkpoint(output / 'best.pt', model, cfg, epoch, **extra)
+        interval = t.get('linear_probe', {}).get('every', 0)
+        if interval and (epoch + 1) % interval == 0:
+            from .periodic_probe import run_periodic_probe
+            probe = run_periodic_probe(cfg, output / 'last.pt', epoch)
+            with (output / 'probe_metrics.jsonl').open('a') as file:
+                file.write(json.dumps(dict(epoch=epoch, completed_epochs=epoch + 1, **probe)) + '\n')
     return model
 
 

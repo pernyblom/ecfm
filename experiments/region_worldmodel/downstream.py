@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
+import tempfile
 
 import torch
 from torch import nn
@@ -12,6 +14,7 @@ from .config import load_config
 from .data import RegionActionDataset, partition_entries, read_entries
 from .feature_cache import cached_features, file_digest
 from .model import RegionWorldModel
+from .diagnostics import probe_blank_diagnostic
 from .train import make_loader, seed_all, to_device
 
 
@@ -62,13 +65,28 @@ def classification_epoch(model, loader, device, optimizer=None, max_batches=0):
     return dict(loss=total / count, accuracy=correct / count, samples=count)
 
 
-def run(cfg, checkpoint, mode, output_dir=None):
+def run(cfg, checkpoint, mode, output_dir=None, *, evaluate_test=True, save_weights=True):
+    if mode == 'finetune' and not save_weights:
+        raise ValueError('Finetuning requires saving the best encoder weights')
+    options = cfg['downstream'].get('feature_cache', {})
+    if mode == 'linear_probe' and options.get('enabled', True) and options.get('storage') == 'temporary':
+        with tempfile.TemporaryDirectory(prefix='region_probe_') as directory:
+            recorded_cfg = cfg
+            cfg = deepcopy(cfg)
+            cfg['downstream']['feature_cache'].update(storage='disk', dir=directory)
+            return _run(cfg, checkpoint, mode, output_dir, evaluate_test, save_weights, recorded_cfg)
+    return _run(cfg, checkpoint, mode, output_dir, evaluate_test, save_weights)
+
+
+def _run(cfg, checkpoint, mode, output_dir, evaluate_test, save_weights, recorded_cfg=None):
     seed_all(cfg['train']['seed'])
     state = torch.load(checkpoint, map_location='cpu', weights_only=True)
     # Enforce identical feature semantics, including plane ID ordering and
     # timestamp/patch normalization. Split/subset limits may change downstream.
     if cfg['model'] != state['config']['model']:
         raise ValueError('Model config differs from pretrained checkpoint')
+    if cfg['data'].get('include_absolute_duration', True) != state['config']['data'].get('include_absolute_duration', True):
+        raise ValueError('include_absolute_duration differs from pretrained checkpoint')
     for key in ('image_width', 'image_height', 'time_unit', 'time_bins',
                 'plane_types', 'patch_norm'):
         if cfg['data'].get(key) != state['config']['data'].get(key):
@@ -81,7 +99,7 @@ def run(cfg, checkpoint, mode, output_dir=None):
     device = torch.device(cfg['train']['device'])
     model = Classifier(backbone, settings['num_classes'], mode == 'linear_probe').to(device)
     train_entries, val_entries = partition_entries(cfg)
-    test_entries = read_entries(Path(cfg['data']['root']), cfg['data'].get('test_split', 'test'))
+    test_entries = read_entries(Path(cfg['data']['root']), cfg['data'].get('test_split', 'test')) if evaluate_test else []
     if {p for p, _ in train_entries + val_entries} & {p for p, _ in test_entries}:
         raise ValueError('Train/validation overlap with test recordings')
     if settings.get('max_test_samples', 0):
@@ -96,7 +114,7 @@ def run(cfg, checkpoint, mode, output_dir=None):
     workers = cfg['train']['num_workers']
     use_cache = mode == 'linear_probe' and settings.get('feature_cache', {}).get('enabled', True)
     if use_cache:
-        checkpoint_digest = file_digest(checkpoint)
+        checkpoint_digest = file_digest(checkpoint) if settings.get('feature_cache', {}).get('storage', 'disk') != 'memory' else ''
         train_ds = cached_features(backbone, train_ds, checkpoint_digest, settings, device, workers, 'train')
         val_ds = cached_features(backbone, val_ds, checkpoint_digest, settings, device, workers, 'validation')
     # In-memory tensors do not benefit from Windows worker process startup.
@@ -113,6 +131,7 @@ def run(cfg, checkpoint, mode, output_dir=None):
     output = Path(output_dir or Path(cfg['train']['output_dir']) / run_name)
     output.mkdir(parents=True, exist_ok=True)
     best = float('inf')
+    best_head, best_validation, best_epoch = None, None, None
     for epoch in range(settings['epochs']):
         train_ds.epoch = epoch
         loader = make_loader(train_ds, settings['batch_size'], probe_workers, True, cfg['train']['seed'] + epoch)
@@ -123,19 +142,32 @@ def run(cfg, checkpoint, mode, output_dir=None):
             file.write(json.dumps(dict(epoch=epoch, train=training, validation=validation)) + '\n')
         if validation['loss'] < best:
             best = validation['loss']
-            torch.save(dict(model=model.state_dict(), config=cfg, mode=mode,
+            best_head = deepcopy(model.head.state_dict())
+            best_validation, best_epoch = validation, epoch
+            if save_weights:
+                torch.save(dict(model=model.state_dict(), config=recorded_cfg or cfg, mode=mode,
                             backbone_config=state['config'],
                             epoch=epoch, validation=validation,
+                            pretrained_epoch=state.get('epoch'),
                             pretrained_checkpoint=str(checkpoint)), output / 'best.pt')
-    best_state = torch.load(output / 'best.pt', map_location=device, weights_only=True)
-    model.load_state_dict(best_state['model'])
-    if use_cache:
-        test_ds = cached_features(backbone, test_ds, checkpoint_digest, settings, device, workers, 'test')
-    test_loader = make_loader(test_ds, settings['batch_size'], probe_workers)
-    test = classification_epoch(model, test_loader, device)
-    result = dict(mode=mode, checkpoint=str(checkpoint), best_epoch=best_state['epoch'],
+    if save_weights:
+        best_state = torch.load(output / 'best.pt', map_location=device, weights_only=True)
+        model.load_state_dict(best_state['model'])
+    else:
+        model.head.load_state_dict(best_head)
+    result = dict(mode=mode, checkpoint=str(checkpoint), best_epoch=best_epoch,
+                  pretrained_epoch=state.get('epoch'),
                   regions=region_spec, max_region_tokens=train_ds.max_regions,
-                  validation=best_state['validation'], test=test)
+                  validation=best_validation)
+    if settings.get('blank_diagnostic', True):
+        result['blank_validation'] = probe_blank_diagnostic(model, val_loader, device)
+    if evaluate_test:
+        if use_cache:
+            test_ds = cached_features(backbone, test_ds, checkpoint_digest, settings, device, workers, 'test')
+        test_loader = make_loader(test_ds, settings['batch_size'], probe_workers)
+        result['test'] = classification_epoch(model, test_loader, device)
+        if settings.get('blank_diagnostic', True):
+            result['blank_test'] = probe_blank_diagnostic(model, test_loader, device)
     (output / 'results.json').write_text(json.dumps(result, indent=2))
     print(json.dumps(result), flush=True)
     return result
