@@ -331,6 +331,97 @@ easier to interpret; the SSL metric also includes variation in sampled geometry
 and repeated source observations across actions. Zero patches represent absence
 of event input here, not the MAE's learned mask token.
 
+## Shared sensing conditions and reference SIGReg
+
+The next recommended unmasked experiment is:
+
+```powershell
+python -m experiments.region_worldmodel.train --config experiments/region_worldmodel/configs/thu_shared_sensing.yaml
+```
+
+This starts a fresh run in `outputs/region_worldmodel_shared_sensing`. It retains
+the duration-free encoder, two-term latent objective, and memory-only grid probes
+every two completed epochs. Masking and reconstruction remain disabled.
+
+```yaml
+data:
+  include_absolute_duration: false
+  ssl_shared_sensing: true
+  ssl_balanced_planes: true
+  num_regions_choices: [24]
+loss:
+  sigreg_normalization: reference
+  projections: 1024
+  integration_steps: 17
+  regularizer_weight: 0.09
+```
+
+Why share sensing conditions? Independent random layouts let the encoder satisfy
+across-recording regularization using plane proportions, positions or sizes.
+Those variations do not require event content. With `ssl_shared_sensing: true`,
+the batch sampler passes an identical layout seed and action to every recording
+in the batch. Source geometry, plane IDs, token counts and validity masks match
+exactly across recordings; transformed target geometry also matches. Event data
+and optional event subsampling remain recording-specific, with a separate RNG.
+Source and target are regularized separately **across recordings under identical
+sensing conditions**. Runtime checks reject incorrectly constructed batches.
+
+Training shuffles recordings, samples a new shared layout/action per batch, and
+drops an incomplete last batch. The shuffle, layout and action sequence are
+reproducible from the training seed and epoch, including with loader workers.
+Each batch has one uniformly sampled action, so action diversity per optimization
+step is lower than in the original per-recording sampler. If source content
+masking is enabled later, its mask is also shared across the batch, preventing
+the mask pattern from becoming another source of between-recording variation.
+
+Validation uses fixed recording groups and fixed shared source layouts, enumerating
+every action separately for each group. Batches never mix action IDs. Every
+recording is evaluated once per action; a final singleton group is merged into
+the preceding group, so it may have `batch_size + 1` recordings. A validation
+split smaller than the batch size forms one smaller batch, with at least two
+recordings. Group membership/layout depends on the evaluation batch size; keep it
+fixed for comparisons. Validation loss values from this protocol should not be
+directly compared with the previous independent-layout protocol.
+
+`ssl_balanced_planes: true` samples a volumetric window and renders it in every
+configured projection plane. Counts are **tokens**, and each count must be a
+multiple of the number of planes. With three planes and 24 tokens, each batch
+uses eight sampled windows with eight XY, eight XT and eight YT tokens. Shared
+random geometry still changes between batches. Balanced planes alone do not
+prevent shortcuts from other layout statistics; use the shared-batch setting too.
+These options affect paired SSL observations only; downstream keeps its own
+configured grid/multiscale/random sampler. Shared sensing requires excluding
+absolute-duration metadata. Both options default to false for old configurations.
+
+The `reference` SIGReg mode matches the statistic in the
+[official implementation](https://github.com/lucas-maes/le-wm/blob/main/module.py):
+shared random projection directions across source/target views, 17 integration
+knots over `[0,3]`, Gaussian integration weights, and batch-size scaling. For
+the same projection directions and embeddings its loss equals **2 x B** times
+our earlier integral-only loss. The numerical loss and gradients are tested
+against an independently expressed reference formula.
+
+The new config uses 1024 projections and weight 0.09, matching the
+[official training config's starting values](https://github.com/lucas-maes/le-wm/blob/main/config/train/lewm.yaml).
+This is not a tuned optimum for event tokens: at B=128 the weighted regularizer
+is 23.04 times the former weight-1 integral for identical embeddings/projections.
+Use the logged `weighted_regularizer` alongside prediction loss when tuning.
+For a comparison that preserves the old effective coefficient at B=128, use
+weight `1 / 256 = 0.00390625` instead. Partial validation batches use their actual
+B, as in the reference statistic. Old configs/checkpoints default to `legacy`
+normalization and retain their old random-projection behavior. Start afresh when
+changing these data/loss settings; strict resume checks prevent mixing protocols.
+
+Validation now also logs `blank_features_within_batch`: feature MSE, variance,
+and standard deviations are computed within each batch and averaged by recording
+count; the reported ratio divides the averaged MSE by averaged variance. In the
+shared protocol, `blank_std` should be essentially zero. Real-input variance must
+grow from event content to satisfy regularization. The existing global
+`blank_features` statistics include between-layout variation, which can be large
+even with shared batches; prioritize the within-batch statistics and fixed-grid
+probes for diagnosing content collapse. The small synthetic/THU execution checks
+confirm shared conditions, not downstream learning quality.
+
 ## Fixed downstream layouts
 
 Downstream region sampling can be configured independently of pretraining with

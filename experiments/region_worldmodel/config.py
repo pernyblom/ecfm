@@ -55,6 +55,13 @@ def validate(cfg):
     d, m, t, loss = (cfg[k] for k in ('data', 'model', 'train', 'loss'))
     if type(d.get('include_absolute_duration', True)) is not bool:
         raise ValueError('data.include_absolute_duration must be boolean')
+    for key in ('ssl_shared_sensing', 'ssl_balanced_planes'):
+        if type(d.get(key, False)) is not bool:
+            raise ValueError(f'data.{key} must be boolean')
+    if d.get('ssl_shared_sensing', False) and d.get('include_absolute_duration', True):
+        raise ValueError('Shared sensing requires include_absolute_duration: false')
+    if loss.get('sigreg_normalization', 'legacy') not in ('legacy', 'reference'):
+        raise ValueError('loss.sigreg_normalization must be legacy or reference')
     probe = t.get('linear_probe', {})
     allowed_probe = {'every', 'epochs', 'batch_size', 'lr', 'weight_decay', 'regions',
                      'feature_cache', 'blank_diagnostic', 'max_batches'}
@@ -80,6 +87,8 @@ def validate(cfg):
         raise ValueError('num_regions_choices must contain positive integers')
     if not d['plane_types'] or len(set(d['plane_types'])) != len(d['plane_types']):
         raise ValueError('plane_types must be nonempty and unique')
+    if d.get('ssl_balanced_planes', False) and any(v % len(d['plane_types']) for v in counts):
+        raise ValueError('Balanced planes require num_regions_choices divisible by len(plane_types)')
     allowed = {'xy', 'xt', 'yt', 'xy_m45', 'xy_p45', 'yt_m45', 'yt_p45'}
     if not set(d['plane_types']) <= allowed:
         raise ValueError('Unsupported projection plane')

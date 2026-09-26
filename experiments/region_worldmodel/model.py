@@ -44,33 +44,54 @@ class RegionWorldModel(nn.Module):
         return source, target, self.predict(source, batch['action'])
 
 
-def sigreg(z, projections=64, integration_steps=17):
-    """Sketched Gaussian characteristic-function matching, on batch samples.
+def sigreg(z, projections=64, integration_steps=17, normalization='legacy'):
+    """Gaussian matching for [B,D] or [views,B,D], sharing projection directions.
 
-    Kept local so this experiment has no dependency on the FRED experiment.
-    This is a SIGReg-style numerical integral, not an exact paper reproduction.
+    reference: official LeWM statistic (2 * B * weighted trapezoidal integral).
+    legacy: integral-only scaling used by earlier checkpoints in this experiment.
     """
+    if normalization not in ('legacy', 'reference'):
+        raise ValueError('SIGReg normalization must be legacy or reference')
     directions = F.normalize(torch.randn(z.shape[-1], projections, device=z.device), dim=0)
     t = torch.linspace(0, 3, integration_steps, device=z.device)
     h = (z.float() @ directions).unsqueeze(-1) * t
     gaussian = torch.exp(-t.square() / 2)
-    error = (h.cos().mean(0) - gaussian).square() + h.sin().mean(0).square()
-    return torch.trapezoid(error * gaussian, t, dim=-1).mean()
+    error = (h.cos().mean(-3) - gaussian).square() + h.sin().mean(-3).square()
+    integral = torch.trapezoid(error * gaussian, t, dim=-1).mean()
+    return integral * (2 * z.shape[-2] if normalization == 'reference' else 1)
 
 
 def objective(model, batch, cfg, mask=None):
+    if cfg['data'].get('ssl_shared_sensing', False):
+        # Fail loudly if a different loader accidentally reintroduces sampler
+        # metadata as an across-recording shortcut.
+        for side in ('source', 'target'):
+            for key in ('metadata', 'plane_ids', 'valid_mask'):
+                value = batch[side][key]
+                if not torch.equal(value, value[:1].expand_as(value)):
+                    raise ValueError(f'Shared sensing requires identical {side}.{key} across recordings')
+        if not torch.equal(batch['action'], batch['action'][:1].expand_as(batch['action'])):
+            raise ValueError('Shared sensing requires the same action across recordings')
+        if mask is not None and not torch.equal(mask, mask[:1].expand_as(mask)):
+            raise ValueError('Shared sensing requires a shared content mask')
     source, target, pred = model(batch, mask)
     valid = batch['source']['valid_mask'] & batch['target']['valid_mask']
     prediction = (pred - target).square().mean(-1)[valid].mean()
     reg = cfg['loss']
     # Regularize both views across independent recordings, not tokens treated
     # as independent examples. Neither target nor source is detached.
-    regularizer = (sigreg(pool(source, valid), reg['projections'], reg['integration_steps']) +
-                   sigreg(pool(target, valid), reg['projections'], reg['integration_steps'])) / 2
+    normalization = reg.get('sigreg_normalization', 'legacy')
+    if normalization == 'reference':
+        regularizer = sigreg(torch.stack([pool(source, valid), pool(target, valid)]),
+                             reg['projections'], reg['integration_steps'], normalization)
+    else:
+        regularizer = (sigreg(pool(source, valid), reg['projections'], reg['integration_steps']) +
+                       sigreg(pool(target, valid), reg['projections'], reg['integration_steps'])) / 2
     reconstruction = prediction.new_zeros(())
     if reg.get('reconstruction_weight', 0) > 0 and mask is not None and mask.any():
         reconstructed, _, _ = model.encoder(**batch['source'], mask=mask)
         reconstruction = (reconstructed - batch['source']['patches']).square().mean((2, 3, 4))[mask].mean()
     loss = prediction + reg['regularizer_weight'] * regularizer + reg.get('reconstruction_weight', 0) * reconstruction
     return loss, dict(prediction=prediction, regularizer=regularizer,
+                      weighted_regularizer=reg['regularizer_weight'] * regularizer,
                       reconstruction=reconstruction), (source, target, pred)

@@ -406,3 +406,134 @@ def test_invalid_probe_options(cfg, overrides):
         cfg[key].update(value)
     with pytest.raises(ValueError):
         validate(cfg)
+
+
+def shared_config(cfg):
+    cfg['data'].update(include_absolute_duration=False, ssl_shared_sensing=True,
+                       ssl_balanced_planes=True, num_regions_choices=[6, 9], max_events=100)
+    cfg['loss'].update(sigreg_normalization='reference', regularizer_weight=.09)
+    return cfg
+
+
+def test_shared_layout_action_and_planes_independent_of_recording(cfg):
+    cfg = shared_config(cfg)
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, training=True)
+    batches = list(make_loader(ds, 2, shuffle=True, seed=7))
+    for batch in batches:
+        for side in ('source', 'target'):
+            view = batch[side]
+            for key in ('metadata', 'valid_mask', 'plane_ids'):
+                torch.testing.assert_close(view[key][0], view[key][1])
+            valid = view['valid_mask'][0]
+            counts = torch.bincount(view['plane_ids'][0][valid], minlength=3)
+            assert counts[0] == counts[1] == counts[2]
+        torch.testing.assert_close(batch['action'][0], batch['action'][1])
+        assert not torch.equal(batch['source']['patches'][0], batch['source']['patches'][1])
+    assert not torch.equal(batches[0]['source']['metadata'], batches[1]['source']['metadata'])
+    repeat = next(iter(make_loader(ds, 2, shuffle=True, seed=7)))
+    torch.testing.assert_close(repeat['source']['patches'], batches[0]['source']['patches'])
+    next_epoch = next(iter(make_loader(ds, 2, shuffle=True, seed=8)))
+    assert not torch.equal(next_epoch['source']['metadata'], batches[0]['source']['metadata'])
+
+
+def test_shared_validation_coverage_and_no_singletons(cfg):
+    from experiments.region_worldmodel.batching import SharedSensingBatchSampler
+    cfg = shared_config(cfg)
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train[:5])
+    sampler = SharedSensingBatchSampler(ds, 2)
+    batches = list(sampler)
+    assert len(batches) == len(sampler) == 4
+    for action in range(len(ds.actions)):
+        indices = [index for batch in batches for index, _, a in batch if a == action]
+        assert indices == list(range(5))
+    assert all(len(batch) >= 2 and len({a for _, _, a in batch}) == 1 for batch in batches)
+    for batch in make_loader(ds, 2):
+        for side in ('source', 'target'):
+            m = batch[side]['metadata']
+            torch.testing.assert_close(m, m[:1].expand_as(m))
+    ds.epoch = 30
+    assert list(SharedSensingBatchSampler(ds, 2)) == batches
+
+
+def test_shared_sampling_matches_across_worker_counts(cfg):
+    cfg = shared_config(cfg)
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, training=True)
+    serial = list(make_loader(ds, 2, workers=0, shuffle=True, seed=5))
+    parallel = list(make_loader(ds, 2, workers=1, shuffle=True, seed=5))
+    for first, second in zip(serial, parallel):
+        for key in first['source']:
+            torch.testing.assert_close(first['source'][key], second['source'][key])
+        torch.testing.assert_close(first['action'], second['action'])
+
+
+def test_blank_shared_features_cannot_encode_layout_variation_within_batch(cfg):
+    cfg = shared_config(cfg)
+    train, _ = partition_entries(cfg)
+    batch = next(iter(make_loader(RegionActionDataset(cfg, train, training=True), 2)))
+    model = RegionWorldModel(cfg).eval()
+    blank = deepcopy(batch)
+    for side in ('source', 'target'):
+        blank[side]['patches'].zero_()
+        features = model.features(blank[side])
+        assert features.var(0, unbiased=False).max() < 1e-12
+    loss, _, _ = objective(model, batch, cfg)
+    loss.backward()
+    assert model.encoder.patch_encoder.net[0].weight.grad.abs().sum() > 0
+    broken = deepcopy(batch)
+    broken['source']['plane_ids'][1, 0] = (broken['source']['plane_ids'][1, 0] + 1) % 3
+    with pytest.raises(ValueError, match='identical source.plane_ids'):
+        objective(model, broken, cfg)
+
+
+def test_reference_sigreg_matches_official_formula_and_gradients():
+    from experiments.region_worldmodel.model import sigreg
+    torch.manual_seed(9)
+    z = torch.randn(2, 16, 8, requires_grad=True)
+    seed, projections, knots = 71, 32, 17
+    torch.manual_seed(seed)
+    actual = sigreg(z, projections, knots, 'reference')
+    actual_grad = torch.autograd.grad(actual, z)[0]
+    torch.manual_seed(seed)
+    directions = torch.randn(z.shape[-1], projections)
+    directions = directions / directions.norm(dim=0)
+    t = torch.linspace(0, 3, knots)
+    weights = torch.full((knots,), 2 * 3 / (knots - 1))
+    weights[[0, -1]] /= 2
+    phi = torch.exp(-t.square() / 2)
+    h = (z @ directions).unsqueeze(-1) * t
+    err = (h.cos().mean(-3) - phi).square() + h.sin().mean(-3).square()
+    expected = ((err @ (weights * phi)) * z.shape[-2]).mean()
+    expected_grad = torch.autograd.grad(expected, z)[0]
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(actual_grad, expected_grad)
+    torch.manual_seed(seed)
+    legacy = sigreg(z, projections, knots, 'legacy')
+    torch.testing.assert_close(actual, legacy * (2 * z.shape[-2]))
+
+
+def test_shared_training_reference_loss_and_periodic_probe(cfg):
+    import json
+    cfg = shared_config(cfg)
+    cfg['train']['linear_probe'] = dict(every=1, epochs=1)
+    run(cfg)
+    output = Path(cfg['train']['output_dir'])
+    metrics = json.loads((output / 'metrics.jsonl').read_text().splitlines()[0])['validation']
+    assert metrics['blank_features_within_batch']['blank_std'] < 1e-6
+    assert metrics['weighted_regularizer'] == pytest.approx(.09 * metrics['regularizer'])
+    assert (output / 'probe_metrics.jsonl').is_file()
+    checkpoint = torch.load(output / 'last.pt', weights_only=True)
+    assert checkpoint['config']['data']['ssl_shared_sensing']
+
+
+@pytest.mark.parametrize('change', [
+    {'include_absolute_duration': True}, {'num_regions_choices': [8]},
+    {'ssl_shared_sensing': 'true'}])
+def test_invalid_shared_settings(cfg, change):
+    from experiments.region_worldmodel.config import validate
+    cfg = shared_config(cfg)
+    cfg['data'].update(change)
+    with pytest.raises(ValueError):
+        validate(cfg)

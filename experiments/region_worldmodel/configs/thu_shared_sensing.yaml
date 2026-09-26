@@ -1,0 +1,24 @@
+extends: thu_no_duration.yaml
+data:
+  include_absolute_duration: false
+  ssl_shared_sensing: true
+  ssl_balanced_planes: true
+  # Eight sampled windows, each represented by XY, XT and YT = 24 tokens.
+  num_regions_choices: [24]
+train:
+  output_dir: outputs/region_worldmodel_shared_sensing
+  mask_ratio: 0.0
+  batch_size: 128
+  linear_probe:
+    every: 2
+    epochs: 50
+    feature_cache:
+      enabled: true
+      storage: memory
+loss:
+  sigreg_normalization: reference
+  projections: 1024
+  integration_steps: 17
+  # Official LeWM starting weight; not a tuned optimum for event tokens.
+  regularizer_weight: 0.09
+  reconstruction_weight: 0.0

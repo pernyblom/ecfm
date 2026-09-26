@@ -15,6 +15,7 @@ from .config import load_config
 from .data import RegionActionDataset, partition_entries
 from .model import RegionWorldModel, objective, pool
 from .diagnostics import feature_diagnostic
+from .batching import SharedSensingBatchSampler
 
 
 def seed_all(seed):
@@ -30,6 +31,9 @@ def to_device(value, device):
 
 
 def make_loader(dataset, batch_size, workers=0, shuffle=False, seed=0):
+    if getattr(dataset, 'shared_sensing', False):
+        return DataLoader(dataset, batch_sampler=SharedSensingBatchSampler(dataset, batch_size, seed),
+                          num_workers=workers, generator=torch.Generator().manual_seed(seed))
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
                       num_workers=workers, drop_last=shuffle and dataset.paired,
                       generator=torch.Generator().manual_seed(seed))
@@ -44,6 +48,7 @@ def evaluate(model, loader, cfg, device):
     model.eval()
     totals, count, latents = {}, 0, []
     source_latents, blank_latents = [], []
+    within_batch = {}
     by_action = {a.name: [] for a in loader.dataset.actions}
     catalog = torch.tensor(np.stack([a.vector() for a in loader.dataset.actions]), device=device)
     for raw in loader:
@@ -67,6 +72,10 @@ def evaluate(model, loader, cfg, device):
         metrics['blank_source'] = float(error(model.predict(blank_encoded, batch['action'])).mean())
         source_latents.append(pool(source, valid).cpu())
         blank_latents.append(pool(blank_encoded, valid).cpu())
+        diagnostic = feature_diagnostic(source_latents[-1], blank_latents[-1])
+        for key, value in diagnostic.items():
+            if key != 'mse_over_variance':
+                within_batch[key] = within_batch.get(key, 0) + value * len(source)
         for aid, err in zip(raw['action_id'].tolist(), errors.cpu().tolist()):
             by_action[loader.dataset.actions[aid].name].append(err)
         latents.append(pool(target, valid).cpu())
@@ -78,6 +87,10 @@ def evaluate(model, loader, cfg, device):
     z = torch.cat(latents)
     result['latent_std'] = float(z.std(0, unbiased=False).mean())
     result['blank_features'] = feature_diagnostic(torch.cat(source_latents), torch.cat(blank_latents))
+    conditional = {key: value / count for key, value in within_batch.items()}
+    conditional['mse_over_variance'] = (conditional['feature_mse'] / conditional['feature_variance']
+                                       if conditional['feature_variance'] > 1e-12 else None)
+    result['blank_features_within_batch'] = conditional
     result['score'] = result['prediction'] + cfg['loss']['regularizer_weight'] * result['regularizer']
     result['per_action_prediction'] = {k: sum(v) / len(v) for k, v in by_action.items() if v}
     return result
@@ -121,7 +134,8 @@ def run(cfg, resume=None):
                 break
             batch = to_device(raw, device)
             valid = batch['source']['valid_mask']
-            mask = (torch.rand(valid.shape, device=device) < t['mask_ratio']) & valid
+            shape = (1, valid.shape[1]) if train_ds.shared_sensing else valid.shape
+            mask = (torch.rand(shape, device=device) < t['mask_ratio']) & valid
             optimizer.zero_grad(set_to_none=True)
             loss, _, _ = objective(model, batch, cfg, mask)
             if not torch.isfinite(loss):

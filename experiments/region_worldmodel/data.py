@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import numpy as np
 import torch
 from torch.utils.data import Dataset
@@ -65,6 +66,7 @@ class RegionActionDataset(Dataset):
     def __init__(self, cfg, entries, training=False, paired=True):
         self.cfg, self.entries = cfg, entries
         self.training, self.paired = training, paired
+        self.shared_sensing = paired and cfg['data'].get('ssl_shared_sensing', False)
         self.epoch = 0
         self.actions = parse_actions(cfg['actions'])
         d = cfg['data']
@@ -108,7 +110,12 @@ class RegionActionDataset(Dataset):
 
     def __getitem__(self, index):
         action_index = None
-        if self.paired and not self.training:
+        layout_seed = None
+        if isinstance(index, tuple):
+            index, layout_seed, action_index = index
+        elif self.shared_sensing:
+            raise ValueError('Shared sensing dataset requires make_loader / SharedSensingBatchSampler')
+        elif self.paired and not self.training:
             # Group by action so each validation batch spans recordings,
             # rather than estimating SIGReg on many views of one recording.
             action_index, index = divmod(index, len(self.entries))
@@ -122,9 +129,20 @@ class RegionActionDataset(Dataset):
             events = events[rng.choice(len(events), limit, replace=False)]
         regions = self.fixed_regions
         if regions is None:
-            count = int(rng.choice(self.region_counts))
-            regions = [sample_region(rng, self.width, self.height, *self.scales,
-                       d['region_time_scales'], d['plane_types'], False) for _ in range(count)]
+            # Event subsampling must not advance the shared layout RNG.
+            layout_rng = (np.random.default_rng(np.random.SeedSequence([
+                d.get('region_seed', 123), layout_seed])) if layout_seed is not None else rng)
+            count = int(layout_rng.choice(self.region_counts))
+            balanced = self.paired and d.get('ssl_balanced_planes', False)
+            plane_count = len(d['plane_types']) if balanced else 1
+            if count % plane_count:
+                raise ValueError('Balanced token counts must be multiples of the number of planes')
+            regions = []
+            for _ in range(count // plane_count):
+                region = sample_region(layout_rng, self.width, self.height, *self.scales,
+                                       d['region_time_scales'], d['plane_types'], False)
+                regions.extend([replace(region, plane=plane) for plane in d['plane_types']]
+                               if balanced else [region])
         result = {'source': self.render(events, duration, regions), 'label': label}
         if self.paired:
             if action_index is None:
