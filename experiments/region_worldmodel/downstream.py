@@ -10,6 +10,7 @@ from torch import nn
 
 from .config import load_config
 from .data import RegionActionDataset, partition_entries, read_entries
+from .feature_cache import cached_features, file_digest
 from .model import RegionWorldModel
 from .train import make_loader, seed_all, to_device
 
@@ -46,7 +47,7 @@ def classification_epoch(model, loader, device, optimizer=None, max_batches=0):
             if max_batches and i >= max_batches:
                 break
             batch = to_device(raw, device)
-            logits = model(batch['source'])
+            logits = model.head(batch['features']) if 'features' in batch else model(batch['source'])
             loss = nn.functional.cross_entropy(logits, batch['label'])
             if not torch.isfinite(loss):
                 raise FloatingPointError('Nonfinite classification loss')
@@ -93,8 +94,14 @@ def run(cfg, checkpoint, mode, output_dir=None):
     val_ds = RegionActionDataset(cfg, val_entries, paired=False)
     test_ds = RegionActionDataset(cfg, test_entries, paired=False)
     workers = cfg['train']['num_workers']
-    val_loader = make_loader(val_ds, settings['batch_size'], workers)
-    test_loader = make_loader(test_ds, settings['batch_size'], workers)
+    use_cache = mode == 'linear_probe' and settings.get('feature_cache', {}).get('enabled', True)
+    if use_cache:
+        checkpoint_digest = file_digest(checkpoint)
+        train_ds = cached_features(backbone, train_ds, checkpoint_digest, settings, device, workers, 'train')
+        val_ds = cached_features(backbone, val_ds, checkpoint_digest, settings, device, workers, 'validation')
+    # In-memory tensors do not benefit from Windows worker process startup.
+    probe_workers = 0 if use_cache else workers
+    val_loader = make_loader(val_ds, settings['batch_size'], probe_workers)
     groups = [{'params': model.head.parameters(), 'lr': settings['lr']}]
     if mode == 'finetune':
         groups.append({'params': [p for p in backbone.parameters() if p.requires_grad],
@@ -108,7 +115,7 @@ def run(cfg, checkpoint, mode, output_dir=None):
     best = float('inf')
     for epoch in range(settings['epochs']):
         train_ds.epoch = epoch
-        loader = make_loader(train_ds, settings['batch_size'], workers, True, cfg['train']['seed'] + epoch)
+        loader = make_loader(train_ds, settings['batch_size'], probe_workers, True, cfg['train']['seed'] + epoch)
         training = classification_epoch(model, loader, device, optimizer, settings.get('max_batches', 0))
         validation = classification_epoch(model, val_loader, device)
         print(json.dumps(dict(epoch=epoch, train=training, validation=validation)), flush=True)
@@ -122,6 +129,9 @@ def run(cfg, checkpoint, mode, output_dir=None):
                             pretrained_checkpoint=str(checkpoint)), output / 'best.pt')
     best_state = torch.load(output / 'best.pt', map_location=device, weights_only=True)
     model.load_state_dict(best_state['model'])
+    if use_cache:
+        test_ds = cached_features(backbone, test_ds, checkpoint_digest, settings, device, workers, 'test')
+    test_loader = make_loader(test_ds, settings['batch_size'], probe_workers)
     test = classification_epoch(model, test_loader, device)
     result = dict(mode=mode, checkpoint=str(checkpoint), best_epoch=best_state['epoch'],
                   regions=region_spec, max_region_tokens=train_ds.max_regions,

@@ -13,6 +13,7 @@ from experiments.region_worldmodel.downstream import Classifier, run as downstre
 from experiments.region_worldmodel.model import RegionWorldModel, objective
 from experiments.region_worldmodel.train import make_loader, run
 from experiments.region_worldmodel.regions import downstream_layout
+from experiments.region_worldmodel.feature_cache import cached_features, cache_metadata, file_digest
 
 
 def action(**kwargs):
@@ -62,6 +63,7 @@ def cfg(tmp_path):
     cfg['model'].update(embed_dim=16, decoder_embed_dim=16)
     cfg['train'].update(device='cpu', batch_size=2, max_batches=1, output_dir=str(tmp_path / 'output'))
     cfg['downstream'].update(num_classes=2, batch_size=2, max_batches=1)
+    cfg['downstream']['feature_cache'] = dict(dir=str(tmp_path / 'features'))
     cfg['actions'] = [dict(name='identity', type='identity'),
                       dict(name='shift', type='translate', offset=[.3, 0, 0])]
     rng = np.random.default_rng(9)
@@ -225,3 +227,76 @@ def test_different_downstream_count_from_pretrained_checkpoint(cfg, mode, layout
     train, _ = partition_entries(cfg)
     view = next(iter(make_loader(RegionActionDataset(cfg, train, paired=False), 2)))['source']
     assert restored(view).shape == (2, 2)
+
+
+def test_cached_probe_matches_online_training_and_reuses_features(cfg, monkeypatch):
+    from experiments.region_worldmodel.downstream import classification_epoch
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, paired=False)
+    online = Classifier(RegionWorldModel(cfg), 2, True)
+    cached = deepcopy(online)
+    settings = cfg['downstream']
+    features = cached_features(cached.backbone, ds, 'checkpoint', settings, 'cpu', 0, 'train')
+    assert features.features.shape == (len(ds), cfg['model']['embed_dim'])
+    first_optimizer = torch.optim.SGD(online.head.parameters(), lr=.01)
+    second_optimizer = torch.optim.SGD(cached.head.parameters(), lr=.01)
+    first = classification_epoch(online, make_loader(ds, 2, shuffle=True, seed=3), 'cpu', first_optimizer)
+    def fail(*args, **kwargs):
+        pytest.fail('A cached probe must not load events or call the encoder')
+    monkeypatch.setattr(RegionActionDataset, '__getitem__', fail)
+    monkeypatch.setattr(cached.backbone, 'features', fail)
+    reused = cached_features(cached.backbone, ds, 'checkpoint', settings, 'cpu', 0, 'train')
+    torch.testing.assert_close(features.features, reused.features)
+    second = classification_epoch(cached, make_loader(reused, 2, shuffle=True, seed=3), 'cpu', second_optimizer)
+    assert first['loss'] == pytest.approx(second['loss'], abs=1e-6)
+    torch.testing.assert_close(online.head.weight, cached.head.weight)
+    torch.testing.assert_close(online.head.bias, cached.head.bias)
+
+
+def test_feature_cache_invalidation_and_optimizer_independence(cfg):
+    import os
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, paired=False)
+    original = cache_metadata(ds, 'checkpoint')
+    cfg['downstream']['lr'] *= 2
+    cfg['downstream']['epochs'] += 1
+    assert cache_metadata(ds, 'checkpoint') == original
+    assert cache_metadata(ds, 'other checkpoint') != original
+    cfg['data']['region_seed'] += 1
+    assert cache_metadata(ds, 'checkpoint') != original
+    cfg['data']['region_seed'] -= 1
+    cfg['downstream']['regions'] = dict(mode='random', num_regions=7)
+    assert cache_metadata(ds, 'checkpoint') != original
+    del cfg['downstream']['regions']
+    ds.entries = list(reversed(train))
+    assert cache_metadata(ds, 'checkpoint') != original
+    ds.entries = train
+    path, _ = train[0]
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000000000))
+    assert cache_metadata(ds, 'checkpoint') != original
+    before = file_digest(path)
+    events = np.load(path)
+    events[0, 0] += 1
+    np.save(path, events)
+    assert file_digest(path) != before
+
+
+def test_feature_cache_rebuild_and_guard(cfg, monkeypatch):
+    train, _ = partition_entries(cfg)
+    ds = RegionActionDataset(cfg, train, paired=False)
+    backbone = Classifier(RegionWorldModel(cfg), 2, True).backbone
+    settings = cfg['downstream']
+    cached_features(backbone, ds, 'checkpoint', settings, 'cpu', 0, 'train')
+    calls = []
+    original = backbone.features
+    def record(view):
+        calls.append(1)
+        return original(view)
+    monkeypatch.setattr(backbone, 'features', record)
+    settings['feature_cache']['rebuild'] = True
+    cached_features(backbone, ds, 'checkpoint', settings, 'cpu', 0, 'train')
+    assert calls
+    ds.training = True
+    with pytest.raises(ValueError, match='fixed'):
+        cached_features(backbone, ds, 'checkpoint', settings, 'cpu', 0, 'train')

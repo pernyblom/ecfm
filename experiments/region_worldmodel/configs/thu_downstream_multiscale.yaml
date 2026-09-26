@@ -5,3 +5,8 @@ downstream:
     levels: [[1, 1, 1], [2, 2, 2]]
     plane_mode: all
     num_regions: 27
+  feature_cache:
+    enabled: true
+    dir: outputs/region_worldmodel_features
+    batch_size: 64
+    rebuild: true

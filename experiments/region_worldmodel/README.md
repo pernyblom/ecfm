@@ -179,10 +179,52 @@ Use separate output directories for independent runs; metric logs append.
 `train.max_batches` and `downstream.max_batches` bound training only. Validation
 always covers its selected recordings; `max_test_samples` is for smoke runs.
 
-Raw files are loaded and both views rendered on demand; no persistent token
-cache is shared with other experiments. This favors correct action pairing over
-throughput. Validation costs roughly one rendering pair per recording/action.
+During SSL, raw files are loaded and both views rendered on demand; no persistent
+token cache is shared with other experiments. This favors correct action pairing
+over throughput. SSL validation costs roughly one rendering pair per recording/action.
 Increase `num_workers` if I/O/tokenization dominates, accounting for worker RAM.
+
+## Cached linear probing
+
+Linear probing now extracts pooled encoder features **once**, then trains the
+linear layer entirely from in-memory CPU feature tensors. Features are also saved
+to disk and reused by later runs. This is enabled by default for all region modes,
+including seeded random regions, because linear-probe observations and backbone
+weights remain fixed. Existing command lines automatically use caching.
+
+```yaml
+downstream:
+  feature_cache:
+    enabled: true
+    dir: outputs/region_worldmodel_features
+    batch_size: 32  # extraction only; defaults to downstream.batch_size
+    rebuild: false
+```
+
+The first run still loads/tokenizes each selected recording and evaluates the
+encoder. Train/validation features are extracted before classifier training;
+test features are extracted only after selecting the best classifier. Later
+epochs skip event loading, patch rendering and the encoder. Subsequent runs print
+`cache hit` and load the saved tensors. Extraction prints progress, uses
+`train.num_workers`, and is independent of the head's training batch size.
+Feature loaders use zero workers to avoid multiprocessing overhead for small
+in-memory tensors. Finetuning always uses live observations and encoder execution.
+
+Cache identity includes a SHA-256 of the complete pretrained checkpoint, ordered
+recording paths and labels, file sizes and nanosecond modification/change times,
+data/model/region settings, PyTorch version, and relevant source-code hashes.
+Changing head learning rate, epoch count or training batch size reuses features.
+Changing the checkpoint, layout, seed, data selection/order or file metadata
+creates a separate cache. Raw event contents are not hashed, to avoid rereading
+the whole dataset on each run; use `rebuild: true` if files were replaced while
+preserving their metadata. Set `enabled: false` for the original online path.
+
+Features are stored in float32 with int64 labels, approximately `4 * N * D` bytes
+plus labels/metadata per split, and held in CPU RAM. Cache writes are atomic and
+old caches are retained. All selected features are extracted even when
+`downstream.max_batches` limits classifier training. Downstream checkpoint format
+and classification behavior are unchanged; only the frozen feature computation
+is reused.
 
 ## Fixed downstream layouts
 

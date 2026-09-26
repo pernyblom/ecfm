@@ -30,6 +30,16 @@ def load_config(path):
 def validate(cfg):
     parse_actions(cfg['actions'])
     downstream_layout(cfg)
+    cache = cfg.get('downstream', {}).get('feature_cache', {})
+    if not isinstance(cache, dict) or set(cache) - {'enabled', 'dir', 'batch_size', 'rebuild'}:
+        raise ValueError('Invalid downstream.feature_cache settings')
+    for key in ('enabled', 'rebuild'):
+        if key in cache and type(cache[key]) is not bool:
+            raise ValueError(f'feature_cache.{key} must be boolean')
+    if 'batch_size' in cache and (type(cache['batch_size']) is not int or cache['batch_size'] < 1):
+        raise ValueError('feature_cache.batch_size must be a positive integer')
+    if 'dir' in cache and (not isinstance(cache['dir'], str) or not cache['dir'].strip()):
+        raise ValueError('feature_cache.dir must be a nonempty path')
     d, m, t, loss = (cfg[k] for k in ('data', 'model', 'train', 'loss'))
     for key in ('image_width', 'image_height', 'time_bins'):
         if not isinstance(d[key], int) or d[key] < 1:
