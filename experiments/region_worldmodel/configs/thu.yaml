@@ -40,9 +40,9 @@ loss:
   integration_steps: 17
   reconstruction_weight: 0.0
 downstream:
-  epochs: 50
+  epochs: 500
   batch_size: 128
-  lr: 0.001
+  lr: 0.01
   encoder_lr: 0.00002
   weight_decay: 0.0001
   num_classes: 50

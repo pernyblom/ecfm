@@ -1,0 +1,6 @@
+extends: thu.yaml
+downstream:
+  epochs: 300
+  lr: 0.01
+  # Change to activity/random/coarse and a budget to probe a selected subset.
+  selection: {strategy: all, budget: 0}

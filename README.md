@@ -145,6 +145,14 @@ The region-MAE tests cover relative-bias shapes and gradients, token-order
 equivariance, masked forward/backward execution, variable region counts, and
 padding isolation. Region sampling tests cover spatial and temporal boundaries.
 
+## Hierarchical Event MAE
+
+The [hierarchical MAE experiment](experiments/hierarchical_mae/README.md) supports
+nested spatio-temporal grids, local histogram/CSTR representations, independent
+patch sizes per level, duration-aware learned encodings, and mixed overlapping/strict
+masking. It includes THU pretraining, saved-feature linear probing, finetuning,
+periodic patch inspection, and an interface for differentiable token selection.
+
 ## Image Folder Media
 Convert a name-sorted slice of an image folder to MP4 or GIF:
 

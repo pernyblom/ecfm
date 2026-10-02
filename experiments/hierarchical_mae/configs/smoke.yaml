@@ -1,0 +1,29 @@
+extends: thu.yaml
+data:
+  max_samples: 8
+hierarchy:
+  max_splits: [2, 2, 2]
+  levels:
+    - {splits: [1, 1, 1], patch_size: 8, representations: [xt, cstr3]}
+    - {splits: [2, 2, 2], patch_size: 4, representations: [xy, yt]}
+model:
+  embed_dim: 16
+  decoder_dim: 16
+  num_heads: 2
+  num_layers: 1
+  decoder_layers: 1
+train:
+  device: cpu
+  batch_size: 2
+  epochs: 1
+  max_batches: 1
+  max_val_batches: 1
+  inspect_every: 1
+  output_dir: outputs/hierarchical_mae_smoke
+downstream:
+  epochs: 1
+  batch_size: 2
+  max_batches: 1
+  max_test_samples: 4
+  feature_cache:
+    dir: outputs/hierarchical_mae_smoke/features
