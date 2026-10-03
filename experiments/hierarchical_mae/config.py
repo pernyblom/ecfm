@@ -1,4 +1,5 @@
 from copy import deepcopy
+import math
 from pathlib import Path
 
 import yaml
@@ -32,6 +33,14 @@ def validate(cfg):
         raise ValueError('max_splits must be three positive cell counts [x,y,t]')
     if maximum[0] > d['image_width'] or maximum[1] > d['image_height']:
         raise ValueError('Smallest spatial cells must contain at least one pixel')
+    spatial = d.get('spatial_crop_fraction', [1., 1.])
+    if (not isinstance(spatial, (list, tuple)) or len(spatial) != 2
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in spatial)
+            or not 0 < spatial[0] <= spatial[1] <= 1):
+        raise ValueError('spatial_crop_fraction must be [min, max] with 0 < min <= max <= 1')
+    if any(math.floor(d[key] * spatial[0]) < maximum[axis]
+           for axis, key in enumerate(('image_width', 'image_height'))):
+        raise ValueError('spatial_crop_fraction is too small for max_splits: each cell needs at least one pixel')
     previous = [1, 1, 1]
     if not h['levels']:
         raise ValueError('Need at least one hierarchy level')
@@ -77,7 +86,6 @@ def validate(cfg):
     if not 0 <= level < len(h['levels']):
         raise ValueError('Invalid masking level')
     if mask['strategy'] != 'token':
-        import math
         if math.prod(h['levels'][level]['splits']) < 2:
             raise ValueError('Voxel/subtree masking needs at least two cells at its level')
     for settings in (cfg['train'], cfg['downstream']):

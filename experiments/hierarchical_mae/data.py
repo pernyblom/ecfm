@@ -105,19 +105,31 @@ class HierarchyDataset(Dataset):
         path, label = self.entries[index]
         fraction = float(rng.uniform(*d['crop_fraction'])) if self.training else d.get('eval_fraction', 1.)
         start = float(rng.uniform(0, 1-fraction)) if self.training else (1-fraction)/2
+        width, height = d['image_width'], d['image_height']
+        crop_x = crop_y = 0
+        spatial_range = d.get('spatial_crop_fraction', [1., 1.])
+        if self.training and tuple(spatial_range) != (1., 1.):
+            width = int(np.floor(width * rng.uniform(*spatial_range)))
+            height = int(np.floor(height * rng.uniform(*spatial_range)))
+            crop_x = int(rng.integers(0, d['image_width'] - width + 1))
+            crop_y = int(rng.integers(0, d['image_height'] - height + 1))
         # Do not accumulate one-use random crops on disk. Fixed eval crops are always reusable.
         use_cache = self.cache is not None and (not self.training or self.train_views > 0)
         if use_cache:
-            cache_path, cache_metadata = self.cache.entry(path, fraction, start)
+            cache_path, cache_metadata = self.cache.entry(path, fraction, start,
+                                                         [crop_x, crop_y, width, height])
             cached = self.cache.read(cache_path, cache_metadata, self.layout)
             if cached is not None:
                 return dict(source=cached, label=label)
         events, seconds = load_events(path, d['time_unit'])
         # Include the recording's last event, then use half-open voxel intervals.
-        events = events[(events[:, 2] >= start) & (events[:, 2] <= start + fraction)].copy()
+        events = events[(events[:, 2] >= start) & (events[:, 2] <= start + fraction)
+                        & (events[:, 0] >= crop_x) & (events[:, 0] < crop_x + width)
+                        & (events[:, 1] >= crop_y) & (events[:, 1] < crop_y + height)].copy()
+        events[:, 0] -= crop_x
+        events[:, 1] -= crop_y
         events[:, 2] = np.minimum((events[:, 2] - start) / fraction, np.nextafter(np.float32(1), np.float32(0)))
         duration = seconds * fraction
-        width, height = d['image_width'], d['image_height']
         mx, my, mt = self.layout.maximum
         patches, metadata, counts = {}, [], []
         current_level, voxels = None, None

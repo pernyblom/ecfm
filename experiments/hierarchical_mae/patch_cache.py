@@ -29,10 +29,10 @@ class PatchCache:
                          data={k: d.get(k) for k in ('image_width', 'image_height', 'time_unit',
                                                     'time_bins', 'patch_norm', 'cstr_max_count')})
 
-    def entry(self, path, fraction, start):
+    def entry(self, path, fraction, start, spatial_crop=None):
         stat = path.stat()
         metadata = dict(self.spec, source=[str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns],
-                        crop=[fraction, start])
+                        crop=[fraction, start], spatial_crop=spatial_crop)
         key = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
         return self.directory / key[:2] / f'{key}.pt', metadata
 

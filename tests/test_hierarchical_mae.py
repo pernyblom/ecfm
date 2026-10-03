@@ -81,6 +81,65 @@ def test_cstr_local_time_and_count_variants():
     assert render_cstr(events, region, 1, include_count=False)[1].sum() == 0
 
 
+def test_spatial_crops_filter_translate_tile_and_cache(cfg, monkeypatch):
+    from experiments.hierarchical_mae import data
+    enable_patch_cache(cfg)
+    cfg['data'].update(crop_fraction=[1., 1.], spatial_crop_fraction=[.5, .5])
+    validate(cfg)
+    train, _, _ = splits(cfg)
+    events = np.array([[x, y, t, (x+y) % 2] for t in (0., 1.)
+                       for y in range(8) for x in range(8)], dtype=np.float32)
+    monkeypatch.setattr(data, 'load_events', lambda *args: (events.copy(), 2.))
+    dataset = HierarchyDataset(cfg, train, True)
+    first = dataset[0]['source']
+    counts = first['log_counts'].expm1()
+    assert counts[0].item() == pytest.approx(32)
+    assert counts[2:10].sum().item() == pytest.approx(32)
+    entry = next(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))
+    payload = torch.load(entry, weights_only=True)
+    x, y, width, height = payload['metadata']['spatial_crop']
+    assert (width, height) == (4, 4)
+    expected = events[(events[:, 0] >= x) & (events[:, 0] < x+width)
+                      & (events[:, 1] >= y) & (events[:, 1] < y+height)].copy()
+    expected[:, 0] -= x
+    expected[:, 1] -= y
+    local = deepcopy(cfg)
+    local['data'].update(image_width=4, image_height=4, spatial_crop_fraction=[1., 1.],
+                         patch_cache={'enabled': False})
+    monkeypatch.setattr(data, 'load_events', lambda *args: (expected.copy(), 2.))
+    assert_views_equal(first, HierarchyDataset(local, train)[0]['source'])
+    def fail(*args):
+        raise AssertionError('Spatial crop cache hit must skip event loading')
+    monkeypatch.setattr(data, 'load_events', fail)
+    assert_views_equal(first, dataset[(0, 2)]['source'])
+    other_path, _ = dataset.cache.entry(train[0][0], 1., 0., [(x+1) % 5, y, width, height])
+    assert other_path != entry
+    monkeypatch.setattr(data, 'load_events', lambda *args: (events.copy(), 2.))
+    evaluation = HierarchyDataset(cfg, train)[0]['source']
+    assert evaluation['log_counts'][0].expm1().item() == pytest.approx(128)
+
+
+def test_spatial_crop_defaults_and_epoch_seeds(cfg):
+    train, _, _ = splits(cfg)
+    baseline = HierarchyDataset(cfg, train, True)[0]['source']
+    cfg['data']['spatial_crop_fraction'] = [1., 1.]
+    assert_views_equal(baseline, HierarchyDataset(cfg, train, True)[0]['source'])
+    cfg['data']['spatial_crop_fraction'] = [.5, .9]
+    ds = HierarchyDataset(cfg, train, True)
+    first = ds[(0, 0)]['source']
+    assert_views_equal(first, ds[(0, 0)]['source'])
+    assert any(not torch.equal(first['patches']['l0_xt'], ds[(0, epoch)]['source']['patches']['l0_xt'])
+               for epoch in range(1, 5))
+
+
+@pytest.mark.parametrize('value', [[0., 1.], [.9, .5], [.5, 1.1], [.1, .2],
+                                  [float('nan'), 1.], [.5], .5, [True, 1.]])
+def test_invalid_spatial_crop_fraction(cfg, value):
+    cfg['data']['spatial_crop_fraction'] = value
+    with pytest.raises(ValueError, match='spatial_crop_fraction'):
+        validate(cfg)
+
+
 @pytest.mark.parametrize('strategy', ['voxel', 'subtree'])
 def test_strict_mask_excludes_all_overlapping_tokens(cfg, strategy):
     view, layout = batch(cfg), Layout(cfg)

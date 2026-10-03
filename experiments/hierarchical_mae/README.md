@@ -19,7 +19,7 @@ python -m experiments.hierarchical_mae.downstream --config experiments/hierarchi
 
 The starting configuration has 420 candidate tokens, a 128-dimensional encoder,
 a 64-dimensional decoder, and random crops spanning 30–100% of the recording's
-duration. The spatial base volume is the full sensor. THU timestamps are converted
+duration. The spatial base volume defaults to the full sensor. THU timestamps are converted
 from microseconds to seconds. Empty voxels remain valid tokens with zero event count.
 No event subsampling is applied, so counts describe the actual cropped volume.
 
@@ -72,6 +72,32 @@ schedule, token selection, seed and downstream training settings for compatibili
 learning rates and batch size must match the saved configuration. If the configured
 epoch total has already been reached, the restored best model is evaluated without
 additional training.
+
+## Spatial training crops
+
+`data.crop_fraction` crops time only. To also crop space during pretraining and
+finetuning, set:
+
+```yaml
+data:
+  crop_fraction: [0.3, 1.0]
+  spatial_crop_fraction: [0.7, 1.0]
+```
+
+Width and height fractions are sampled independently from this range (fractions
+of sensor dimensions, not area), rounded down to whole pixels, and placed uniformly
+at random within the sensor. The hierarchy tiles the resulting crop, with spatial
+coordinates and geometry normalized relative to that crop. Events outside it are
+discarded; event coordinates are translated without rescaling. Token counts and
+output patch sizes stay unchanged, while event counts describe only the crop.
+The minimum crop must leave at least `max_splits[0]` pixels in width and
+`max_splits[1]` in height so every spatial cell has at least one pixel.
+
+Omitting this option or using `[1.0, 1.0]` keeps the full sensor. Validation, test,
+and frozen linear-probe feature extraction always use the full sensor spatially.
+Spatial crops follow the existing per-recording/epoch seed and reusable training
+view bank; patch-cache keys include the actual spatial crop bounds. Existing
+patch and feature caches are automatically invalidated by the implementation change.
 
 ## Define a hierarchy
 
