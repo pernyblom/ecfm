@@ -9,7 +9,7 @@ data:
   image_width: 346
   image_height: 260
   time_unit: 0.000001
-  time_bins: 64
+  time_bins: 32
   crop_fraction: [0.3, 1.0]
   eval_fraction: 1.0
   patch_norm: region_max
@@ -34,6 +34,28 @@ model:
   num_heads: 4
   num_layers: 4
   decoder_layers: 2
+  # Tiny:
+  # embed_dim: 192
+  # num_layers: 12
+  # num_heads: 3
+  # decoder_dim: 192
+  # decoder_layers: 2
+
+  # Small:
+  # embed_dim: 384
+  # num_layers: 12
+  # num_heads: 6
+  # decoder_dim: 192
+  # decoder_layers: 2
+
+  # Base:
+  # embed_dim: 768
+  # num_layers: 12
+  # num_heads: 12
+  # decoder_dim: 192
+  # decoder_layers: 2
+
+
 masking:
   strategy: mixed
   ratio: 0.65
