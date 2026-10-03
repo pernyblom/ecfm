@@ -34,7 +34,44 @@ Pretraining and downstream selection use a seeded validation holdout from train.
 Test recordings are evaluated only after choosing the best downstream checkpoint
 on validation loss. The downstream runner preserves the pretraining holdout.
 Pretraining saves `config.yaml`, `splits.json`, `metrics.jsonl`, `best.pt`, and
-`last.pt`. Downstream runs save their best weights and `results.json`.
+`last.pt`. Downstream runs save `best.pt`, an epoch-by-epoch `last.pt`, metrics and
+`results.json`.
+
+## Resume downstream training
+
+Set `downstream.epochs` to the desired **total** number of epochs, then run:
+
+```powershell
+python -m experiments.hierarchical_mae.downstream --config experiments/hierarchical_mae/configs/thu_linear_probe.yaml --resume outputs/hierarchical_mae/linear_probe/last.pt
+python -m experiments.hierarchical_mae.downstream --config experiments/hierarchical_mae/configs/thu_finetune.yaml --resume outputs/hierarchical_mae/finetune/last.pt
+```
+
+Resume restores the classifier/encoder, optimizer, completed epoch, training-loader
+random state and best validation checkpoint. Training continues at the next epoch;
+an interrupted partial epoch is repeated from the most recent completed checkpoint.
+The best model is still used for final testing, even if no resumed epoch improves
+validation. `last.pt` includes that best state and can be copied to a new directory.
+Checkpoint writes are atomic.
+
+The mode is inferred; `--mode` is optional and must match if supplied. New-format
+downstream checkpoints contain everything needed to resume, so the original MAE
+`--checkpoint` file is not required. Its saved digest lets linear probing reuse
+the existing frozen-feature cache. Resume writes to the checkpoint's directory by
+default; `--output-dir` selects a different directory.
+
+**Existing runs made before resume support only have `best.pt`.** Pass that file
+to `--resume` instead. Its saved weights and epoch are restored, but it has no
+optimizer or loader-random state: the optimizer starts fresh and an explicit
+warning is printed. This continues from the best saved epoch, which may be earlier
+than the last epoch the old process completed. The next saved checkpoints include
+full resume state. New-format `best.pt` is also resumable with its optimizer state.
+
+Extend `downstream.epochs` freely. Device, worker count, output/cache locations and
+cache rebuild options can change. Resume checks the model, data splits, crop
+schedule, token selection, seed and downstream training settings for compatibility;
+learning rates and batch size must match the saved configuration. If the configured
+epoch total has already been reached, the restored best model is evaluated without
+additional training.
 
 ## Define a hierarchy
 

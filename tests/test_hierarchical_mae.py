@@ -326,3 +326,66 @@ def test_enable_cache_when_resuming_old_checkpoint(cfg):
     state = torch.load(checkpoint, weights_only=True)
     assert state['epoch'] == 1
     assert state['config']['data']['patch_cache']['train_views'] == 2
+
+
+@pytest.mark.parametrize('mode', ['linear_probe', 'finetune'])
+def test_downstream_resume_matches_uninterrupted_training(cfg, mode):
+    torch.set_num_threads(1)
+    run(cfg)
+    root = Path(cfg['train']['output_dir'])
+    pretrained = root / 'best.pt'
+    cfg['downstream']['epochs'] = 3
+    downstream_run(cfg, pretrained, mode, root / 'continuous')
+    expected = torch.load(root / 'continuous/last.pt', weights_only=True)
+    cfg['downstream']['epochs'] = 1
+    downstream_run(cfg, pretrained, mode, root / 'interrupted')
+    cfg['downstream']['epochs'] = 3
+    # New-format downstream checkpoints are self-contained; probing still reuses its cache key.
+    pretrained.rename(root / 'moved_pretrained.pt')
+    downstream_run(cfg, output_dir=root / 'resumed', resume=root / 'interrupted/last.pt')
+    actual = torch.load(root / 'resumed/last.pt', weights_only=True)
+    assert actual['epoch'] == expected['epoch'] == 2
+    assert actual['best_state']['epoch'] == expected['best_state']['epoch']
+    assert actual['validation'] == expected['validation']
+    for key in expected['model']:
+        torch.testing.assert_close(actual['model'][key], expected['model'][key], rtol=0, atol=0)
+    assert actual['optimizer']['param_groups'] == expected['optimizer']['param_groups']
+    for key, values in expected['optimizer']['state'].items():
+        for name, value in values.items():
+            torch.testing.assert_close(actual['optimizer']['state'][key][name], value, rtol=0, atol=0)
+    assert (root / 'resumed/best.pt').is_file()
+    assert len(list(Path(cfg['downstream']['feature_cache']['dir']).glob('train_*.pt'))) == (1 if mode == 'linear_probe' else 0)
+
+
+def test_downstream_legacy_resume_preserves_best_without_improvement(cfg, monkeypatch):
+    run(cfg)
+    root = Path(cfg['train']['output_dir'])
+    downstream_run(cfg, root / 'best.pt', 'linear_probe')
+    legacy = torch.load(root / 'linear_probe/best.pt', weights_only=True)
+    for key in ('optimizer', 'loader_generator_state', 'pretrained_digest'):
+        legacy.pop(key)
+    path = root / 'legacy.pt'
+    torch.save(legacy, path)
+    cfg['downstream']['epochs'] = 2
+    from experiments.hierarchical_mae import downstream
+    monkeypatch.setattr(downstream, 'classification_epoch', lambda *args, **kwargs:
+                        dict(loss=legacy['validation']['loss']+10, accuracy=0., samples=2))
+    with pytest.warns(UserWarning, match='fresh optimizer'):
+        result = downstream_run(cfg, resume=path, output_dir=root / 'legacy_resume')
+    assert result['best_epoch'] == legacy['epoch']
+    saved = torch.load(root / 'legacy_resume/best.pt', weights_only=True)
+    for key in legacy['model']:
+        torch.testing.assert_close(saved['model'][key], legacy['model'][key])
+    assert torch.load(root / 'legacy_resume/last.pt', weights_only=True)['epoch'] == 1
+
+
+def test_downstream_resume_rejects_changed_observations_and_mode(cfg):
+    run(cfg)
+    root = Path(cfg['train']['output_dir'])
+    downstream_run(cfg, root / 'best.pt', 'linear_probe')
+    path = root / 'linear_probe/last.pt'
+    with pytest.raises(ValueError, match='mode differs'):
+        downstream_run(cfg, mode='finetune', resume=path)
+    cfg['downstream']['selection'] = dict(strategy='random', budget=2)
+    with pytest.raises(ValueError, match='downstream differs'):
+        downstream_run(cfg, resume=path)

@@ -16,9 +16,9 @@ from . import data, model, masking, rendering
 from .masking import TokenPlan, make_plan
 
 
-def cache_metadata(dataset, checkpoint):
+def cache_metadata(dataset, checkpoint, checkpoint_digest=None):
     cfg = dataset.cfg
-    return dict(version=1, checkpoint=file_digest(checkpoint),
+    return dict(version=1, checkpoint=checkpoint_digest or file_digest(checkpoint),
         entries=[[str(p.resolve()), label, p.stat().st_size, p.stat().st_mtime_ns, p.stat().st_ctime_ns]
                  for p, label in dataset.entries],
         data=cfg['data'], hierarchy=cfg['hierarchy'], model=cfg['model'],
@@ -29,10 +29,10 @@ def cache_metadata(dataset, checkpoint):
 
 
 @torch.no_grad()
-def cached_features(backbone, dataset, checkpoint, device, split):
+def cached_features(backbone, dataset, checkpoint, device, split, checkpoint_digest=None):
     if dataset.training or any(p.requires_grad for p in backbone.parameters()):
         raise ValueError('Feature caches require fixed crops and a frozen encoder')
-    metadata = cache_metadata(dataset, checkpoint)
+    metadata = cache_metadata(dataset, checkpoint, checkpoint_digest)
     key = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
     options = dataset.cfg['downstream']['feature_cache']
     directory = Path(options['dir'])
