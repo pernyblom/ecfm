@@ -9,7 +9,7 @@ data:
   image_width: 346
   image_height: 260
   time_unit: 0.000001
-  time_bins: 32
+  time_bins: 64
   crop_fraction: [0.3, 1.0]
   eval_fraction: 1.0
   patch_norm: region_max
@@ -25,9 +25,9 @@ hierarchy:
   # Maximum number of cells along x,y,t, NOT binary split depth.
   max_splits: [4, 4, 8]
   levels:
-    - {splits: [1, 1, 1], patch_size: 24, representations: [xy, xt, yt, cstr3]}
-    - {splits: [2, 2, 2], patch_size: 16, representations: [xy, xt, yt, cstr3]}
-    - {splits: [4, 4, 8], patch_size: 8, representations: [xy, xt, yt]}
+    - {splits: [1, 1, 1], patch_size: 32, representations: [cstr2, xt, yt]}
+    - {splits: [2, 2, 2], patch_size: 24, representations: [cstr2, xt, yt]}
+    - {splits: [4, 4, 8], patch_size: 16, representations: [cstr2, xt, yt]}
 model:
   embed_dim: 128
   decoder_dim: 64
