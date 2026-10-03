@@ -4,3 +4,8 @@ downstream:
   lr: 0.001
   encoder_lr: 0.00002
   selection: {strategy: all, budget: 0}
+
+data:
+  crop_fraction: [0.8, 1.0]
+
+
