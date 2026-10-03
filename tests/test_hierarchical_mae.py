@@ -13,7 +13,9 @@ from experiments.hierarchical_mae.model import HierarchicalMAE
 from experiments.hierarchical_mae.feature_cache import cache_metadata, cached_features
 from experiments.hierarchical_mae.train import run
 from experiments.hierarchical_mae.downstream import run as downstream_run
-from ecfm.data.tokenizer import Region
+from experiments.hierarchical_mae.rendering import partition_level, render_histogram
+from experiments.hierarchical_mae.loading import make_loader
+from ecfm.data.tokenizer import Region, build_patch
 
 
 @pytest.fixture
@@ -186,3 +188,141 @@ def test_pretrain_resume_probe_finetune_cache_and_inspection(cfg):
     changed = cached_features(model, ds, checkpoint, 'cpu', 'train')
     assert not torch.allclose(first.tensors[0], changed.tensors[0])
     assert len(list(Path(cfg['downstream']['feature_cache']['dir']).glob('train_*.pt'))) == 2
+
+
+@pytest.mark.parametrize('norm', ['none', 'region_max', 'region_sum', 'region_mean'])
+@pytest.mark.parametrize('plane', ['xy', 'xt', 'yt', 'xy_p45', 'yt_m45'])
+def test_fast_histograms_match_existing_renderer(plane, norm):
+    rng = np.random.default_rng(11)
+    events = np.column_stack((rng.integers(2, 7, 160), rng.integers(3, 10, 160),
+                              rng.uniform(.2, .6, 160), rng.integers(0, 2, 160))).astype(np.float32)
+    region = Region(2, 3, .2, 5, 7, .4, plane)
+    for sub in (events, events[:0]):
+        expected, _ = build_patch(sub, region, 6, 9, norm_mode=norm)
+        actual = render_histogram(sub, region, 6, 9, norm)
+        torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-7)
+
+
+@pytest.mark.parametrize('grid', [[4, 4, 8], [3, 2, 3], [1, 1, 1]])
+def test_partition_matches_half_open_regions_and_preserves_order(grid):
+    width, height = 13, 9
+    nx, ny, nt = grid
+    rng = np.random.default_rng(3)
+    events = np.column_stack((rng.integers(-1, width+1, 500), rng.integers(-1, height+1, 500),
+                              rng.uniform(0, 1, 500), rng.integers(0, 2, 500))).astype(np.float32)
+    # Include exact boundaries, endpoint and an invalid event.
+    edges = np.array([[0, 0, t/nt, 1] for t in range(nt+1)], dtype=np.float32)
+    events = np.concatenate((events, edges))
+    voxels = partition_level(events, grid, grid, width, height)
+    for t in range(nt):
+        for y in range(ny):
+            for x in range(nx):
+                x0, x1 = x*width//nx, (x+1)*width//nx
+                y0, y1 = y*height//ny, (y+1)*height//ny
+                expected = events[(events[:, 0] >= x0) & (events[:, 0] < x1)
+                    & (events[:, 1] >= y0) & (events[:, 1] < y1)
+                    & (events[:, 2] >= t/nt) & (events[:, 2] < t/nt+1/nt)]
+                np.testing.assert_array_equal(voxels[(t*ny+y)*nx+x], expected)
+
+
+def enable_patch_cache(cfg, views=2):
+    cfg['data']['patch_cache'] = dict(enabled=True, train_views=views,
+                                     dir=str(Path(cfg['data']['root']) / 'patch_cache'))
+    cfg['data']['crop_fraction'] = [.3, .9]
+
+
+def assert_views_equal(first, second):
+    for key in ('metadata', 'log_counts', 'valid_mask'):
+        torch.testing.assert_close(first[key], second[key], rtol=0, atol=0)
+    for key in first['patches']:
+        torch.testing.assert_close(first['patches'][key], second['patches'][key], rtol=0, atol=0)
+
+
+def test_patch_cache_hit_skips_events_and_rendering_and_keeps_current_label(cfg, monkeypatch):
+    enable_patch_cache(cfg)
+    train, _, _ = splits(cfg)
+    dataset = HierarchyDataset(cfg, train, True)
+    first = dataset[0]['source']
+    from experiments.hierarchical_mae import data
+    def fail(*args):
+        raise AssertionError('Cache hit must not load raw events')
+    monkeypatch.setattr(data, 'load_events', fail)
+    dataset.entries[0] = (dataset.entries[0][0], 1)
+    cached = dataset[0]
+    assert cached['label'] == 1
+    assert_views_equal(first, cached['source'])
+    assert len(list(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))) == 1
+
+
+def test_crop_bank_repeats_but_uncached_random_crops_stay_fresh(cfg):
+    enable_patch_cache(cfg)
+    train, _, _ = splits(cfg)
+    dataset = HierarchyDataset(cfg, train, True)
+    first, second = dataset[(0, 0)]['source'], dataset[(0, 1)]['source']
+    assert not torch.equal(first['metadata'], second['metadata'])
+    assert_views_equal(first, dataset[(0, 2)]['source'])
+    assert len(list(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))) == 2
+    cfg['data']['patch_cache']['train_views'] = 0
+    fresh = HierarchyDataset(cfg, train, True)
+    assert_views_equal(first, fresh[(0, 0)]['source'])
+    assert not torch.equal(first['metadata'], fresh[(0, 2)]['source']['metadata'])
+    # Fresh crops do not fill the disk with one-use cache entries.
+    assert len(list(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))) == 2
+    evaluation = HierarchyDataset(cfg, train)
+    fixed = evaluation[0]['source']
+    assert_views_equal(fixed, evaluation[(0, 100)]['source'])
+    assert len(list(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))) == 3
+
+
+def test_patch_cache_invalidation_and_corruption(cfg):
+    enable_patch_cache(cfg)
+    train, _, _ = splits(cfg)
+    dataset = HierarchyDataset(cfg, train, True)
+    original = dataset[0]['source']
+    changed = deepcopy(cfg)
+    changed['data']['time_unit'] = 3
+    different = HierarchyDataset(changed, train, True)[0]['source']
+    assert not torch.equal(original['metadata'], different['metadata'])
+    entries = list(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))
+    assert len(entries) == 2
+    source, _ = train[0]
+    events = np.load(source)
+    events[:, 3] = 1-events[:, 3]
+    np.save(source, events)
+    updated = dataset[0]['source']
+    assert not torch.equal(original['patches']['l0_xt'], updated['patches']['l0_xt'])
+    entries = list(Path(cfg['data']['patch_cache']['dir']).rglob('*.pt'))
+    assert len(entries) == 3
+    for entry in entries:
+        entry.write_bytes(b'incomplete cache')
+    with pytest.raises(ValueError, match='Invalid patch cache'):
+        dataset[0]
+    cfg['data']['patch_cache']['rebuild'] = True
+    assert_views_equal(updated, HierarchyDataset(cfg, train, True)[0]['source'])
+
+
+def test_persistent_spawn_workers_receive_current_epoch(cfg):
+    cfg['data']['crop_fraction'] = [.3, .9]
+    cfg['train']['persistent_workers'] = True
+    train, _, _ = splits(cfg)
+    dataset = HierarchyDataset(cfg, train, True)
+    loader = make_loader(dataset, 2, workers=1)
+    first = next(iter(loader))['source']['metadata'][0]
+    dataset.epoch = 1
+    second = next(iter(loader))['source']['metadata'][0]
+    assert not torch.equal(first, second)
+    torch.testing.assert_close(second, dataset[0]['source']['metadata'])
+    del loader
+
+
+def test_enable_cache_when_resuming_old_checkpoint(cfg):
+    run(cfg)
+    checkpoint = Path(cfg['train']['output_dir']) / 'last.pt'
+    enable_patch_cache(cfg)
+    # Changing crop range remains a semantic mismatch; cache settings alone are allowed.
+    cfg['data']['crop_fraction'] = [1., 1.]
+    cfg['train']['epochs'] = 2
+    run(cfg, checkpoint)
+    state = torch.load(checkpoint, weights_only=True)
+    assert state['epoch'] == 1
+    assert state['config']['data']['patch_cache']['train_views'] == 2

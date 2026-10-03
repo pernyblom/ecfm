@@ -1,0 +1,6 @@
+# Explicit tradeoff: 8 reproducible random crops/recording, reused every 8 epochs.
+# Masking and token selection remain fresh on every pass. Cache fills lazily.
+extends: thu.yaml
+data:
+  patch_cache:
+    train_views: 8

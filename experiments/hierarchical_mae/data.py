@@ -8,8 +8,10 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import Dataset
 
-from ecfm.data.tokenizer import Region, build_patch
+from ecfm.data.tokenizer import Region
 from experiments.region_worldmodel.data import load_events, partition_entries, read_entries
+from .patch_cache import PatchCache
+from .rendering import partition_level, render_histogram
 
 
 @dataclass
@@ -86,18 +88,31 @@ class HierarchyDataset(Dataset):
         self.cfg, self.entries, self.training = cfg, entries, training
         self.epoch = 0
         self.layout = Layout(cfg)
+        options = cfg['data'].get('patch_cache', {})
+        self.train_views = options.get('train_views', 0)
+        self.cache = PatchCache(cfg) if options.get('enabled', False) else None
 
     def __len__(self):
         return len(self.entries)
 
     def __getitem__(self, index):
         d = self.cfg['data']
+        # Epoch travels with each sampled index so persistent workers see updates.
+        index, epoch = index if isinstance(index, tuple) else (index, self.epoch)
+        crop_epoch = epoch % self.train_views if self.training and self.train_views else epoch
         rng = np.random.default_rng(np.random.SeedSequence([d.get('region_seed', 123), index,
-                                                          self.epoch if self.training else 0]))
+                                                          crop_epoch if self.training else 0]))
         path, label = self.entries[index]
-        events, seconds = load_events(path, d['time_unit'])
         fraction = float(rng.uniform(*d['crop_fraction'])) if self.training else d.get('eval_fraction', 1.)
         start = float(rng.uniform(0, 1-fraction)) if self.training else (1-fraction)/2
+        # Do not accumulate one-use random crops on disk. Fixed eval crops are always reusable.
+        use_cache = self.cache is not None and (not self.training or self.train_views > 0)
+        if use_cache:
+            cache_path, cache_metadata = self.cache.entry(path, fraction, start)
+            cached = self.cache.read(cache_path, cache_metadata, self.layout)
+            if cached is not None:
+                return dict(source=cached, label=label)
+        events, seconds = load_events(path, d['time_unit'])
         # Include the recording's last event, then use half-open voxel intervals.
         events = events[(events[:, 2] >= start) & (events[:, 2] <= start + fraction)].copy()
         events[:, 2] = np.minimum((events[:, 2] - start) / fraction, np.nextafter(np.float32(1), np.float32(0)))
@@ -105,30 +120,35 @@ class HierarchyDataset(Dataset):
         width, height = d['image_width'], d['image_height']
         mx, my, mt = self.layout.maximum
         patches, metadata, counts = {}, [], []
+        current_level, voxels = None, None
         for group in self.layout.groups:
+            if group.level != current_level:
+                voxels = partition_level(events, self.cfg['hierarchy']['levels'][group.level]['splits'],
+                                         self.layout.maximum, width, height)
+                current_level = group.level
             rendered = []
-            for x, y, t, dx, dy, dt in self.layout.boxes[group.start:group.stop].tolist():
+            for sub, (x, y, t, dx, dy, dt) in zip(voxels, self.layout.boxes[group.start:group.stop].tolist()):
                 x0, x1 = x * width // mx, (x+dx) * width // mx
                 y0, y1 = y * height // my, (y+dy) * height // my
                 r = Region(x0, y0, t/mt, x1-x0, y1-y0, dt/mt, group.representation)
-                sub = events[(events[:, 0] >= x0) & (events[:, 0] < x1)
-                             & (events[:, 1] >= y0) & (events[:, 1] < y1)
-                             & (events[:, 2] >= r.t) & (events[:, 2] < r.t+r.dt)]
                 counts.append(np.log1p(len(sub)))
                 if group.representation.startswith('cstr'):
                     patch = render_cstr(sub, r, group.size,
                         d['cstr_max_count'] if group.representation == 'cstr3_fixed' else None,
                         group.representation != 'cstr2')
                 else:
-                    patch, _ = build_patch(sub, r, group.size, d['time_bins'], norm_mode=d['patch_norm'])
+                    patch = render_histogram(sub, r, group.size, d['time_bins'], d['patch_norm'])
                 rendered.append(patch)
                 # Known geometry/time only. Event counts never enter masked queries.
                 metadata.append([x0/width, y0/height, r.t, r.dx/width, r.dy/height, r.dt,
                                  np.log1p(r.t*duration), np.log1p(r.dt*duration), np.log1p(duration)])
             patches[group.key] = torch.stack(rendered)
-        return dict(source=dict(patches=patches, metadata=torch.tensor(metadata, dtype=torch.float32),
-                                log_counts=torch.tensor(counts, dtype=torch.float32),
-                                valid_mask=torch.ones(self.layout.count, dtype=torch.bool)), label=label)
+        view = dict(patches=patches, metadata=torch.tensor(metadata, dtype=torch.float32),
+                    log_counts=torch.tensor(counts, dtype=torch.float32),
+                    valid_mask=torch.ones(self.layout.count, dtype=torch.bool))
+        if use_cache:
+            self.cache.write(cache_path, cache_metadata, view)
+        return dict(source=view, label=label)
 
 
 def splits(cfg, include_test=False):

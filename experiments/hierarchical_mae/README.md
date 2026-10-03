@@ -175,6 +175,79 @@ all candidate patches before selection; encoder attention is sparse, but renderi
 and the full MAE decoder are not. Lazy rendering can be added at the same interface
 once the policy decides which candidate IDs to request.
 
+## Patch preparation, workers and reusable crop caches
+
+Patch generation partitions the events once per hierarchy level, shares each voxel
+across its representations, and uses bincount histograms for `xy`/`xt`/`yt`.
+This preserves the local representation and normalization semantics while avoiding
+420 separate scans of the entire event crop. The initial THU configuration now
+uses four persistent CPU workers and pinned transfers. Workers receive the epoch
+with each sample index, so fresh crop seeds advance even with persistent workers.
+Set `train.num_workers: 0` for serial loading, or adjust for your machine's CPU/RAM.
+
+`data.patch_cache` is separate from the frozen-encoder feature cache:
+
+```yaml
+data:
+  patch_cache:
+    enabled: true
+    dir: outputs/hierarchical_mae_patches
+    train_views: 0
+    rebuild: false
+```
+
+With `train_views: 0`, training retains fresh random crops every epoch and does
+not write one-use training patches. Fixed validation/test/probe crops are cached.
+For reusable training patches, choose a positive `train_views`, such as the eight
+views in `configs/thu_cached.yaml`. Every recording then uses a deterministic bank
+of random crops, selecting `epoch % train_views`. The first visits render and save
+patches; later visits load them directly, skipping raw event loading and rendering.
+Masking and token selection still run afresh on each pass. The crop bank remains
+bounded even if disk caching is disabled, so cached and uncached results can be
+compared using the same crop schedule.
+
+An eight-view bank trades unlimited crop diversity for reuse. It is opt-in: the
+base `thu.yaml` retains fresh crops. The full 420-token THU bank takes approximately
+**3.9 GB** for eight crops × 1,518 train recordings plus 268 validation recordings.
+Changing preprocessing or the crop schedule can create additional entries; old
+cache namespaces are not automatically removed. No masks, model weights or encoder
+features are stored in the patch cache.
+
+To switch an existing pretraining run to the eight-view bank, restart with:
+
+```powershell
+python -m experiments.hierarchical_mae.train --config experiments/hierarchical_mae/configs/thu_cached.yaml --resume outputs/hierarchical_mae/last.pt
+```
+
+Resume accepts changes to cache settings and worker settings, including opting
+into the crop bank. Model, hierarchy and other data semantics must still match.
+To retain fresh crops while benefiting from the renderer/worker improvements,
+use `configs/thu.yaml` instead. Changes take effect in a newly launched process.
+
+The cache fills lazily; optionally prepare the entire bank before training:
+
+```powershell
+python -m experiments.hierarchical_mae.cache --config experiments/hierarchical_mae/configs/thu_cached.yaml --workers 4
+```
+
+Use `--split validation` to prepare only fixed validation crops, also supported by
+the base config. Interrupted preparation can be rerun: complete entries are reused.
+Cache keys cover the source path/statistics, exact crop interval, geometry,
+representation settings, relevant implementation digests, and NumPy/PyTorch versions.
+Writes use atomic replacement. Reads verify metadata, shapes, dtype and finiteness.
+`rebuild: true` forces regeneration on every access; set it back to false to reuse
+the rebuilt entries.
+
+`train.log_every` prints progress every N batches (`0` disables intermediate logs).
+Epoch metrics include `data_wait_seconds_per_batch`, `step_seconds_per_batch` and
+`samples_per_second`. Data wait includes worker startup and cache misses; with
+prefetching it measures time the main process actually waits, not total CPU work.
+The step timing includes transfers, masking, model work and optimizer updates.
+
+See [PERFORMANCE.md](PERFORMANCE.md) for measurements and the bounded profiling
+command. These measurements isolate rendering, warm cache reads, data workers and
+GPU training rather than extrapolating from model parameter count.
+
 ## Cached probes and patch inspection
 
 Linear probing always saves pooled frozen-encoder features to CPU `.pt` files.

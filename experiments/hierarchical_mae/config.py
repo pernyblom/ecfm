@@ -53,6 +53,18 @@ def validate(cfg):
         raise ValueError('Crop fractions must be in (0,1]')
     if d['time_unit'] <= 0 or d['time_bins'] < 1:
         raise ValueError('time_unit and time_bins must be positive')
+    cache = d.get('patch_cache', {})
+    if not isinstance(cache, dict) or set(cache)-{'enabled', 'dir', 'train_views', 'rebuild'}:
+        raise ValueError('Invalid data.patch_cache settings')
+    if type(cache.get('train_views', 0)) is not int or cache.get('train_views', 0) < 0:
+        raise ValueError('patch_cache.train_views must be a nonnegative integer')
+    for key in ('enabled', 'rebuild'):
+        if type(cache.get(key, False)) is not bool:
+            raise ValueError(f'patch_cache.{key} must be boolean')
+    if 'dir' in cache and (not isinstance(cache['dir'], str) or not cache['dir'].strip()):
+        raise ValueError('patch_cache.dir must be a nonempty path')
+    if type(cfg['train']['num_workers']) is not int or cfg['train']['num_workers'] < 0:
+        raise ValueError('num_workers must be a nonnegative integer')
     for width in ('embed_dim', 'decoder_dim'):
         if m[width] < 1 or m[width] % m['num_heads']:
             raise ValueError('Transformer widths must be positive multiples of num_heads')

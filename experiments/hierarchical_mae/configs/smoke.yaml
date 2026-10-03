@@ -1,6 +1,8 @@
 extends: thu.yaml
 data:
   max_samples: 8
+  patch_cache:
+    enabled: false
 hierarchy:
   max_splits: [2, 2, 2]
   levels:
@@ -14,6 +16,8 @@ model:
   decoder_layers: 1
 train:
   device: cpu
+  num_workers: 0
+  pin_memory: false
   batch_size: 2
   epochs: 1
   max_batches: 1

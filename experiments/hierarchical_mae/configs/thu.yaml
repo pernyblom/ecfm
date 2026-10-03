@@ -14,6 +14,13 @@ data:
   eval_fraction: 1.0
   patch_norm: region_max
   cstr_max_count: 20
+  patch_cache:
+    enabled: true
+    dir: outputs/hierarchical_mae_patches
+    # 0: fresh random training crops; cache only fixed evaluation crops.
+    # See thu_cached.yaml for a reusable training crop bank.
+    train_views: 0
+    rebuild: false
 hierarchy:
   # Maximum number of cells along x,y,t, NOT binary split depth.
   max_splits: [4, 4, 8]
@@ -46,7 +53,10 @@ train:
   epochs: 200
   lr: 0.0002
   weight_decay: 0.05
-  num_workers: 0
+  num_workers: 4
+  persistent_workers: true
+  pin_memory: true
+  log_every: 10
   max_batches: 0
   max_val_batches: 0
   output_dir: outputs/hierarchical_mae

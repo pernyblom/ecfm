@@ -1,13 +1,14 @@
 """Saved-feature linear probing and supervised encoder finetuning."""
 import argparse
 import json
+from itertools import islice
 from pathlib import Path
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
 
-from experiments.region_worldmodel.train import seed_all, to_device
+from experiments.region_worldmodel.train import seed_all
+from .loading import make_loader, to_device
 from .config import load_config, validate
 from .data import HierarchyDataset, splits
 from .feature_cache import cached_features
@@ -38,9 +39,7 @@ def classification_epoch(model, loader, device, optimizer=None, max_batches=0):
     model.train(optimizer is not None)
     count, total, correct = 0, 0., 0
     with torch.set_grad_enabled(optimizer is not None):
-        for i, raw in enumerate(loader):
-            if max_batches and i >= max_batches:
-                break
+        for raw in islice(loader, max_batches or None):
             if isinstance(raw, (tuple, list)):
                 features, labels = [v.to(device) for v in raw]
                 logits = model.head(features)
@@ -95,8 +94,9 @@ def run(cfg, checkpoint, mode, output_dir=None):
         val_ds = cached_features(backbone, val_ds, checkpoint, device, 'validation')
     workers = 0 if frozen else cfg['train']['num_workers']
     def loader(ds, shuffle=False, seed=0):
-        return DataLoader(ds, batch_size=settings['batch_size'], shuffle=shuffle,
-                          num_workers=workers, generator=torch.Generator().manual_seed(seed))
+        return make_loader(ds, settings['batch_size'], workers, shuffle, seed)
+    train_loader = loader(train_ds, True, cfg['train']['seed'])
+    val_loader = loader(val_ds)
     groups = [dict(params=model.head.parameters(), lr=settings['lr'])]
     if not frozen:
         groups.append(dict(params=backbone.encoder_parameters(), lr=settings['encoder_lr']))
@@ -108,12 +108,12 @@ def run(cfg, checkpoint, mode, output_dir=None):
         seed_all(cfg['train']['seed']+epoch)
         if not frozen:
             train_ds.epoch = epoch
-        training = classification_epoch(model, loader(train_ds, True, cfg['train']['seed']+epoch),
+        training = classification_epoch(model, train_loader,
                                         device, optimizer, settings.get('max_batches', 0))
         devices = [device.index or 0] if device.type == 'cuda' else []
         with torch.random.fork_rng(devices=devices):
             torch.manual_seed(12345)
-            validation = classification_epoch(model, loader(val_ds), device)
+            validation = classification_epoch(model, val_loader, device)
         record = dict(epoch=epoch, train=training, validation=validation)
         print(json.dumps(record), flush=True)
         with (output / 'metrics.jsonl').open('a') as stream:

@@ -11,8 +11,8 @@ from torch.utils.data import TensorDataset
 from ecfm.data import tokenizer
 from experiments.region_worldmodel import data as event_data
 from experiments.region_worldmodel.feature_cache import file_digest
-from experiments.region_worldmodel.train import make_loader, to_device
-from . import data, model, masking
+from .loading import make_loader, to_device
+from . import data, model, masking, rendering
 from .masking import TokenPlan, make_plan
 
 
@@ -25,7 +25,7 @@ def cache_metadata(dataset, checkpoint):
         selection=cfg['downstream'].get('selection', {}),
         seed=cfg['train']['seed'], torch_version=str(torch.__version__),
         implementation=[file_digest(p) for p in [__file__, data.__file__, model.__file__,
-                                                masking.__file__, tokenizer.__file__, event_data.__file__]])
+                                                masking.__file__, rendering.__file__, tokenizer.__file__, event_data.__file__]])
 
 
 @torch.no_grad()
