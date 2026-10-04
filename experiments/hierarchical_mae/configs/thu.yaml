@@ -28,15 +28,15 @@ hierarchy:
   max_splits: [4, 4, 8]
   levels:
     - {splits: [1, 1, 1], patch_size: 32, representations: [cstr2, xt, yt]}
-    - {splits: [2, 2, 2], patch_size: 24, representations: [cstr2, xt, yt]}
-    - {splits: [4, 4, 8], patch_size: 16, representations: [cstr2, xt, yt]}
+    - {splits: [2, 2, 2], patch_size: 32, representations: [cstr2, xt, yt]}
+    - {splits: [4, 4, 8], patch_size: 32, representations: [cstr2, xt, yt]}
 model:
   embed_dim: 192
   num_layers: 12
   num_heads: 3
   decoder_dim: 192
   decoder_layers: 2
-  
+
   # Tiny:
   # embed_dim: 192
   # num_layers: 12
