@@ -51,7 +51,13 @@ random state and best validation checkpoint. Training continues at the next epoc
 an interrupted partial epoch is repeated from the most recent completed checkpoint.
 The best model is still used for final testing, even if no resumed epoch improves
 validation. `last.pt` includes that best state and can be copied to a new directory.
-Checkpoint writes are atomic.
+Checkpoint writes are atomic. On Windows, transient file locks can prevent the
+final replacement (`WinError 5`, access denied). The saver retries replacement up
+to eight times over 4.5 seconds without rewriting the tensors or deleting the
+previous checkpoint. If replacement still fails, it preserves the fully written
+checkpoint as `last.recovery-<unique-id>.pt` (or `best.recovery-...`) and reports
+its path. That file can be passed directly to `--resume`. A serialization failure
+leaves the previous checkpoint intact and removes the partial file when possible.
 
 The mode is inferred; `--mode` is optional and must match if supplied. New-format
 downstream checkpoints contain everything needed to resume, so the original MAE

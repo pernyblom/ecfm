@@ -1,5 +1,6 @@
 from copy import deepcopy
 from pathlib import Path
+import os
 
 import numpy as np
 import pytest
@@ -13,6 +14,7 @@ from experiments.hierarchical_mae.model import HierarchicalMAE
 from experiments.hierarchical_mae.feature_cache import cache_metadata, cached_features
 from experiments.hierarchical_mae.train import run
 from experiments.hierarchical_mae.downstream import run as downstream_run
+from experiments.hierarchical_mae.downstream import save_checkpoint
 from experiments.hierarchical_mae.rendering import partition_level, render_histogram
 from experiments.hierarchical_mae.loading import make_loader
 from ecfm.data.tokenizer import Region, build_patch
@@ -120,6 +122,7 @@ def test_spatial_crops_filter_translate_tile_and_cache(cfg, monkeypatch):
 
 
 def test_spatial_crop_defaults_and_epoch_seeds(cfg):
+    cfg['data'].pop('spatial_crop_fraction', None)  # Test the omitted-setting default, not the training YAML.
     train, _, _ = splits(cfg)
     baseline = HierarchyDataset(cfg, train, True)[0]['source']
     cfg['data']['spatial_crop_fraction'] = [1., 1.]
@@ -448,3 +451,82 @@ def test_downstream_resume_rejects_changed_observations_and_mode(cfg):
     cfg['downstream']['selection'] = dict(strategy='random', budget=2)
     with pytest.raises(ValueError, match='downstream differs'):
         downstream_run(cfg, resume=path)
+
+
+def test_checkpoint_retries_replace_without_reserializing(tmp_path, monkeypatch):
+    from experiments.hierarchical_mae import downstream
+    path = tmp_path / 'last.pt'
+    save_checkpoint(path, dict(epoch=1))
+    replace, serialize = os.replace, torch.save
+    attempts, writes, sleeps = [], [], []
+    def transient(source, destination):
+        attempts.append(source)
+        assert torch.load(path, weights_only=True)['epoch'] == 1
+        if len(attempts) < 3:
+            raise PermissionError('Simulated Windows lock')
+        replace(source, destination)
+    def counted_save(*args, **kwargs):
+        writes.append(1)
+        return serialize(*args, **kwargs)
+    monkeypatch.setattr(downstream.os, 'replace', transient)
+    monkeypatch.setattr(downstream.torch, 'save', counted_save)
+    monkeypatch.setattr(downstream.time, 'sleep', sleeps.append)
+    with pytest.warns(RuntimeWarning, match='retrying'):
+        save_checkpoint(path, dict(epoch=2))
+    assert len(attempts) == 3 and len(set(attempts)) == 1 and len(writes) == 1
+    assert sleeps == [.1, .2]
+    assert torch.load(path, weights_only=True)['epoch'] == 2
+    assert list(tmp_path.glob('*.pt')) == [path]
+
+
+def test_checkpoint_persistent_lock_preserves_old_and_recovery(tmp_path, monkeypatch):
+    from experiments.hierarchical_mae import downstream
+    path = tmp_path / 'last.pt'
+    save_checkpoint(path, dict(epoch=1))
+    attempts, sleeps = [], []
+    def locked(*args):
+        attempts.append(1)
+        raise PermissionError('Persistent lock')
+    monkeypatch.setattr(downstream.os, 'replace', locked)
+    monkeypatch.setattr(downstream.time, 'sleep', sleeps.append)
+    with pytest.warns(RuntimeWarning), pytest.raises(PermissionError, match='preserved at'):
+        save_checkpoint(path, dict(epoch=2, optimizer={'step': torch.tensor(42)}))
+    assert len(attempts) == 8 and sum(sleeps) == pytest.approx(4.5)
+    assert torch.load(path, weights_only=True)['epoch'] == 1
+    recovery, = tmp_path.glob('last.recovery-*.pt')
+    recovered = torch.load(recovery, weights_only=True)
+    assert recovered['epoch'] == 2 and recovered['optimizer']['step'] == 42
+
+
+def test_checkpoint_serialization_failure_keeps_previous_file(tmp_path, monkeypatch):
+    from experiments.hierarchical_mae import downstream
+    path = tmp_path / 'last.pt'
+    save_checkpoint(path, dict(epoch=1))
+    def fail(state, stream):
+        stream.write(b'partial')
+        raise OSError('Disk full')
+    monkeypatch.setattr(downstream.torch, 'save', fail)
+    with pytest.raises(OSError, match='Disk full'):
+        save_checkpoint(path, dict(epoch=2))
+    assert torch.load(path, weights_only=True)['epoch'] == 1
+    assert list(tmp_path.glob('*.pt')) == [path]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows denies replacement of an open checkpoint')
+def test_checkpoint_real_windows_file_lock(tmp_path, monkeypatch):
+    from experiments.hierarchical_mae import downstream
+    path = tmp_path / 'last.pt'
+    save_checkpoint(path, dict(epoch=1))
+    handle = path.open('rb')
+    sleeps = []
+    def release_lock(delay):
+        sleeps.append(delay)
+        handle.close()
+    monkeypatch.setattr(downstream.time, 'sleep', release_lock)
+    try:
+        with pytest.warns(RuntimeWarning, match='retrying'):
+            save_checkpoint(path, dict(epoch=2))
+    finally:
+        handle.close()
+    assert sleeps == [.1]
+    assert torch.load(path, weights_only=True)['epoch'] == 2

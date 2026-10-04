@@ -6,6 +6,7 @@ from itertools import islice
 import os
 from pathlib import Path
 import tempfile
+import time
 import warnings
 
 import torch
@@ -67,13 +68,37 @@ def classification_epoch(model, loader, device, optimizer=None, max_batches=0):
 
 
 def save_checkpoint(path, state):
-    descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix='.tmp')
-    os.close(descriptor)
+    path = Path(path).resolve()
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f'{path.stem}.recovery-', suffix='.pt')
+    complete = False
     try:
-        torch.save(state, temporary)
-        os.replace(temporary, path)
+        with os.fdopen(descriptor, 'wb') as stream:
+            torch.save(state, stream)
+        complete = True
+        # Windows scanners/readers can briefly hold either file without delete sharing.
+        # Retry the rename only: never truncate/delete the previous checkpoint.
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as error:
+                if attempt == 7:
+                    raise PermissionError(
+                        f'Cannot replace checkpoint {path} after 8 attempts. '
+                        f'The previous checkpoint is unchanged. The completed new checkpoint '
+                        f'is preserved at {temporary}; it can be passed to --resume.'
+                    ) from error
+                if attempt == 0:
+                    warnings.warn(f'Checkpoint replacement denied for {path}; retrying for up to 4.5 seconds.',
+                                  RuntimeWarning)
+                time.sleep(min(.1 * 2**attempt, 1.))
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        # Keep a fully serialized checkpoint if replacement failed, so the epoch is recoverable.
+        if not complete:
+            try:
+                Path(temporary).unlink(missing_ok=True)
+            except OSError:
+                pass  # Do not obscure the original serialization error with a cleanup error.
 
 
 def validate_resume(cfg, state, mode):
