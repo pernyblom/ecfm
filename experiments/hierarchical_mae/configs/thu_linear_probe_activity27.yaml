@@ -1,0 +1,4 @@
+extends: thu_linear_probe.yaml
+downstream:
+  # Highest log1p(event_count); this is total count, not event density.
+  selection: {strategy: activity, budget: 27}

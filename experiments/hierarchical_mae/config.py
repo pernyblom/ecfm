@@ -93,7 +93,10 @@ def validate(cfg):
             if type(settings[key]) is not int or settings[key] < 1:
                 raise ValueError(f'{key} must be positive')
     for selection in (cfg.get('selection', {}), cfg['downstream'].get('selection', {})):
-        if selection.get('strategy', 'all') not in ('all', 'random', 'activity', 'coarse'):
-            raise ValueError('Selection strategy must be all/random/activity/coarse')
+        if selection.get('strategy', 'all') not in ('all', 'random', 'activity', 'activity_random', 'coarse'):
+            raise ValueError('Selection strategy must be all/random/activity/activity_random/coarse')
         if type(selection.get('budget', 0)) is not int or selection.get('budget', 0) < 0:
             raise ValueError('Selection budget must be a nonnegative integer; 0 means unlimited')
+        power = selection.get('activity_power', 1.)
+        if type(power) not in (int, float) or not math.isfinite(power) or power < 0:
+            raise ValueError('activity_power must be finite and nonnegative')

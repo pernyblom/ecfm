@@ -1,5 +1,6 @@
 """Selection and reconstruction targets are independent, explicit token sets."""
 from dataclasses import dataclass
+import math
 
 import torch
 
@@ -42,6 +43,17 @@ def select(eligible, layout, options, activity, scores=None, straight_through=Fa
     if scores is None:
         if strategy == 'activity':
             scores = activity
+        elif strategy == 'activity_random':
+            power = options.get('activity_power', 1.)
+            if type(power) not in (int, float) or not math.isfinite(power) or power < 0:
+                raise ValueError('activity_power must be finite and nonnegative')
+            if not torch.isfinite(activity).all() or (activity < 0).any():
+                raise ValueError('Activity must be finite, nonnegative log1p(event_count)')
+            # Gumbel top-k samples without replacement with successive draw weights
+            # (1 + log1p(event_count))**power. The +1 gives empty voxels a chance
+            # and makes all-empty recordings uniform, without special-case filling.
+            uniform = torch.rand_like(activity).clamp(min=torch.finfo(activity.dtype).tiny)
+            scores = power * torch.log1p(activity) - torch.log(-torch.log(uniform))
         elif strategy == 'coarse':
             scores = -layout.level_ids.to(activity.device).expand_as(activity).float()
         elif strategy == 'random':

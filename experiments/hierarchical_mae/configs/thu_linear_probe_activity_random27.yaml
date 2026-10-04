@@ -1,0 +1,5 @@
+extends: thu_linear_probe.yaml
+downstream:
+  # Sampling without replacement, weighted by (1 + log1p(event_count))**activity_power.
+  # 0 = uniform random; 1 = default activity preference; larger = stronger preference.
+  selection: {strategy: activity_random, budget: 27, activity_power: 1.0}

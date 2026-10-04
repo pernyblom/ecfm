@@ -203,7 +203,8 @@ downstream:
   selection: {strategy: activity, budget: 64}
 ```
 
-Strategies are `all`, `random`, `activity` (highest event counts), and `coarse`
+Strategies are `all`, `random`, `activity` (highest event counts),
+`activity_random` (activity-weighted random sampling), and `coarse`
 (lowest level first). Budget zero means all eligible tokens; otherwise it is an
 upper bound. Ties use canonical order. Random feature-cache selection is seeded
 per recording, independent of cache extraction batch size. Activity selection uses
@@ -316,6 +317,94 @@ The step timing includes transfers, masking, model work and optimizer updates.
 See [PERFORMANCE.md](PERFORMANCE.md) for measurements and the bounded profiling
 command. These measurements isolate rendering, warm cache reads, data workers and
 GPU training rather than extrapolating from model parameter count.
+
+## Compare selection strategies with linear probing
+
+The supplied `thu_linear_probe_random27.yaml`, `thu_linear_probe_activity27.yaml`,
+`thu_linear_probe_activity_random27.yaml` and `thu_linear_probe_coarse27.yaml` inherit the same probe hyperparameters from
+`thu_linear_probe.yaml` and change only `downstream.selection`. The base probe
+config is the all-token baseline. Use `--checkpoint` to start a new head for each
+strategy; `--resume` continues an existing probe and rejects a changed selection.
+
+The current three-plane hierarchy (`cstr2`, `xt`, `yt`) has **411 tokens**:
+3 at `[1,1,1]`, 24 at `[2,2,2]`, and 384 at `[4,4,8]`. A representation of a voxel
+counts as one token, so the three representations of one voxel cost three tokens.
+
+| Strategy | Behavior |
+| --- | --- |
+| `all`, budget `0` | All 411 tokens; baseline |
+| `random`, budget `27` | Uniform random subset of 27 tokens across all levels/representations; fixed per recording in the feature cache |
+| `activity`, budget `27` | The 27 largest `log1p(event_count)` values, selected separately for each recording |
+| `activity_random`, budget `27` | Sample 27 distinct tokens with higher probability for higher activity |
+| `coarse`, budget `27` | Exactly the 3 full-volume and 24 middle-level tokens; identical layout for every recording |
+
+Activity scores use total voxel counts, not counts divided by area or duration, so
+large/active volumes are favored. Different representations of the same voxel
+have equal scores. Ties are resolved in canonical order: level, representation,
+then t/y/x. Coarse selection uses the same tie-breaking within a level; for example,
+budget 64 takes the first 37 fine tokens after the 27 coarse tokens, rather than a
+balanced sample of fine representations. Budget 3 with coarse selects only the
+full-volume tokens. Other useful budgets are 12, 64 and 128. Budget **0 means no
+limit**, even with random/activity/activity_random/coarse; it does not mean select no tokens.
+
+`activity_random` samples **without replacement**, using successive-draw weights
+`w = (1 + log1p(event_count)) ** activity_power`. The default power is `1.0`.
+Power `0` gives uniform random sampling; values between `0` and `1` weaken the
+activity preference, and larger values strengthen it. The additive one gives empty
+voxels nonzero weight; an all-empty recording is sampled uniformly. Probabilities
+are normalized among the remaining eligible tokens at each draw. These are draw
+weights, not exact marginal inclusion probabilities when choosing several tokens.
+Gumbel top-k implements the sampling while respecting masking eligibility and the
+budget. As with the existing random strategy, probe selections are reproducible
+per recording and fixed in the feature cache; finetuning/pretraining resample.
+
+```yaml
+downstream:
+  selection: {strategy: activity_random, budget: 27, activity_power: 1.0}
+```
+
+The strategy also works under top-level `selection` for pretraining. It uses the
+existing log-count activity measure, so the preference is gentler than weighting
+directly by raw event counts. It does not normalize for voxel size or duration.
+
+All these linear probes use a fixed full recording with the default
+`data.eval_fraction: 1.0`; training-only temporal/spatial crops and MAE masks are
+disabled. Selection happens before encoder attention, and the selected encoder
+outputs are mean-pooled into one cached feature per recording. Each head learns
+from the features of its own selection policy. Random subsets are drawn once per
+recording when extracting features, not every head-training epoch. Selection
+settings and seed are included in feature-cache keys, so the presets can share
+the feature-cache directory without mixing features.
+
+If pretraining is still running, use **one stable snapshot** of its best checkpoint
+for all comparisons. Pointing each probe at the changing `best.pt` can give the
+strategies different encoders; do not modify or replace a snapshot while probes
+use it. Take a copy between checkpoint saves and verify that it loads successfully.
+Set `$checkpoint` below to that snapshot and choose a new output root for each
+comparison checkpoint:
+
+```powershell
+$checkpoint = 'outputs/hierarchical_mae/selection_probes/pretrained_snapshot.pt'
+$probeRoot = 'outputs/hierarchical_mae/selection_probes/comparison'
+
+python -m experiments.hierarchical_mae.downstream --config experiments/hierarchical_mae/configs/thu_linear_probe.yaml --checkpoint $checkpoint --mode linear_probe --output-dir "$probeRoot/all"
+foreach ($strategy in @('random', 'activity', 'activity_random', 'coarse')) {
+    python -m experiments.hierarchical_mae.downstream --config "experiments/hierarchical_mae/configs/thu_linear_probe_${strategy}27.yaml" --checkpoint $checkpoint --mode linear_probe --output-dir "$probeRoot/${strategy}27"
+    if ($LASTEXITCODE -ne 0) { throw "Probe failed: $strategy" }
+}
+```
+
+Results are written to `<probeRoot>/<strategy>/results.json`, with training curves
+in `metrics.jsonl`. Separate output directories prevent overwriting another probe's
+head checkpoints. The presets currently inherit 500 epochs and learning rate 0.01;
+change those in the base probe config to change them consistently for all strategies.
+To try another budget, copy a preset, change its `budget`, and use a new output
+directory. Compare validation results to choose a strategy/budget. Each invocation
+also reports test results for its validation-selected head.
+
+Feature extraction still prepares all candidate patches, so selection reduces
+encoder work, not rendering on cache misses. Linear-head training itself uses saved
+features. Extracting features while pretraining runs also competes for the same GPU.
 
 ## Cached probes and patch inspection
 

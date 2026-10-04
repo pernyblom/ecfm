@@ -219,6 +219,81 @@ def test_activity_budget_and_empty_plan_rejected(cfg):
         model.features(view, TokenPlan(torch.zeros_like(visible), torch.zeros_like(visible)))
 
 
+@pytest.mark.parametrize('power', [1., 2.])
+def test_activity_random_follows_sampling_weights(power):
+    torch.manual_seed(8)
+    activity = torch.tensor([0., 1., 3.]).expand(20000, -1)
+    selected, _ = select(torch.ones_like(activity, dtype=torch.bool), None,
+                         dict(strategy='activity_random', budget=1, activity_power=power), activity)
+    observed = selected.float().mean(0)
+    expected = (1+activity[0]).pow(power)
+    expected /= expected.sum()
+    torch.testing.assert_close(observed, expected, atol=.015, rtol=0)
+    assert observed[2] > observed[1] > observed[0] > 0
+
+
+@pytest.mark.parametrize('budget', [0, 1, 3, 100])
+def test_activity_random_budget_eligibility_and_reproducibility(budget):
+    activity = torch.tensor([[0., 1., 2., 100.], [0., 0., 0., 0.]])
+    eligible = torch.tensor([[True, True, True, False], [False, True, True, False]])
+    options = dict(strategy='activity_random', budget=budget)
+    torch.manual_seed(12)
+    visible, _ = select(eligible, None, options, activity)
+    torch.manual_seed(12)
+    repeated, _ = select(eligible, None, options, activity)
+    assert torch.equal(visible, repeated)
+    assert not (visible & ~eligible).any()
+    expected = eligible.sum(1).clamp_max(budget) if budget else eligible.sum(1)
+    assert torch.equal(visible.sum(1), expected)
+
+
+@pytest.mark.parametrize('empty', [False, True])
+def test_activity_random_uniform_limits_match_random(empty):
+    activity = torch.zeros(10, 20) if empty else torch.arange(20).float().expand(10, -1)
+    eligible = torch.ones_like(activity, dtype=torch.bool)
+    torch.manual_seed(4)
+    weighted, _ = select(eligible, None, dict(strategy='activity_random', budget=5,
+                                            activity_power=1. if empty else 0.), activity)
+    torch.manual_seed(4)
+    uniform, _ = select(eligible, None, dict(strategy='random', budget=5), activity)
+    assert torch.equal(weighted, uniform)
+
+
+@pytest.mark.parametrize('power', [-1, float('inf'), float('nan'), True, '1'])
+def test_activity_random_invalid_power(cfg, power):
+    cfg['downstream']['selection'] = dict(strategy='activity_random', budget=3, activity_power=power)
+    with pytest.raises(ValueError, match='activity_power'):
+        validate(cfg)
+
+
+def test_activity_random_strict_masking_and_feature_cache(cfg):
+    cfg['selection'] = dict(strategy='activity_random', budget=4)
+    cfg['downstream']['selection'] = dict(strategy='activity_random', budget=4, activity_power=1.)
+    validate(cfg)
+    view = batch(cfg)
+    model = HierarchicalMAE(cfg)
+    plan = make_plan(view, model.layout, dict(strategy='subtree', ratio=.5, level=1), cfg['selection'])
+    assert plan.visible.sum(1).eq(4).all()
+    for visible, target in zip(plan.visible, plan.target):
+        assert not overlaps(model.layout.boxes)[visible][:, target].any()
+    model(view, plan)['loss'].backward()
+    checkpoint = Path(cfg['data']['root']) / 'weighted.pt'
+    torch.save(model.state_dict(), checkpoint)
+    model.requires_grad_(False)
+    entries, _, _ = splits(cfg)
+    dataset = HierarchyDataset(cfg, entries)
+    cfg['downstream']['feature_cache']['batch_size'] = 2
+    first = cached_features(model, dataset, checkpoint, 'cpu', 'train')
+    second = cached_features(model, dataset, checkpoint, 'cpu', 'train')
+    torch.testing.assert_close(first.tensors[0], second.tensors[0], rtol=0, atol=0)
+    cfg['downstream']['feature_cache'].update(batch_size=3, rebuild=True)
+    rebuilt = cached_features(model, dataset, checkpoint, 'cpu', 'train')
+    torch.testing.assert_close(first.tensors[0], rebuilt.tensors[0])
+    before = deepcopy(cache_metadata(dataset, checkpoint))
+    cfg['downstream']['selection']['activity_power'] = 2.
+    assert before != cache_metadata(dataset, checkpoint)
+
+
 def test_invalid_layout(cfg):
     cfg['hierarchy']['levels'][1]['splits'] = [3, 2, 2]
     with pytest.raises(ValueError, match='nest'):

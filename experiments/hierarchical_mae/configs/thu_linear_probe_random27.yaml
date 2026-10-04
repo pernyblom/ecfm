@@ -1,0 +1,4 @@
+extends: thu_linear_probe.yaml
+downstream:
+  # Fixed seeded subset per recording during feature extraction.
+  selection: {strategy: random, budget: 27}
