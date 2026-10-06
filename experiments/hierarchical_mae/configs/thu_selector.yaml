@@ -1,0 +1,17 @@
+extends: thu_linear_probe.yaml
+downstream:
+  epochs: 100
+  batch_size: 32
+  lr: 0.001
+  learned_selector:
+    budget: 27
+    context: patch
+    hidden_dim: 128
+    lr: 0.0005
+    activity_prior_weight: 1.0
+    temperature: [1.0, 0.25]
+    noise_scale: [1.0, 0.0]
+    # Absolute epoch schedule, independent of downstream.epochs for resumability.
+    anneal_epochs: 80
+    training_crops: false
+    grad_clip: 1.0

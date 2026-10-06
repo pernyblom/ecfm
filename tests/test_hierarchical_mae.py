@@ -18,6 +18,8 @@ from experiments.hierarchical_mae.downstream import save_checkpoint
 from experiments.hierarchical_mae.rendering import partition_level, render_histogram
 from experiments.hierarchical_mae.loading import make_loader
 from ecfm.data.tokenizer import Region, build_patch
+from experiments.hierarchical_mae.learned_selector import SelectionEncoder, relaxed_topk, schedule
+from experiments.hierarchical_mae.downstream import Classifier
 
 
 @pytest.fixture
@@ -605,3 +607,134 @@ def test_checkpoint_real_windows_file_lock(tmp_path, monkeypatch):
         handle.close()
     assert sleeps == [.1]
     assert torch.load(path, weights_only=True)['epoch'] == 2
+
+
+def with_selector(cfg, context='patch'):
+    cfg['downstream']['learned_selector'] = dict(budget=6, context=context, hidden_dim=16,
+        lr=.001, activity_prior_weight=1., temperature=[1., .3], noise_scale=[1., 0.],
+        anneal_epochs=3, training_crops=False, grad_clip=1.)
+    return cfg
+
+
+def test_relaxed_topk_is_hard_forward_and_reaches_unselected_scores():
+    scores = torch.tensor([[.1, .5, -.3, .2, .6]], requires_grad=True)
+    eligible = torch.tensor([[True, True, False, True, True]])
+    values = torch.tensor([[[1., 2.], [4., 0.], [99., 99.], [-2., 1.], [.5, -3.]]])
+    matrix, ids = relaxed_topk(scores, eligible, 2, temperature=.8)
+    assert ids.tolist() == [[4, 1]]
+    assert matrix.sum().item() == 2 and (matrix.detach().sum(1) <= 1).all()
+    torch.testing.assert_close(matrix @ values, values[:, [4, 1]], rtol=0, atol=0)
+    (matrix @ values).square().sum().backward()
+    assert scores.grad[0, 0].abs() > 0 and scores.grad[0, 3].abs() > 0
+    assert scores.grad[0, 2] == 0 and torch.isfinite(scores.grad).all()
+
+
+def test_relaxed_topk_noise_temperature_and_schedule():
+    scores = torch.zeros(32, 8)
+    valid = torch.ones_like(scores, dtype=torch.bool)
+    torch.manual_seed(1)
+    hot, hot_ids = relaxed_topk(scores, valid, 3, 1., 1.)
+    torch.manual_seed(1)
+    cold, cold_ids = relaxed_topk(scores, valid, 3, .1, 1.)
+    assert torch.equal(hot_ids, cold_ids)  # Temperature cannot change hard ordering.
+    assert hot_ids.unique(dim=0).shape[0] > 1
+    assert torch.equal(hot.detach(), cold.detach())
+    with pytest.raises(ValueError, match='eligible'):
+        relaxed_topk(scores, valid, 9, 1.)
+    options = dict(anneal_epochs=3, temperature=[1., .2], noise_scale=[1., 0.])
+    assert schedule(options, 0) == (1., 1.)
+    assert schedule(options, 2) == pytest.approx((.2, 0.))
+    assert schedule(options, 100) == pytest.approx((.2, 0.))
+
+
+@pytest.mark.parametrize('context', ['patch', 'transformer'])
+def test_selector_activity_initialization_gradients_and_sparse_eval(cfg, context):
+    with_selector(cfg, context)
+    validate(cfg)
+    view = batch(cfg)
+    backbone = HierarchicalMAE(cfg)
+    selected_encoder = SelectionEncoder(backbone, 'selector_train')
+    model = Classifier(selected_encoder, 2, False)
+    model.train()
+    assert not backbone.training and all(not p.requires_grad for p in backbone.parameters())
+    original = {k: v.clone() for k, v in backbone.state_dict().items()}
+    scores = selected_encoder.selector(selected_encoder.root_features(view), view)
+    torch.testing.assert_close(scores, view['log_counts'])
+    before = selected_encoder.selector.scorer[-1].weight.detach().clone()
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=.01)
+    nn_loss = torch.nn.functional.cross_entropy(model(view), torch.tensor([0, 1]))
+    nn_loss.backward()
+    assert selected_encoder.selector.scorer[-1].weight.grad.abs().sum() > 0
+    assert all(p.grad is None for p in backbone.parameters())
+    optimizer.step()
+    assert not torch.equal(before, selected_encoder.selector.scorer[-1].weight)
+    for key in original:
+        torch.testing.assert_close(backbone.state_dict()[key], original[key], rtol=0, atol=0)
+    seen = []
+    handle = backbone.encoder.register_forward_pre_hook(lambda module, args: seen.append(args[0].shape[1]))
+    model.eval()
+    first, second = model(view), model(view)
+    handle.remove()
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+    assert seen == ([6, 6] if context == 'patch' else [2, 6, 2, 6])
+    assert selected_encoder.last_diagnostics['tokens_by_level'].sum() == 12
+    assert selected_encoder.last_diagnostics['token_frequency'][:2].eq(2).all()
+
+
+def test_selector_hard_training_matches_sparse_eval_without_noise(cfg):
+    with_selector(cfg)
+    cfg['downstream']['learned_selector']['noise_scale'] = [0., 0.]
+    view = batch(cfg)
+    model = Classifier(SelectionEncoder(HierarchicalMAE(cfg), 'selector_train'), 2, False)
+    model.train()
+    training = model(view)
+    model.eval()
+    evaluation = model(view)
+    torch.testing.assert_close(training, evaluation, rtol=1e-5, atol=1e-6)
+
+
+def test_selector_modes_resume_and_cached_probe(cfg):
+    torch.set_num_threads(1)
+    run(cfg)
+    root = Path(cfg['train']['output_dir'])
+    pretrained = root / 'best.pt'
+    with_selector(cfg)
+    cfg['downstream']['epochs'] = 2
+    downstream_run(cfg, pretrained, 'selector_train', root / 'selector_full')
+    expected = torch.load(root / 'selector_full/last.pt', weights_only=True)
+    cfg['downstream']['epochs'] = 1
+    downstream_run(cfg, pretrained, 'selector_train', root / 'selector_split')
+    cfg['downstream']['epochs'] = 2
+    downstream_run(cfg, resume=root / 'selector_split/last.pt')
+    actual = torch.load(root / 'selector_split/last.pt', weights_only=True)
+    for key in expected['model']:
+        torch.testing.assert_close(actual['model'][key], expected['model'][key], rtol=0, atol=0)
+    assert actual['validation'] == expected['validation']
+    assert actual['validation']['selection']['tokens_by_level'][0] == 2
+    cfg['downstream']['epochs'] = 1
+    selector_checkpoint = root / 'selector_full/best.pt'
+    for mode in ('selector_probe', 'selector_finetune'):
+        result = downstream_run(cfg, selector_checkpoint, mode)
+        assert result['test']['samples'] == 2 and result['selection']['budget'] == 6
+    probe = torch.load(root / 'selector_probe/last.pt', weights_only=True)
+    source = torch.load(selector_checkpoint, weights_only=True)
+    for key, value in source['model'].items():
+        if key.startswith('backbone.'):
+            torch.testing.assert_close(probe['model'][key], value, rtol=0, atol=0)
+    caches = list(Path(cfg['downstream']['feature_cache']['dir']).glob('train_*.pt'))
+    assert len(caches) == 1
+    cached = torch.load(caches[0], weights_only=True)
+    assert cached['metadata']['learned_selector']['budget'] == 6
+    assert cached['features'].shape == (6, cfg['model']['embed_dim'])
+    cfg['downstream']['epochs'] = 2
+    downstream_run(cfg, resume=root / 'selector_probe/last.pt')
+    assert len(list(Path(cfg['downstream']['feature_cache']['dir']).glob('train_*.pt'))) == 1
+
+
+@pytest.mark.parametrize('key,value', [('budget', 2), ('budget', 99), ('context', 'invalid'),
+    ('temperature', [1., 0.]), ('noise_scale', [-1., 0.]), ('hidden_dim', 0), ('lr', float('nan'))])
+def test_invalid_learned_selector_options(cfg, key, value):
+    with_selector(cfg)
+    cfg['downstream']['learned_selector'][key] = value
+    with pytest.raises(ValueError, match='learned_selector'):
+        validate(cfg)

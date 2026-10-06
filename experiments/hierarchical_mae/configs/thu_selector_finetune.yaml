@@ -1,0 +1,5 @@
+extends: thu_selector.yaml
+downstream:
+  encoder_lr: 0.00002
+  learned_selector:
+    training_crops: true

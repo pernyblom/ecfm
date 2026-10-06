@@ -54,20 +54,24 @@ class HierarchicalMAE(nn.Module):
                                            for g in self.layout.groups})
         self.count_decoder = nn.Linear(dec, 1)
 
-    def encode(self, view, plan):
-        plan.validate(view['valid_mask'])
-        batch, _ = plan.visible.shape
+    def token_embeddings(self, view, visible=None):
+        """Pre-transformer tokens; optional visibility excludes unobserved content."""
+        visible = view['valid_mask'] if visible is None else visible
         geometry = self.geometry(view['metadata'])
         # Encode only visible patches: neither masked pixels nor counts enter the encoder.
         content = torch.zeros_like(geometry)
         for g in self.layout.groups:
-            local = plan.visible[:, g.start:g.stop]
+            local = visible[:, g.start:g.stop]
             if local.any():
                 b, i = local.nonzero(as_tuple=True)
                 content[b, i+g.start] = self.patch_encoders[g.key](view['patches'][g.key][local])
-        b, i = plan.visible.nonzero(as_tuple=True)
+        b, i = visible.nonzero(as_tuple=True)
         content[b, i] = content[b, i] + self.count_encoder(view['log_counts'][b, i, None])
-        values = content + geometry
+        return content + geometry
+
+    def encode(self, view, plan):
+        plan.validate(view['valid_mask'])
+        values = self.token_embeddings(view, plan.visible)
         if plan.gates is not None:
             values = values * plan.gates[..., None]
         lengths = plan.visible.sum(1)

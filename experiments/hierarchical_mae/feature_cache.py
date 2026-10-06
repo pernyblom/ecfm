@@ -12,7 +12,7 @@ from ecfm.data import tokenizer
 from experiments.region_worldmodel import data as event_data
 from experiments.region_worldmodel.feature_cache import file_digest
 from .loading import make_loader, to_device
-from . import data, model, masking, rendering
+from . import data, model, masking, rendering, learned_selector
 from .masking import TokenPlan, make_plan
 
 
@@ -23,9 +23,11 @@ def cache_metadata(dataset, checkpoint, checkpoint_digest=None):
                  for p, label in dataset.entries],
         data=cfg['data'], hierarchy=cfg['hierarchy'], model=cfg['model'],
         selection=cfg['downstream'].get('selection', {}),
+        learned_selector=cfg['downstream'].get('learned_selector'),
         seed=cfg['train']['seed'], torch_version=str(torch.__version__),
         implementation=[file_digest(p) for p in [__file__, data.__file__, model.__file__,
-                                                masking.__file__, rendering.__file__, tokenizer.__file__, event_data.__file__]])
+                                                masking.__file__, rendering.__file__, learned_selector.__file__,
+                                                tokenizer.__file__, event_data.__file__]])
 
 
 @torch.no_grad()
@@ -58,6 +60,10 @@ def cached_features(backbone, dataset, checkpoint, device, split, checkpoint_dig
     with torch.random.fork_rng(devices=devices):
         for raw in loader:
             view = to_device(raw['source'], device)
+            if getattr(backbone, 'is_learned_selector', False):
+                features.append(backbone.features(view).float().cpu())
+                labels.append(raw['label'])
+                continue
             plans = []
             for b in range(len(raw['label'])):
                 torch.manual_seed(t['seed']+index)

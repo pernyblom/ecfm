@@ -100,3 +100,32 @@ def validate(cfg):
         power = selection.get('activity_power', 1.)
         if type(power) not in (int, float) or not math.isfinite(power) or power < 0:
             raise ValueError('activity_power must be finite and nonnegative')
+    learned = cfg['downstream'].get('learned_selector')
+    if learned is not None:
+        allowed = {'budget', 'hidden_dim', 'context', 'lr', 'activity_prior_weight',
+                   'temperature', 'noise_scale', 'anneal_epochs', 'training_crops', 'grad_clip'}
+        if not isinstance(learned, dict) or set(learned)-allowed:
+            raise ValueError('Invalid downstream.learned_selector settings')
+        levels = h['levels']
+        roots = len(levels[0]['representations'])
+        count = sum(math.prod(level['splits'])*len(level['representations']) for level in levels)
+        budget = learned.get('budget')
+        if levels[0]['splits'] != [1, 1, 1] or type(budget) is not int or not roots < budget <= count:
+            raise ValueError('learned_selector needs a [1,1,1] root level and root_count < budget <= token_count')
+        for key, default in (('hidden_dim', 128), ('anneal_epochs', 80)):
+            if type(learned.get(key, default)) is not int or learned.get(key, default) < 1:
+                raise ValueError(f'learned_selector.{key} must be a positive integer')
+        if learned.get('context', 'patch') not in ('patch', 'transformer'):
+            raise ValueError('learned_selector.context must be patch or transformer')
+        if type(learned.get('training_crops', False)) is not bool:
+            raise ValueError('learned_selector.training_crops must be boolean')
+        for key, default, positive in (('lr', .0005, True), ('activity_prior_weight', 1., False), ('grad_clip', 1., True)):
+            value = learned.get(key, default)
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or (positive and value == 0):
+                raise ValueError(f'Invalid learned_selector.{key}')
+        for key, default in (('temperature', [1., .25]), ('noise_scale', [1., 0.])):
+            values = learned.get(key, default)
+            if (not isinstance(values, (list, tuple)) or len(values) != 2
+                    or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
+                           or (key == 'temperature' and v == 0) for v in values)):
+                raise ValueError(f'Invalid learned_selector.{key} schedule')

@@ -238,9 +238,11 @@ save encoder attention compute. A policy must preserve the base plan's eligibili
 to maintain strict masking. A staged policy that observes the root overlaps all
 targets by construction, so train it with overlap-permitting masking.
 
-This experiment supplies the selection interface and gradients, **not a trained
-selection policy**. Integrating a learned policy will require its own module,
-optimizer parameters and checkpoint/cache fingerprint. Rendering currently creates
+The downstream [learned selection experiment](LEARNED_SELECTION.md) now trains an
+activity-initialized policy conditioned on coarse features, using straight-through
+relaxed top-k. It includes selector training, frozen-selector feature probing and
+joint finetuning, with optimizer/checkpoint/cache support. MAE pretraining continues
+to use its existing selection configuration. Rendering currently creates
 all candidate patches before selection; encoder attention is sparse, but rendering
 and the full MAE decoder are not. Lazy rendering can be added at the same interface
 once the policy decides which candidate IDs to request.

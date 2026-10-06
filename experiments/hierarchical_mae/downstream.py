@@ -18,6 +18,7 @@ from .config import load_config, validate
 from .data import HierarchyDataset, splits
 from .feature_cache import cached_features, file_digest
 from .model import HierarchicalMAE
+from .learned_selector import SelectionEncoder, schedule
 
 
 class Classifier(nn.Module):
@@ -40,9 +41,17 @@ class Classifier(nn.Module):
         return self.head(self.backbone.features(view))
 
 
+def print_metrics(record):
+    # Keep the full token-frequency vectors in JSON files without flooding the terminal.
+    def compact(value):
+        return {key: compact(item) for key, item in value.items() if key != 'token_frequency'} if isinstance(value, dict) else value
+    print(json.dumps(compact(record)), flush=True)
+
+
 def classification_epoch(model, loader, device, optimizer=None, max_batches=0):
     model.train(optimizer is not None)
     count, total, correct = 0, 0., 0
+    selection_totals = {}
     with torch.set_grad_enabled(optimizer is not None):
         for raw in islice(loader, max_batches or None):
             if isinstance(raw, (tuple, list)):
@@ -58,13 +67,23 @@ def classification_epoch(model, loader, device, optimizer=None, max_batches=0):
             if optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
+                if getattr(model.backbone, 'is_learned_selector', False):
+                    nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],
+                                            model.backbone.options.get('grad_clip', 1.))
                 optimizer.step()
             count += len(labels)
             total += float(loss.detach())*len(labels)
             correct += int((logits.argmax(-1) == labels).sum())
+            if isinstance(raw, dict) and getattr(model.backbone, 'last_diagnostics', None) is not None:
+                for key, value in model.backbone.last_diagnostics.items():
+                    selection_totals[key] = selection_totals.get(key, 0) + value.detach().cpu()
     if count == 0:
         raise ValueError('Empty classification epoch')
-    return dict(loss=total/count, accuracy=correct/count, samples=count)
+    result = dict(loss=total/count, accuracy=correct/count, samples=count)
+    if selection_totals:
+        result['selection'] = {key: (value/count).tolist() for key, value in selection_totals.items()}
+        result['selection']['unique_tokens'] = int((selection_totals['token_frequency'] > 0).sum())
+    return result
 
 
 def save_checkpoint(path, state):
@@ -128,13 +147,30 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
         if checkpoint and resumed.get('pretrained_digest') and file_digest(checkpoint) != resumed['pretrained_digest']:
             raise ValueError('Pretrained checkpoint differs from resumed run')
         checkpoint = checkpoint or resumed.get('pretrained_checkpoint')
-    if mode not in ('linear_probe', 'finetune'):
-        raise ValueError('mode must be linear_probe or finetune')
+    modes = ('linear_probe', 'finetune', 'selector_train', 'selector_probe', 'selector_finetune')
+    if mode not in modes:
+        raise ValueError(f'mode must be one of {modes}')
+    learned = mode.startswith('selector_')
+    selector_source = mode in ('selector_probe', 'selector_finetune')
+    if learned and 'learned_selector' not in cfg['downstream']:
+        raise ValueError('Selector modes require downstream.learned_selector')
     seed_all(cfg['train']['seed'])
     if resumed is None:
         if checkpoint is None:
             raise ValueError('A new downstream run requires a pretrained checkpoint')
         state = torch.load(checkpoint, map_location='cpu', weights_only=True)
+        if selector_source:
+            if state.get('mode') not in ('selector_train', 'selector_probe', 'selector_finetune'):
+                raise ValueError('selector_probe/selector_finetune require a trained selector checkpoint')
+            old_options = state['config']['downstream']['learned_selector']
+            new_options = cfg['downstream']['learned_selector']
+            for key, default in (('budget', None), ('hidden_dim', 128), ('context', 'patch'), ('activity_prior_weight', 1.)):
+                if old_options.get(key, default) != new_options.get(key, default):
+                    raise ValueError(f'Trained selector differs in {key}')
+            if state['config']['downstream']['num_classes'] != cfg['downstream']['num_classes']:
+                raise ValueError('Trained selector class count differs')
+        elif 'mode' in state:
+            raise ValueError('Use a pretrained MAE checkpoint for this mode, or --resume a downstream run')
         for key in ('hierarchy', 'model'):
             if cfg[key] != state['config'][key]:
                 raise ValueError(f'Checkpoint {key} differs')
@@ -152,16 +188,25 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
     device = torch.device(cfg['train']['device'])
     settings = cfg['downstream']
     backbone = HierarchicalMAE(cfg)
-    if resumed is None:
+    if resumed is None and not selector_source:
         backbone.load_state_dict(state['model'])
-    frozen = mode == 'linear_probe'
+    if learned:
+        backbone = SelectionEncoder(backbone, mode)
+    frozen = mode in ('linear_probe', 'selector_probe')
     model = Classifier(backbone, settings['num_classes'], frozen).to(device)
     if resumed is not None:
         model.load_state_dict(resumed['model'])
+    elif selector_source:
+        if mode == 'selector_probe':
+            # Keep the learned encoder/policy, initialize a fresh independent linear head.
+            backbone.load_state_dict({k[len('backbone.'):]: v for k, v in state['model'].items() if k.startswith('backbone.')})
+        else:
+            model.load_state_dict(state['model'])
     train, val, test = splits(cfg, include_test=True)
     if settings.get('max_test_samples', 0):
         test = test[:settings['max_test_samples']]
-    train_ds = HierarchyDataset(cfg, train, training=not frozen)
+    training_crops = (settings['learned_selector'].get('training_crops', False) and not frozen) if learned else not frozen
+    train_ds = HierarchyDataset(cfg, train, training=training_crops)
     val_ds, test_ds = HierarchyDataset(cfg, val), HierarchyDataset(cfg, test)
     if frozen:
         train_ds = cached_features(backbone, train_ds, checkpoint, device, 'train', checkpoint_digest)
@@ -172,7 +217,11 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
     train_loader = loader(train_ds, True, cfg['train']['seed'])
     val_loader = loader(val_ds)
     groups = [dict(params=model.head.parameters(), lr=settings['lr'])]
-    if not frozen:
+    if learned and not frozen:
+        groups.append(dict(params=backbone.selector.parameters(), lr=settings['learned_selector'].get('lr', .0005)))
+        if mode == 'selector_finetune':
+            groups.append(dict(params=backbone.backbone.encoder_parameters(), lr=settings['encoder_lr']))
+    elif not frozen:
         groups.append(dict(params=backbone.encoder_parameters(), lr=settings['encoder_lr']))
     optimizer = torch.optim.AdamW(groups, weight_decay=settings['weight_decay'])
     output = Path(output_dir or (Path(resume).parent if resume else Path(cfg['train']['output_dir']) / mode))
@@ -194,6 +243,8 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
         print(f'Resuming {mode} at epoch {start}; configured total={settings["epochs"]}', flush=True)
     for epoch in range(start, settings['epochs']):
         seed_all(cfg['train']['seed']+epoch)
+        if learned:
+            backbone.epoch = epoch
         if not frozen:
             train_ds.epoch = epoch
         training = classification_epoch(model, train_loader,
@@ -201,9 +252,12 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
         devices = [device.index or 0] if device.type == 'cuda' else []
         with torch.random.fork_rng(devices=devices):
             torch.manual_seed(12345)
-            validation = classification_epoch(model, val_loader, device)
+            validation = classification_epoch(model, val_loader, device, max_batches=settings.get('max_val_batches', 0))
         record = dict(epoch=epoch, train=training, validation=validation)
-        print(json.dumps(record), flush=True)
+        if learned and not frozen:
+            temperature, noise = schedule(settings['learned_selector'], epoch)
+            record['selector_schedule'] = dict(temperature=temperature, noise_scale=noise)
+        print_metrics(record)
         with (output / 'metrics.jsonl').open('a') as stream:
             stream.write(json.dumps(record)+'\n')
         current_state = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), config=cfg,
@@ -221,17 +275,19 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
     torch.manual_seed(12345)
     result = dict(mode=mode, best_epoch=best_epoch, validation=best_state['validation'],
                   test=classification_epoch(model, loader(test_ds), device),
-                  selection=settings.get('selection', {}), candidate_tokens=backbone.layout.count)
+                  selection=(dict(strategy='learned', **settings['learned_selector']) if learned
+                             else settings.get('selection', {})), candidate_tokens=backbone.layout.count)
     (output / 'results.json').write_text(json.dumps(result, indent=2))
-    print(json.dumps(result), flush=True)
+    print_metrics(result)
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', required=True)
-    parser.add_argument('--checkpoint', help='Pretrained MAE checkpoint for a new run')
-    parser.add_argument('--mode', choices=['linear_probe', 'finetune'], help='Inferred from --resume when omitted')
+    parser.add_argument('--checkpoint', help='MAE checkpoint, or trained selector for selector_probe/selector_finetune')
+    parser.add_argument('--mode', choices=['linear_probe', 'finetune', 'selector_train', 'selector_probe', 'selector_finetune'],
+                        help='Inferred from --resume when omitted')
     parser.add_argument('--resume', help='Downstream last.pt or best.pt to continue')
     parser.add_argument('--output-dir')
     args = parser.parse_args()
