@@ -14,9 +14,10 @@ from .downstream import Classifier, save_checkpoint
 from .feature_cache import cache_metadata, file_digest
 from .loading import make_loader, to_device
 from .model import HierarchicalMAE
-from . import set_selector
+from . import set_selector, crop_selection
 from .set_selector import SetPolicy, coarse_inputs, selected_features
 from .swap_experiment import fit_probe, metrics
+from .crop_selection import augmented_inputs, epoch_indices
 
 
 @torch.no_grad()
@@ -81,9 +82,11 @@ def train_policy(train, val, maximum, args, oracle):
     # Deterministic epoch seeds allow exact continuation of this cached training.
     signature = dict(architecture=policy.settings, lr=args.lr, weight_decay=args.weight_decay,
                      seed=args.seed, baseline_digest=oracle['baseline_digest'],
+                     augmentation=getattr(args, 'augmentation', None),
                      oracle_train_digest=file_digest(oracle['splits']['train']['bank']),
                      oracle_val_digest=file_digest(oracle['splits']['validation']['bank']),
-                     implementation=[file_digest(__file__), file_digest(set_selector.__file__)])
+                     implementation=[file_digest(__file__), file_digest(set_selector.__file__),
+                                     file_digest(crop_selection.__file__)])
     if last_path.exists():
         saved = torch.load(last_path, map_location=args.device, weights_only=True)
         if saved['signature'] != signature:
@@ -96,7 +99,9 @@ def train_policy(train, val, maximum, args, oracle):
         seed_all(args.seed+epoch)
         policy.train()
         total = 0.
-        for ids in torch.randperm(len(targets), device=args.device).split(128):
+        indices = epoch_indices(train.get('records', len(targets)), train.get('views', 1), epoch,
+                                args.seed, args.device)
+        for ids in indices.split(128):
             predicted = policy(train['roots'][ids], train['descriptors'][ids])[:, 1:]
             loss = F.mse_loss(predicted, targets[ids])
             optimizer.zero_grad(set_to_none=True)
@@ -112,7 +117,7 @@ def train_policy(train, val, maximum, args, oracle):
             threshold, result = min(trials, key=lambda pair: pair[1]['loss'])
         if result['loss'] < best['validation']['loss']:
             best = dict(policy=deepcopy(policy.state_dict()), threshold=threshold, epoch=epoch, validation=result)
-        record = dict(epoch=epoch, training_mse=total/len(targets), threshold=threshold, validation=result)
+        record = dict(epoch=epoch, training_mse=total/len(indices), threshold=threshold, validation=result)
         with history_path.open('a') as stream:
             stream.write(json.dumps(record)+'\n')
         if epoch % 25 == 0 or epoch+1 == args.epochs:
@@ -124,6 +129,7 @@ def train_policy(train, val, maximum, args, oracle):
     path = Path(args.output_dir)/f'policy_swaps{maximum}.pt'
     save_checkpoint(path, dict(**best, architecture=policy.settings, budget=options['budget'],
         baseline=str(Path(args.baseline).resolve()), baseline_digest=oracle['baseline_digest'],
+        augmentation=getattr(args, 'augmentation', None),
         config=torch.load(args.baseline, weights_only=True, map_location='cpu')['config']))
     return policy, path, {k: v for k, v in best.items() if k != 'policy'}
 
@@ -172,7 +178,10 @@ def run(args):
     model.load_state_dict(source['model'])
     model.eval().requires_grad_(False)
     entries = dict(zip(('train', 'validation', 'test'), splits(cfg, include_test=True)))
-    train = to_device(input_bank(model, entries['train'], cfg, oracle, args, 'train'), args.device)
+    train = input_bank(model, entries['train'], cfg, oracle, args, 'train')
+    if args.crop_views:
+        train = augmented_inputs(model, entries['train'], cfg, oracle, args, train)
+    train = to_device(train, args.device)
     val = to_device(input_bank(model, entries['validation'], cfg, oracle, args, 'validation'), args.device)
     report = dict(arguments=vars(args), baseline_digest=oracle['baseline_digest'], policies={}, probes={})
     policies = {'activity': (None, None, dict(threshold=0.))}
@@ -232,7 +241,10 @@ if __name__ == '__main__':
     parser.add_argument('--weight-decay', type=float, default=.01)
     parser.add_argument('--seed', type=int, default=7)
     parser.add_argument('--probe-seeds', type=int, nargs='+', default=[7, 17, 27])
+    parser.add_argument('--crop-views', type=int, default=0,
+                        help='Random training crops per recording, in addition to the original full view')
+    parser.add_argument('--crop-cache-dir', default='outputs/hierarchical_mae_selector_crops')
     args = parser.parse_args()
-    if args.epochs < 1 or len(set(args.limits)) != len(args.limits):
-        parser.error('Require positive epochs and unique swap limits')
+    if args.epochs < 1 or len(set(args.limits)) != len(args.limits) or args.crop_views < 0:
+        parser.error('Require positive epochs, unique swap limits, and nonnegative crop-views')
     run(args)

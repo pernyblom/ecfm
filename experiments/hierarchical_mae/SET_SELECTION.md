@@ -113,3 +113,66 @@ older `downstream --mode selector_probe` checkpoint format.
 
 See [the completed 500-epoch local experiment](SET_SELECTION_RESULTS_2026-10-07.md)
 for per-seed results, behavior under each swap limit, and training curves.
+
+## Spatial and temporal crop augmentation
+
+```powershell
+python -m experiments.hierarchical_mae.set_experiment `
+  --baseline outputs/hierarchical_mae/linear_probe_activity54/best.pt `
+  --oracle outputs/hierarchical_mae/swap54_multi_oracle/results.json `
+  --output-dir outputs/hierarchical_mae/set_selection54_crops4 `
+  --crop-views 4 --epochs 500
+```
+
+`--crop-views` defaults to zero, preserving fixed-view training. With four,
+each training recording has its original full view plus four reproducible
+random crops. The ranges come from the baseline checkpoint's training data
+configuration: THU uses temporal fractions `[0.3, 1.0]` and independent width
+and height fractions `[0.6, 1.0]`, with random offsets. Crops use the existing
+`HierarchyDataset` sampler and seeded view IDs; they are not resized full-view
+targets. Activity ranking, the replacement pool, policy inputs, and all loss
+targets are recomputed from the **same crop**.
+
+Training uses one view per recording per epoch, with seeded per-recording phase
+offsets and a cycle through all views. Thus 500 epochs have the same recording
+count, batch count, and optimizer updates as fixed-view training, rather than
+five times more updates. With five total views, every recording is seen in its
+full view 100 times and in each cropped view 100 times. Normalization statistics
+use all training views. There are no crops of validation/test recordings in the
+training bank.
+
+The original full-view oracle supplies validation/test targets and the full
+training view. Crop targets are generated once with the same frozen activity
+classifier and cached under `--crop-cache-dir` (default
+`outputs/hierarchical_mae_selector_crops`). Cache keys include source entries,
+checkpoint digest, crop configuration and view ID, and implementation hashes.
+Only compact policy inputs and targets are stored; the rendered random patches
+are discarded. Completed per-view caches can be reused after interruption or
+in another experiment directory. This is a finite crop bank, not newly sampled
+crops at every epoch; increase `--crop-views` for more diversity.
+
+The fresh linear probes continue to train on **full recording features**. Their
+configuration, and the fixed full-view validation/test protocol, are unchanged.
+This isolates augmentation of the selector itself.
+
+After policies are fixed, compare the original and augmented selectors on
+identical *unseen* crops:
+
+```powershell
+python -m experiments.hierarchical_mae.crop_selection `
+  --fixed-dir outputs/hierarchical_mae/set_selection54 `
+  --augmented-dir outputs/hierarchical_mae/set_selection54_crops4 `
+  --output outputs/hierarchical_mae/set_selection54_crops4/unseen_crops.json
+```
+
+This defaults to two crops of every test recording, using view IDs 10000 and
+10001, and compares activity plus both policies at each swap limit. All use the
+same original frozen classifier so the effect of changing selection is isolated.
+It reports cross-entropy, accuracy, and mean swaps, and saves per-view labels and
+predictions. These views are evaluation-only and never determine policy epochs
+or thresholds. Multiple crops from one recording are correlated observations,
+not additional independent test recordings. Use `--split validation`, `--views`,
+and `--first-view` to define other explicit diagnostic sets.
+
+See [the completed crop-augmentation comparison](CROP_SELECTION_RESULTS_2026-10-07.md)
+for full-view and unseen-crop results and the limitations of the frozen teacher.

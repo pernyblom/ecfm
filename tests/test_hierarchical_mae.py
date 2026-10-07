@@ -45,6 +45,74 @@ def batch(cfg):
     return next(iter(DataLoader(HierarchyDataset(cfg, train), batch_size=2)))['source']
 
 
+def test_selector_crop_views_reproducible_and_do_not_change_eval(cfg):
+    from experiments.hierarchical_mae.crop_selection import crop_dataset
+    from experiments.hierarchical_mae.loading import make_loader
+    cfg['data']['crop_fraction'] = [.3, .9]
+    cfg['data']['spatial_crop_fraction'] = [.6, 1.]
+    before = deepcopy(cfg)
+    entries = splits(cfg)[0]
+    full = HierarchyDataset(cfg, entries)[0]['source']
+    first = crop_dataset(cfg, entries, 2)
+    again = crop_dataset(cfg, entries, 2)
+    other = crop_dataset(cfg, entries, 3)
+    one = first[0]['source']
+    assert torch.equal(one['metadata'], again[0]['source']['metadata'])
+    assert not torch.equal(one['metadata'], other[0]['source']['metadata'])
+    assert one['metadata'][0, 7] < full['metadata'][0, 7]
+    assert first.cache is None and first.training
+    assert cfg == before
+    assert torch.equal(full['metadata'], HierarchyDataset(cfg, entries)[0]['source']['metadata'])
+    from_loader = next(iter(make_loader(first, 2, workers=0)))['source']
+    torch.testing.assert_close(from_loader['metadata'][0], one['metadata'])
+
+
+def test_selector_crop_epoch_sampling_matches_updates_and_covers_views():
+    from experiments.hierarchical_mae.crop_selection import epoch_indices
+    records, views = 17, 5
+    observed = [[] for _ in range(records)]
+    for epoch in range(views):
+        ids = epoch_indices(records, views, epoch, 7, 'cpu')
+        assert len(ids) == records
+        assert torch.equal((ids % records).sort().values, torch.arange(records))
+        for index in ids.tolist():
+            observed[index % records].append(index // records)
+    assert all(sorted(seen) == list(range(views)) for seen in observed)
+    torch.manual_seed(42)
+    original = torch.randperm(records)
+    torch.manual_seed(42)
+    assert torch.equal(original, epoch_indices(records, 1, 0, 7, 'cpu'))
+    torch.manual_seed(42)
+    a = epoch_indices(records, views, 7, 7, 'cpu')
+    torch.manual_seed(42)
+    assert torch.equal(a, epoch_indices(records, views, 7, 7, 'cpu'))
+
+
+def test_selector_crop_targets_and_inputs_use_the_same_view(cfg, tmp_path):
+    from types import SimpleNamespace
+    from experiments.hierarchical_mae.crop_selection import crop_bank, crop_dataset
+    from experiments.hierarchical_mae.set_selector import coarse_inputs
+    cfg['data']['crop_fraction'] = [.3, .9]
+    cfg['data']['spatial_crop_fraction'] = [.6, 1.]
+    model = Classifier(HierarchicalMAE(cfg), cfg['downstream']['num_classes'], True).eval().requires_grad_(False)
+    baseline = tmp_path/'baseline.pt'
+    torch.save(dict(config=cfg, model=model.state_dict()), baseline)
+    args = SimpleNamespace(baseline=str(baseline), device='cpu', crop_cache_dir=str(tmp_path/'targets'))
+    oracle = dict(arguments=dict(budget=6, drops=2, adds=2, max_swaps=2))
+    entries = splits(cfg)[0][:2]
+    actual, path = crop_bank(model, entries, cfg, oracle, args, 2)
+    expected = next(iter(DataLoader(crop_dataset(cfg, entries, 2), batch_size=2)))
+    roots, desc = coarse_inputs(model.backbone, expected['source'], 6, 2, 2)
+    logits = model.head(model.backbone.features(expected['source'], selection=dict(strategy='activity', budget=6)))
+    loss = torch.nn.functional.cross_entropy(logits, expected['label'], reduction='none')
+    torch.testing.assert_close(actual['roots'], roots)
+    torch.testing.assert_close(actual['descriptors'], desc)
+    torch.testing.assert_close(actual['losses'][:, 0], loss)
+    cached, same_path = crop_bank(model, entries, cfg, oracle, args, 2)
+    assert same_path == path
+    torch.testing.assert_close(cached['losses'], actual['losses'])
+
+
 def test_set_policy_uses_only_root_content_and_one_transformer_pass(cfg):
     from experiments.hierarchical_mae.set_selector import SetPolicy, coarse_inputs, selected_features
     model = HierarchicalMAE(cfg).eval().requires_grad_(False)
