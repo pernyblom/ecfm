@@ -244,7 +244,15 @@ if __name__ == '__main__':
     parser.add_argument('--crop-views', type=int, default=0,
                         help='Random training crops per recording, in addition to the original full view')
     parser.add_argument('--crop-cache-dir', default='outputs/hierarchical_mae_selector_crops')
+    parser.add_argument('--crop-config', help='Read training data.crop_fraction and spatial_crop_fraction from YAML; '
+                        'all other settings still come from the checkpoint and CLI')
+    parser.add_argument('--temporal-crop', type=float, nargs=2, metavar=('MIN', 'MAX'))
+    parser.add_argument('--spatial-crop', type=float, nargs=2, metavar=('MIN', 'MAX'))
     args = parser.parse_args()
     if args.epochs < 1 or len(set(args.limits)) != len(args.limits) or args.crop_views < 0:
         parser.error('Require positive epochs, unique swap limits, and nonnegative crop-views')
+    if (args.crop_config or args.temporal_crop is not None or args.spatial_crop is not None) and not args.crop_views:
+        parser.error('Crop overrides require --crop-views > 0')
+    if args.crop_config and (args.temporal_crop is not None or args.spatial_crop is not None):
+        parser.error('Use --crop-config or explicit crop ranges, not both')
     run(args)

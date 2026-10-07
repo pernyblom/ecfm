@@ -1,0 +1,16 @@
+# Main downstream.py selector_train preset (the original Gumbel selector).
+# The cached bounded-swap runner can also read these two ranges via --crop-config.
+extends: thu_selector54.yaml
+
+data:
+  crop_fraction: [0.8, 1.0]          # Temporal length; random start within recording.
+  spatial_crop_fraction: [0.8, 1.0]  # Independent width/height fractions and offsets.
+  eval_fraction: 1.0                # Validation/test still use the full recording.
+  patch_cache:
+    train_views: 0                  # Fresh training crops each epoch in downstream.py.
+
+downstream:
+  epochs: 500
+  learned_selector:
+    budget: 54
+    training_crops: true            # Required to enable the ranges in selector_train.

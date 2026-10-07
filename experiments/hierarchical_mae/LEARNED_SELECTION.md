@@ -30,6 +30,13 @@ Set `downstream.learned_selector.training_crops: true` to instead use the existi
 training temporal/spatial crop settings and optional crop bank. Evaluation still
 uses the fixed evaluation volume.
 
+For 54 tokens with fresh 80–100% temporal and spatial training crops, use
+[`thu_selector54_crop80.yaml`](configs/thu_selector54_crop80.yaml). It enables
+`training_crops`, sets both crop ranges to `[0.8, 1.0]`, keeps evaluation full-view,
+and configures 500 epochs. The classifier head is trained on these cropped views
+alongside the selector. See [the commands and crop settings](SET_SELECTION.md#milder-crops-and-yaml-configuration)
+for training, probing, and how this differs from the separate bounded-swap runner.
+
 After training, freeze the learned policy and fit a **fresh** linear head using
 saved features:
 

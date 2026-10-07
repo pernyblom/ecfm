@@ -10,12 +10,36 @@ import torch
 from torch.nn import functional as F
 
 from .data import HierarchyDataset, splits
+from .config import load_config, validate
 from .downstream import save_checkpoint
 from .feature_cache import cache_metadata, file_digest
 from .loading import make_loader, to_device
 from . import set_selector, swap_oracle
 from .set_selector import coarse_inputs, load_policy, selected_features
 from .swap_oracle import search_space, token_sets
+
+
+def with_crop_ranges(cfg, temporal=None, spatial=None):
+    """Override only training crop ranges, preserving full-view provenance."""
+    result = deepcopy(cfg)
+    if temporal is not None:
+        result['data']['crop_fraction'] = list(temporal)
+    if spatial is not None:
+        result['data']['spatial_crop_fraction'] = list(spatial)
+    validate(result)
+    return result
+
+
+def training_crop_config(cfg, args):
+    temporal = getattr(args, 'temporal_crop', None)
+    spatial = getattr(args, 'spatial_crop', None)
+    path = getattr(args, 'crop_config', None)
+    if path:
+        if temporal is not None or spatial is not None:
+            raise ValueError('Use --crop-config or explicit crop ranges, not both')
+        data = load_config(path)['data']
+        temporal, spatial = data['crop_fraction'], data.get('spatial_crop_fraction', [1., 1.])
+    return with_crop_ranges(cfg, temporal, spatial)
 
 
 def crop_dataset(cfg, entries, view_index):
@@ -99,6 +123,7 @@ def crop_bank(model, entries, cfg, oracle, args, index):
 
 
 def augmented_inputs(model, entries, cfg, oracle, args, full):
+    cfg = training_crop_config(cfg, args)
     banks, files = [full], []
     for index in range(args.crop_views):
         bank, path = crop_bank(model, entries, cfg, oracle, args, index)
@@ -124,17 +149,25 @@ def evaluate_crops(args):
     if output.exists():
         raise ValueError('Evaluation output exists')
     output.parent.mkdir(parents=True, exist_ok=True)
-    models, hashes = {}, {}
+    models, hashes, augmented_ranges = {}, {}, []
     for kind, directory in [('fixed', args.fixed_dir), ('augmented', args.augmented_dir)]:
         for limit in args.limits:
             path = Path(directory)/f'policy_swaps{limit}.pt'
             saved = torch.load(path, map_location='cpu', weights_only=True)
             hashes[f'{kind}_{limit}'] = dict(policy=file_digest(path), baseline=saved['baseline_digest'])
             models[f'{kind}_{limit}'] = load_policy(path, device=args.device)
+            if kind == 'augmented':
+                augmentation = saved.get('augmentation') or {}
+                augmented_ranges.append((augmentation.get('temporal'), augmentation.get('spatial')))
     if len({entry['baseline'] for entry in hashes.values()}) != 1:
         raise ValueError('Policies must share one baseline')
     first = next(iter(models.values()))
-    cfg = first.classifier.backbone.cfg
+    if any(ranges != augmented_ranges[0] for ranges in augmented_ranges):
+        raise ValueError('Augmented policies use different crop ranges; evaluate separately')
+    temporal, spatial = augmented_ranges[0]
+    cfg = with_crop_ranges(first.classifier.backbone.cfg,
+                           args.temporal_crop if args.temporal_crop is not None else temporal,
+                           args.spatial_crop if args.spatial_crop is not None else spatial)
     entries = dict(zip(('train', 'validation', 'test'), splits(cfg, include_test=True)))[args.split]
     totals = {name: dict(loss=0., correct=0, swaps=0., samples=0) for name in ('activity', *models)}
     predictions = {name: [] for name in totals}
@@ -158,7 +191,7 @@ def evaluate_crops(args):
                 predictions[name].append(logits.argmax(1).cpu())
             if step % 10 == 0:
                 print(f'Unseen {args.split} crop {index}: {min((step+1)*16, len(dataset))}/{len(dataset)}', flush=True)
-    result = dict(arguments=vars(args), checkpoints=hashes, training_ranges=dict(
+    result = dict(arguments=vars(args), checkpoints=hashes, evaluation_ranges=dict(
         temporal=cfg['data']['crop_fraction'], spatial=cfg['data']['spatial_crop_fraction']), metrics={})
     for name, totals in totals.items():
         n = totals['samples']
@@ -180,6 +213,10 @@ if __name__ == '__main__':
     parser.add_argument('--split', choices=['validation', 'test'], default='test')
     parser.add_argument('--views', type=int, default=2)
     parser.add_argument('--first-view', type=int, default=10000)
+    parser.add_argument('--temporal-crop', type=float, nargs=2, metavar=('MIN', 'MAX'),
+                        help='Evaluation range; defaults to the augmented policy training range')
+    parser.add_argument('--spatial-crop', type=float, nargs=2, metavar=('MIN', 'MAX'),
+                        help='Evaluation width/height range; defaults to the augmented policy training range')
     args = parser.parse_args()
     if args.views < 1 or args.first_view < 0:
         parser.error('Require positive views and nonnegative first-view')

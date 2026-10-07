@@ -45,6 +45,56 @@ def batch(cfg):
     return next(iter(DataLoader(HierarchyDataset(cfg, train), batch_size=2)))['source']
 
 
+def test_selector_mild_crop_yaml_and_training_only_overrides(cfg):
+    from types import SimpleNamespace
+    from experiments.hierarchical_mae.crop_selection import training_crop_config, with_crop_ranges, crop_dataset
+    path = Path(__file__).resolve().parents[1]/'experiments/hierarchical_mae/configs/thu_selector54_crop80.yaml'
+    preset = load_config(path)
+    assert preset['downstream']['learned_selector']['budget'] == 54
+    assert preset['downstream']['learned_selector']['training_crops'] is True
+    assert preset['data']['patch_cache']['train_views'] == 0
+    assert preset['data']['eval_fraction'] == 1.
+    before = deepcopy(cfg)
+    options = SimpleNamespace(crop_config=str(path), temporal_crop=None, spatial_crop=None)
+    changed = training_crop_config(cfg, options)
+    assert changed['data']['crop_fraction'] == changed['data']['spatial_crop_fraction'] == [.8, 1.]
+    assert cfg == before and changed['model'] == cfg['model']
+    assert changed['downstream'] == cfg['downstream']  # Only ranges are imported.
+    entries = splits(cfg)[0]
+    original = HierarchyDataset(cfg, entries)[0]['source']
+    cropped = crop_dataset(changed, entries, 0)[0]['source']
+    duration = cropped['metadata'][0, 7].expm1()/original['metadata'][0, 7].expm1()
+    assert .8 <= duration <= 1.
+    assert torch.equal(original['metadata'], HierarchyDataset(changed, entries)[0]['source']['metadata'])
+    with pytest.raises(ValueError):
+        with_crop_ranges(cfg, temporal=[1.1, 1.])
+    with pytest.raises(ValueError):
+        with_crop_ranges(cfg, spatial=[0., 1.])
+    options.temporal_crop = [.8, 1.]
+    with pytest.raises(ValueError, match='not both'):
+        training_crop_config(cfg, options)
+
+
+def test_main_selector_accepts_training_crop_override_and_keeps_eval_fixed(cfg, tmp_path, monkeypatch):
+    from experiments.hierarchical_mae import downstream
+    pretrained = tmp_path/'pretrained.pt'
+    torch.save(dict(config=deepcopy(cfg), model=HierarchicalMAE(cfg).state_dict()), pretrained)
+    with_selector(cfg)
+    cfg['data'].update(crop_fraction=[.8, 1.], spatial_crop_fraction=[.8, 1.])
+    cfg['downstream']['learned_selector']['training_crops'] = True
+    cfg['downstream'].update(epochs=1, max_batches=1, max_val_batches=1)
+    cfg['train']['num_workers'] = 0
+    seen = []
+    class ObservedDataset(HierarchyDataset):
+        def __init__(self, options, entries, training=False):
+            seen.append(training)
+            super().__init__(options, entries, training)
+    monkeypatch.setattr(downstream, 'HierarchyDataset', ObservedDataset)
+    result = downstream_run(cfg, pretrained, 'selector_train', tmp_path/'selector')
+    assert seen == [True, False, False]
+    assert result['test']['samples'] == 2
+
+
 def test_selector_crop_views_reproducible_and_do_not_change_eval(cfg):
     from experiments.hierarchical_mae.crop_selection import crop_dataset
     from experiments.hierarchical_mae.loading import make_loader

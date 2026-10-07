@@ -176,3 +176,87 @@ and `--first-view` to define other explicit diagnostic sets.
 
 See [the completed crop-augmentation comparison](CROP_SELECTION_RESULTS_2026-10-07.md)
 for full-view and unseen-crop results and the limitations of the frozen teacher.
+
+### Milder crops and YAML configuration
+
+The preset [thu_selector54_crop80.yaml](configs/thu_selector54_crop80.yaml)
+keeps 80–100% of the temporal length and independently 80–100% of the width and
+height. Offsets are random. Its main-pipeline settings are:
+
+```yaml
+extends: thu_selector54.yaml
+data:
+  crop_fraction: [0.8, 1.0]
+  spatial_crop_fraction: [0.8, 1.0]
+  eval_fraction: 1.0
+  patch_cache:
+    train_views: 0
+downstream:
+  epochs: 500
+  learned_selector:
+    budget: 54
+    training_crops: true
+```
+
+To train through the main downstream pipeline:
+
+```powershell
+python -m experiments.hierarchical_mae.downstream `
+  --config experiments/hierarchical_mae/configs/thu_selector54_crop80.yaml `
+  --checkpoint outputs/hierarchical_mae/best.pt `
+  --mode selector_train `
+  --output-dir outputs/hierarchical_mae/selector_train54_crop80
+```
+
+Use a **pretrained MAE** checkpoint for this command, not an activity-probe or
+bounded-swap checkpoint. `selector_train` uses the original Gumbel selector and
+trains the classification head alongside it, with a frozen encoder. Its budget
+is 54 selected tokens; it does not enforce a limit on swaps from activity.
+With `training_crops: true` and `train_views: 0`, each training epoch gets fresh
+spatial/temporal crops. Validation and test use the full view. Positive
+`train_views` instead cycles through a reusable patch-cache bank.
+
+To fit a fresh full-view probe afterward, use the existing probe preset:
+
+```powershell
+python -m experiments.hierarchical_mae.downstream `
+  --config experiments/hierarchical_mae/configs/thu_selector_probe54.yaml `
+  --checkpoint outputs/hierarchical_mae/selector_train54_crop80/best.pt `
+  --mode selector_probe `
+  --output-dir outputs/hierarchical_mae/selector_probe54_crop80
+```
+
+`selector_probe` is frozen and uses fixed evaluation views regardless of the
+training-crop flag. For continuation of the crop-trained run, use the same
+training YAML with `--resume .../selector_train54_crop80/last.pt`. Changing crop
+settings when resuming is rejected; start a new run to compare a different range.
+
+The separate **bounded-swap** experiment can import the same YAML crop ranges:
+
+```powershell
+python -m experiments.hierarchical_mae.set_experiment `
+  --baseline outputs/hierarchical_mae/linear_probe_activity54/best.pt `
+  --oracle outputs/hierarchical_mae/swap54_multi_oracle/results.json `
+  --output-dir outputs/hierarchical_mae/set_selection54_crops80 `
+  --crop-views 4 `
+  --crop-config experiments/hierarchical_mae/configs/thu_selector54_crop80.yaml
+```
+
+Here `--crop-config` reads **only** `data.crop_fraction` and
+`data.spatial_crop_fraction`; the bounded experiment's limits, epochs, and other
+settings come from its CLI/checkpoint. It still trains from the frozen activity
+classifier's cached targets and uses the finite four-crop-plus-full bank.
+This distinction matters: the main pipeline also adapts its classifier to crops.
+
+Alternatively specify `--temporal-crop 0.8 1.0 --spatial-crop 0.8 1.0` without
+`--crop-config`. Overrides require `--crop-views > 0`; they affect only training
+crop generation. Full-view target provenance, probe views, and validation/test
+stay unchanged. Target-cache keys include the effective crop ranges.
+
+The `crop_selection` unseen-crop evaluator now defaults to the augmented
+policies' **saved training ranges**, so comparing a crop80 policy evaluates both
+sets of policies on the same 80–100% crops. Explicit `--temporal-crop` and
+`--spatial-crop` overrides can select a different diagnostic distribution.
+
+See [the completed 80–100% rerun](CROP80_SELECTION_RESULTS_2026-10-07.md) for
+full-view and matched mild-crop results.
