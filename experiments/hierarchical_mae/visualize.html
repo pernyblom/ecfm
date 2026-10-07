@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAE patch inspector</title>
+<style>
+:root {color-scheme:dark; font:14px system-ui,sans-serif; background:#10131a; color:#e5e9f2; --line:#2c3342; --muted:#98a5bc; --accent:#89aaff}
+* {box-sizing:border-box} body {margin:0} button,input,select {font:inherit; color:inherit; background:#202735; border:1px solid #414b61; border-radius:6px; padding:7px 10px} button {cursor:pointer} button:hover {border-color:var(--accent)} button:disabled {opacity:.45; cursor:default} input[type=checkbox] {accent-color:var(--accent)} :focus-visible {outline:2px solid var(--accent); outline-offset:2px}
+header {height:74px; border-bottom:1px solid var(--line); padding:14px 22px; display:flex; align-items:center; justify-content:space-between; gap:20px} h1 {font-size:19px; margin:0 0 4px} .muted {color:var(--muted); font-size:12px} #model {max-width:60%; text-align:right; overflow-wrap:anywhere}
+.app {height:calc(100dvh - 74px); display:grid; grid-template-columns:260px minmax(0,1fr)} aside {padding:18px 14px; border-right:1px solid var(--line); display:flex; flex-direction:column; gap:14px; min-height:0} label {display:block; font-size:12px; color:var(--muted); margin-bottom:6px} #search {width:100%} #instances {overflow:auto; flex:1; min-height:90px} .instance {display:block; width:100%; text-align:left; margin-bottom:6px; padding:10px; overflow-wrap:anywhere; background:#171d28} .instance.active {border-color:var(--accent); background:#26334b} .instance small {display:block; color:var(--muted); margin-top:4px} .field {display:flex; gap:8px} .field select {min-width:0; width:100%} #epoch {width:82px} main {display:flex; flex-direction:column; min-width:0; min-height:0} .toolbar {padding:12px 18px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--line)} .toolbar label {display:flex; align-items:center; gap:6px; margin:0; color:inherit} #status {padding:10px 18px; min-height:41px; color:var(--muted); border-bottom:1px solid var(--line); overflow-wrap:anywhere} #status.error {color:#ff9c9c}
+.comparison {display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); flex:1; min-height:0} .panel {min-width:0; min-height:0; display:flex; flex-direction:column} .panel:first-child {box-shadow:inset -1px 0 var(--line)} .panel-title {padding:13px 18px; display:flex; justify-content:space-between; align-items:center; gap:8px; background:#171c26; border-bottom:1px solid var(--line)} h2 {font-size:14px; margin:0} .pane {overflow:auto; flex:1; min-height:0; scrollbar-gutter:stable; padding:0 16px 24px} .group {margin-top:20px} .group-heading {font-size:13px; margin:0 0 10px; color:#c6d5ef; display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:34px} .group-heading button {font-size:11px; padding:5px 8px} .slice-label {font-size:11px; color:var(--muted); margin:10px 0 6px} .patch-grid {display:grid; gap:6px} .tile {padding:5px; min-width:0; background:#1b2230; border:2px solid transparent; border-radius:6px; text-align:left; position:relative} button.tile {width:100%} .tile img {width:100%; height:128px; display:block; object-fit:contain; image-rendering:pixelated; background:#000} .tile .caption {font-size:10px; color:#b9c5d9; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-top:5px} .tile.masked {border-color:#d9a15e} .tile.masked img {opacity:.6} .tile.target {border-color:#d9a15e} .tile.excluded {border-color:#617080; opacity:.55} .badge {position:absolute; right:6px; top:6px; font-size:9px; padding:2px 4px; background:#10131ae0; border-radius:3px; pointer-events:none} .empty {padding:35px 4px; color:var(--muted); line-height:1.7} #selection {color:#e9b87b}
+@media(max-width:900px) {.app {grid-template-columns:200px minmax(0,1fr)} aside {padding:12px 10px} .toolbar {padding:10px} .pane {padding:0 8px 20px} .panel-title {padding:10px 8px} .panel-title .muted {display:none} .patch-grid {gap:3px} .tile {padding:2px} .tile .caption {font-size:9px} }
+</style>
+</head>
+<body>
+<header><div><h1>MAE patch inspector</h1><div class="muted">Choose context. Inspect reconstruction.</div></div><div id="model" class="muted">Loading checkpoint…</div></header>
+<div class="app">
+<aside>
+<div><label for="search">Training recordings</label><input id="search" type="search" placeholder="Search filename or class…"><div id="instance-count" class="muted" style="margin-top:7px"></div></div>
+<div id="instances" aria-label="Recordings"></div>
+<div><label for="crop">Recording view</label><div class="field"><select id="crop"><option value="full">Fixed evaluation crop</option><option value="training">Training crop</option></select></div></div>
+<div><label for="epoch">Training crop epoch (seed)</label><div class="field"><input id="epoch" type="number" min="0" max="1000000" value="0" disabled><button id="load-crop" disabled>Load crop</button></div></div>
+<div class="muted">Histogram: red = positive, blue = negative.<br>CSTR: red/blue = mean local time; green = count (except cstr2). Display clipped to [0, 1].</div>
+</aside>
+<main>
+<div class="toolbar">
+<button id="clear" disabled>Clear masks</button><button id="random" disabled>Random 65%</button><button id="run" disabled>Reconstruct</button>
+<label><input id="auto" type="checkbox" checked>Auto update</label>
+<label title="Exclude all other tokens whose x/y/time volumes intersect selected targets"><input id="strict" type="checkbox">Exclude overlapping context</label>
+<select id="filter" aria-label="Displayed patch groups"><option value="all">All levels / representations</option></select>
+</div>
+<div id="status" role="status" aria-live="polite">Loading recordings…</div>
+<div class="comparison">
+<section class="panel"><div class="panel-title"><h2>Original · click patches to mask</h2><span id="selection" class="muted">0 selected</span></div><div id="left" class="pane"><div class="empty">Select a recording to inspect its patches.</div></div></section>
+<section class="panel"><div class="panel-title"><h2>Reconstruction</h2><span class="muted">Visible patches retain original pixels</span></div><div id="right" class="pane"><div class="empty">Reconstructed patches appear here.</div></div></section>
+</div>
+</main>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+let info, instance = null, originals = [], selected = new Set(), revision = 0, timer, loaded = false, viewRequest = {};
+const tiles = {left:new Map(), right:new Map()};
+function status(message, error=false) { $('status').textContent=message; $('status').classList.toggle('error',error); }
+async function api(path, payload) {
+  const response = await fetch(path, payload === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+function request() { return {...viewRequest, targets:[...selected], strict:$('strict').checked}; }
+function controls(enabled) { ['clear','random','run'].forEach(id => $(id).disabled=!enabled); }
+function renderInstances() {
+  const query=$('search').value.toLowerCase();
+  const entries=info.instances.filter(e => `${e.name} class ${e.label}`.toLowerCase().includes(query));
+  $('instance-count').textContent=`${entries.length} of ${info.instances.length} ${info.split} recordings`;
+  $('instances').replaceChildren();
+  for (const e of entries) {
+    const b=document.createElement('button'); b.className='instance'; b.classList.toggle('active',e.id===instance);
+    b.textContent=e.name; b.title=e.name; b.setAttribute('aria-pressed',String(e.id===instance));
+    const small=document.createElement('small'); small.textContent=`Class ${e.label} · instance ${e.id}`; b.append(small);
+    b.onclick=()=>loadInstance(e.id); $('instances').append(b);
+  }
+}
+function buildGrids() {
+  for(const side of ['left','right']) {
+    $(side).replaceChildren(); tiles[side].clear();
+    for(const g of info.groups) {
+      const section=document.createElement('section'); section.className='group'; section.dataset.group=g.key;
+      const heading=document.createElement('h3'); heading.className='group-heading';
+      const name=document.createElement('span'); name.textContent=`Level ${g.level} · ${g.representation} · ${g.size}×${g.size}`; heading.append(name);
+      if(side==='left') {
+        const b=document.createElement('button'); b.textContent='Toggle group'; b.onclick=()=> {
+          if(!loaded)return;
+          const ids=Array.from({length:g.stop-g.start},(_,i)=>g.start+i), remove=ids.every(i=>selected.has(i));
+          ids.forEach(i=>remove?selected.delete(i):selected.add(i)); changed();
+        }; heading.append(b);
+      } else {
+        const spacer=document.createElement('button'); spacer.textContent='Toggle group'; spacer.style.visibility='hidden'; spacer.tabIndex=-1; spacer.setAttribute('aria-hidden','true'); heading.append(spacer);
+      }
+      section.append(heading); const [nx,ny,nt]=g.splits;
+      for(let t=0;t<nt;t++) {
+        const label=document.createElement('div'); label.className='slice-label'; label.textContent=`Time ${t+1}/${nt} · spatial grid ${nx}×${ny}`; section.append(label);
+        const grid=document.createElement('div'); grid.className='patch-grid'; grid.style.gridTemplateColumns=`repeat(${nx}, minmax(0,1fr))`;
+        for(let y=0;y<ny;y++) for(let x=0;x<nx;x++) {
+          const id=g.start+(t*ny+y)*nx+x, token=originals[id];
+          const tile=document.createElement(side==='left'?'button':'div'); tile.className='tile';
+          const img=document.createElement('img'); img.src=token.image; img.alt=`${g.representation} token ${id}, x ${x}, y ${y}, time ${t}`;
+          const caption=document.createElement('span'); caption.className='caption'; caption.textContent=`#${id} · x${x} y${y}`;
+          const badge=document.createElement('span'); badge.className='badge'; badge.hidden=true;
+          tile.append(img,caption,badge); tile.title=`Token ${id} · ${Math.round(token.count)} events · ${token.duration.toPrecision(4)} s`;
+          if(side==='left') {tile.onclick=()=>{if(!loaded)return; selected.has(id)?selected.delete(id):selected.add(id); changed();}; tile.setAttribute('aria-pressed','false');}
+          tiles[side].set(id,tile); grid.append(tile);
+        }
+        section.append(grid);
+      }
+      $(side).append(section);
+    }
+  }
+  filterGroups(); $('left').scrollTop=$('right').scrollTop=0;
+}
+function filterGroups() {
+  document.querySelectorAll('.group').forEach(g=>g.hidden=$('filter').value!=='all'&&g.dataset.group!==$('filter').value);
+  $('right').scrollTop=$('left').scrollTop;
+}
+function resetComparison() {
+  for (const token of originals) {
+    const left=tiles.left.get(token.id), right=tiles.right.get(token.id), masked=selected.has(token.id);
+    left.classList.toggle('masked',masked); left.setAttribute('aria-pressed',String(masked));
+    left.querySelector('.badge').hidden=!masked; left.querySelector('.badge').textContent='MASK';
+    right.classList.remove('target','excluded'); right.querySelector('img').src=token.image;
+    right.querySelector('.badge').hidden=!masked; right.querySelector('.badge').textContent='PENDING';
+    right.title=left.title;
+  }
+  $('selection').textContent=`${selected.size} / ${info.tokens} masked`;
+}
+function changed() {
+  revision++; clearTimeout(timer); resetComparison();
+  if(!selected.size) {status('No masks selected. Both grids show original patches.');return;}
+  status(`${selected.size} patches selected. ${$('auto').checked?'Waiting to reconstruct…':'Press Reconstruct to update.'}`);
+  if($('auto').checked)timer=setTimeout(reconstruct,250);
+}
+async function loadInstance(id) {
+  const version=++revision; clearTimeout(timer); loaded=false; controls(false); instance=id; selected.clear(); renderInstances();
+  viewRequest={instance:id, crop:$('crop').value, epoch:Number($('epoch').value)};
+  $('left').replaceChildren(); $('right').replaceChildren(); originals=[];
+  $('selection').textContent='0 selected'; status('Preparing patches…');
+  try {
+    const data=await api('/api/instance',request()); if(version!==revision)return;
+    originals=data.tokens; buildGrids(); loaded=true; controls(true); status('Click original patches to choose reconstruction targets.');
+  } catch(error) {if(version===revision)status(error.message,true);}
+}
+async function reconstruct() {
+  if(!loaded)return;
+  clearTimeout(timer); const version=++revision;
+  if(!selected.size){resetComparison();status('No masks selected. Both grids show original patches.');return;}
+  status(`Reconstructing ${selected.size} masked patches…`);
+  try {
+    const data=await api('/api/reconstruct',request()); if(version!==revision)return;
+    for(const token of data.tokens) {
+      const tile=tiles.right.get(token.id); tile.querySelector('img').src=token.image;
+      tile.classList.toggle('target',token.target); tile.classList.toggle('excluded',!token.target&&!token.visible);
+      const badge=tile.querySelector('.badge'); badge.hidden=token.visible; badge.textContent=token.target?'RECON':'EXCLUDED';
+      tile.title=token.target?`Token ${token.id} · raw patch MSE ${token.mse.toPrecision(5)} · predicted log1p(count) ${token.predicted_log_count.toPrecision(5)}`:tiles.left.get(token.id).title;
+    }
+    status(`${data.targets} reconstructed · ${data.visible} visible · ${data.excluded} excluded · patch MSE ${data.patch_loss.toPrecision(5)} · log-count MSE ${data.count_loss.toPrecision(5)}`);
+  } catch(error) {if(version===revision)status(error.message,true);}
+}
+// Mirror absolute scroll positions: both panes have identical group/grid geometry.
+let syncing=false;
+for(const [source,target] of [['left','right'],['right','left']]) $(source).addEventListener('scroll',()=>{
+  if(syncing)return; syncing=true; $(target).scrollTop=$(source).scrollTop; $(target).scrollLeft=$(source).scrollLeft; syncing=false;
+});
+$('search').oninput=()=>{if(info)renderInstances();}; $('filter').onchange=filterGroups;
+$('clear').onclick=()=>{selected.clear();changed();}; $('run').onclick=reconstruct;
+$('random').onclick=()=> {
+  const ids=originals.map(t=>t.id); for(let i=ids.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[ids[i],ids[j]]=[ids[j],ids[i]];}
+  selected=new Set(ids.slice(0,Math.min(ids.length-1,Math.max(1,Math.round(ids.length*.65))))); changed();
+};
+$('strict').onchange=()=>{if(loaded)changed();}; $('auto').onchange=()=>{if(loaded)changed();};
+$('crop').onchange=()=>{const training=$('crop').value==='training';$('epoch').disabled=$('load-crop').disabled=!training;if(instance!==null)loadInstance(instance);};
+$('load-crop').onclick=()=>{if(instance!==null)loadInstance(instance);};
+$('epoch').onkeydown=e=>{if(e.key==='Enter'&&instance!==null)loadInstance(instance);};
+(async()=> {
+  try {
+    info=await api('/api/info'); $('model').textContent=`${info.checkpoint} · ${info.device} · ${info.tokens} tokens${info.epoch==null?'':` · checkpoint epoch ${info.epoch+1}`}`;
+    document.querySelector('label[for=search]').textContent=`${info.split==='train'?'Training':'Validation'} recordings`;
+    for(const g of info.groups){const o=document.createElement('option');o.value=g.key;o.textContent=`Level ${g.level} · ${g.representation}`;$('filter').append(o);}
+    renderInstances(); if(info.instances.length)await loadInstance(info.instances[0].id); else status('No recordings found.',true);
+  } catch(error) {status(error.message,true);}
+})();
+</script>
+</body>
+</html>

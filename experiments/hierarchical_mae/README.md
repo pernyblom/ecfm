@@ -425,3 +425,60 @@ patch size and duration; display values are clipped to `[0,1]` while saved tenso
 retain their full range. Files are under `<output_dir>/patches/`.
 
 Tests: `python -m pytest tests/test_hierarchical_mae.py -q`.
+
+## Interactive reconstruction UI
+
+Run the local browser inspector from the repository root:
+
+```powershell
+python -m experiments.hierarchical_mae.visualize --checkpoint outputs/hierarchical_mae/best.pt
+```
+
+The script loads the architecture, hierarchy, representations, patch sizes and data
+settings from the pretraining checkpoint, then opens `http://127.0.0.1:8765`.
+It uses the existing Python dependencies; no frontend build or external service is
+required. Stop it with Ctrl+C. `--device auto` uses CUDA when available and CPU
+otherwise; specify `--device cpu` or `--device cuda:0` to override. Other options:
+
+```powershell
+python -m experiments.hierarchical_mae.visualize --checkpoint path/to/best.pt --data-root datasets/THU-EACT-50-CHL --port 8766 --no-browser
+python -m experiments.hierarchical_mae.visualize --checkpoint path/to/best.pt --config experiments/hierarchical_mae/configs/thu.yaml --split validation
+```
+
+`--config` is optional and supports inherited YAML configurations. Its model and
+hierarchy must match the checkpoint. Use MAE pretraining checkpoints containing
+the decoder (`best.pt` or `last.pt`), rather than downstream classifier checkpoints.
+
+Choose a training recording from the searchable list. Both panes show every patch
+in canonical level/representation/time/y/x order, grouped into spatial grids per
+time slice. Click patches on the left or use **Toggle group** to select targets.
+The right pane replaces only masked patches with model predictions; all visible
+patches retain their original pixels. Scrolling in either pane moves the other to
+the same position. The group filter affects display only; masks remain selected
+across hidden groups. **Clear masks**, **Random 65%**, manual **Reconstruct**, and
+**Auto update** support repeated comparisons without reloading the recording.
+
+The default view uses the fixed evaluation crop (`data.eval_fraction`, normally
+the full recording). **Training crop** uses the actual training temporal/spatial
+crop sampler; its epoch field reproduces the deterministic per-recording seed,
+including `train_views` crop banks. Loading a new recording or crop clears masks.
+The inspector retains one rendered view in memory and disables disk patch caching.
+The default list is the training subset after the seeded validation holdout;
+`--split validation` switches to that holdout.
+
+Manual masks use all remaining tokens as encoder context, independently of the
+training selection budget. By default, overlapping parent/child and alternate
+representations remain visible, matching overlap-permitting token masking.
+**Exclude overlapping context** additionally removes every other token whose
+spatiotemporal volume intersects a selected target. Excluded patches are marked
+on the right and shown as originals for comparison, but are never encoder inputs
+or reconstruction targets. Select at least one visible token; strict exclusion
+of a full-volume root leaves none and reports an error.
+
+Pixels use the same fixed RGB mapping as saved inspection sheets and are clipped
+to `[0,1]` for display only. Hover over an original patch for event count/duration,
+or a reconstructed patch for raw patch MSE and predicted `log1p(count)`. The status
+bar reports group-balanced patch MSE and target log-count MSE from unclipped model
+outputs. Empty masks show originals without invoking the MAE decoder.
+
+UI inference/API tests: `python -m pytest tests/test_hierarchical_mae_visualize.py -q`.
