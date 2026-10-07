@@ -45,6 +45,69 @@ def batch(cfg):
     return next(iter(DataLoader(HierarchyDataset(cfg, train), batch_size=2)))['source']
 
 
+def test_set_policy_uses_only_root_content_and_one_transformer_pass(cfg):
+    from experiments.hierarchical_mae.set_selector import SetPolicy, coarse_inputs, selected_features
+    model = HierarchicalMAE(cfg).eval().requires_grad_(False)
+    view = batch(cfg)
+    roots, descriptors = coarse_inputs(model, view, 6, 2, 2)
+    changed = deepcopy(view)
+    for group in model.layout.groups:
+        if group.level > 0:
+            changed['patches'][group.key].fill_(1000.)
+    roots2, descriptors2 = coarse_inputs(model, changed, 6, 2, 2)
+    torch.testing.assert_close(roots, roots2)
+    torch.testing.assert_close(descriptors, descriptors2)
+    policy = SetPolicy(roots.shape[-1], descriptors.shape[-1], 2, 2, 2).eval()
+    policy.fit_normalization(roots, descriptors)
+    expected = model.features(view, selection=dict(strategy='activity', budget=6))
+    calls = []
+    hook = model.encoder.register_forward_pre_hook(lambda module, args: calls.append(args[0].shape[1]))
+    actual, choices = selected_features(model, view, policy, 0., 6)
+    hook.remove()
+    assert choices.eq(0).all() and calls == [6]
+    torch.testing.assert_close(actual, expected)
+    # Supervised gains must give a nonzero gradient to the initialized scorer.
+    loss = (policy(roots, descriptors)[:, 1:]-1).square().mean()
+    loss.backward()
+    assert policy.scorer[-1].weight.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize('limit,sets', [(1, 25), (2, 115), (4, 210)])
+def test_set_policy_hard_budget_and_noop(limit, sets):
+    from experiments.hierarchical_mae.set_selector import SetPolicy
+    policy = SetPolicy(12, 18, max_swaps=limit).eval()
+    assert len(policy.states) == sets
+    scores = torch.eye(sets)
+    choices = policy.choose(scores, 0.)
+    assert torch.equal(choices, torch.arange(sets))
+    assert policy.depths[choices].max() == limit
+    assert policy.choose(torch.zeros_like(scores)).eq(0).all()
+    assert policy.choose(scores, 2.).eq(0).all()
+    with pytest.raises(ValueError):
+        policy.choose(scores, -.01)
+
+
+def test_set_policy_checkpoint_loader_and_probe_identity(cfg, tmp_path):
+    from experiments.hierarchical_mae.set_selector import SetPolicy, coarse_inputs, load_policy
+    from experiments.hierarchical_mae.feature_cache import file_digest
+    baseline = Classifier(HierarchicalMAE(cfg), cfg['downstream']['num_classes'], True).eval()
+    view = batch(cfg)
+    roots, descriptors = coarse_inputs(baseline.backbone, view, 6, 2, 2)
+    policy = SetPolicy(roots.shape[-1], descriptors.shape[-1], 2, 2, 2).eval()
+    baseline_path, policy_path, probe_path = [tmp_path/name for name in ('baseline.pt', 'policy.pt', 'probe.pt')]
+    torch.save(dict(config=cfg, model=baseline.state_dict()), baseline_path)
+    torch.save(dict(architecture=policy.settings, policy=policy.state_dict(), threshold=0., budget=6,
+                    baseline=str(baseline_path), baseline_digest=file_digest(baseline_path)), policy_path)
+    torch.save(dict(head=baseline.head.state_dict(), policy_digest=file_digest(policy_path)), probe_path)
+    loaded = load_policy(policy_path, probe_path)
+    expected = baseline.head(baseline.backbone.features(view, selection=dict(strategy='activity', budget=6)))
+    torch.testing.assert_close(loaded(view), expected)
+    assert not loaded.training and not any(p.requires_grad for p in loaded.parameters())
+    torch.save(dict(head=baseline.head.state_dict(), policy_digest='different'), probe_path)
+    with pytest.raises(ValueError, match='different policy'):
+        load_policy(policy_path, probe_path)
+
+
 def test_swap_proposals_preserve_activity_ties_budget_and_one_change():
     from experiments.hierarchical_mae.swap_selection import proposals
     count = torch.tensor([[9., 9., 8., 8., 7., 7., 6., 100.]])

@@ -124,3 +124,51 @@ Its `policy.pt` uses `swap_ridge.RidgePolicy(saved['input_dim'])`, with the save
 state dictionary, rather than `SwapPolicy`; the same `selected_features` inference
 function works. Fresh heads are saved as `probe_7.pt`, `probe_17.pt`, and
 `probe_27.pt`. All other proposal and baseline fields have the same meaning.
+
+## Multi-swap oracle diagnostics
+
+```powershell
+python -m experiments.hierarchical_mae.swap_oracle `
+  --baseline outputs/hierarchical_mae/linear_probe_activity54/best.pt `
+  --reference outputs/hierarchical_mae/swap54_boundary/results.json `
+  --output-dir outputs/hierarchical_mae/swap54_multi_oracle
+```
+
+This keeps the original classifier frozen and uses labels to search for lower
+cross-entropy selections at budgets zero through four swaps. The candidate pool
+is fixed per recording: the four lowest-ranked selected activity tokens and the
+six highest-ranked excluded tokens. All resulting sets still have 54 tokens.
+There are 1, 24, 90, 80, and 15 distinct sets at exactly 0, 1, 2, 3, and 4 swaps.
+The 210 sets are evaluated once per recording and losses/predictions are cached.
+
+- Greedy accepts the best next swap only if it reduces loss, stopping otherwise.
+- Beam search (default width 4) retains four exact-depth candidates and expands
+  them, including temporarily worse sets that could lead to a better combination.
+- Exhaustive search supplies the exact minimum loss within this fixed pool.
+
+Every method reports its best-so-far set, retaining no-change and earlier
+solutions. Thus reported per-example loss cannot increase with the swap budget;
+accuracy need not be monotonic because the objective is cross-entropy. Swaps
+remove distinct members of the original selected pool and add distinct members
+of the original excluded pool; candidates are not re-ranked between steps.
+
+`--reference` checks the baseline checkpoint digest and reproduces the original
+single-swap oracle loss and accuracy. The command defaults to full training,
+validation, and test splits; `--splits validation test` restricts extraction.
+`--drops`, `--adds`, `--max-swaps`, and `--beam-width` allow further diagnostics.
+Larger pools grow combinatorially. Completed output directories are protected;
+interrupted runs reuse compatible completed split caches.
+
+`results.json` records accuracy, loss, average actual swaps, and cumulative
+unique candidate evaluations per search budget. Search evaluation counts are
+simulated from the cached losses: actual GPU extraction evaluates all 210 sets
+once, shared by all methods. The report separately records actual extraction
+time and evaluation count. `<split>_choices.pt` saves chosen state indices and
+their removed/added pool positions; the referenced bank contains original token
+IDs, candidate IDs, predictions, and losses so selections can be reconstructed.
+
+These are label-assisted diagnostics only. They neither train a deployable
+selector nor refit a classifier on label-selected features.
+
+See [the completed local multi-swap results](MULTI_SWAP_RESULTS_2026-10-07.md)
+for accuracy, loss, search cost, and interpretation.

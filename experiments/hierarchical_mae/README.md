@@ -487,3 +487,7 @@ For supervised, conservative changes to an existing activity-selected set, see
 [the one-swap experiment](SWAP_SELECTION.md). It evaluates real swap benefits,
 trains a policy with a no-change option, and compares fresh linear probes across
 matched classifier seeds.
+
+The [bounded set-selection policy](SET_SELECTION.md) extends this to learned
+joint replacement sets with hard limits of 1, 2, or 4 swaps and label-free,
+single-transformer-pass inference.
