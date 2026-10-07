@@ -1,0 +1,4 @@
+extends: thu_selector.yaml
+downstream:
+  learned_selector:
+    budget: 54

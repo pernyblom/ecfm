@@ -482,3 +482,8 @@ bar reports group-balanced patch MSE and target log-count MSE from unclipped mod
 outputs. Empty masks show originals without invoking the MAE decoder.
 
 UI inference/API tests: `python -m pytest tests/test_hierarchical_mae_visualize.py -q`.
+
+For supervised, conservative changes to an existing activity-selected set, see
+[the one-swap experiment](SWAP_SELECTION.md). It evaluates real swap benefits,
+trains a policy with a no-change option, and compares fresh linear probes across
+matched classifier seeds.

@@ -1,0 +1,5 @@
+extends: thu_selector54.yaml
+downstream:
+  epochs: 500
+  batch_size: 64
+  lr: 0.01

@@ -45,6 +45,58 @@ def batch(cfg):
     return next(iter(DataLoader(HierarchyDataset(cfg, train), batch_size=2)))['source']
 
 
+def test_swap_proposals_preserve_activity_ties_budget_and_one_change():
+    from experiments.hierarchical_mae.swap_selection import proposals
+    count = torch.tensor([[9., 9., 8., 8., 7., 7., 6., 100.]])
+    valid = torch.ones_like(count, dtype=torch.bool)
+    valid[:, -1] = False
+    ids, removed, inserted = proposals(count, valid, 4, 2, 3)
+    assert ids.shape == (1, 7, 4)
+    assert ids[0, 0].tolist() == [0, 1, 2, 3]
+    base = set(ids[0, 0].tolist())
+    for proposal in ids[0, 1:]:
+        values = set(proposal.tolist())
+        assert len(values) == 4 and len(values-base) == len(base-values) == 1
+        assert 7 not in values
+    with pytest.raises(ValueError):
+        proposals(count, valid, 6, 2, 3)
+
+
+def test_activity_coarse_overlap_uses_lowest_levels(cfg):
+    from experiments.hierarchical_mae.swap_selection import activity_coarse_overlap
+    layout = Layout(cfg)
+    counts = (-layout.level_ids).float()[None]
+    valid = torch.ones_like(counts, dtype=torch.bool)
+    overlap, identical = activity_coarse_overlap(counts, valid, layout, 4)
+    assert overlap.item() == 1 and identical.item() == 1
+    counts[:, -4:] = 100
+    overlap, identical = activity_coarse_overlap(counts, valid, layout, 4)
+    assert overlap.item() == 0 and identical.item() == 0
+
+
+def test_swap_policy_noop_and_deployment_match_enumerated_features(cfg):
+    from experiments.hierarchical_mae.swap_selection import proposals, policy_inputs, SwapPolicy, selected_features
+    model = HierarchicalMAE(cfg).eval().requires_grad_(False)
+    view = batch(cfg)
+    ids, removed, inserted = proposals(view['log_counts'], view['valid_mask'], 4, 2, 2)
+    coarse, local = policy_inputs(model, view, removed, inserted)
+    policy = SwapPolicy(local.shape[-1]).eval()
+    policy.fit_normalization(local)
+    actual, choices = selected_features(model, view, policy, 0., 4, 2, 2)
+    assert choices.eq(0).all()
+    expected = model.features(view, selection=dict(strategy='activity', budget=4))
+    torch.testing.assert_close(actual, expected)
+    # Constant positive prediction chooses first replacement; compare direct gather.
+    with torch.no_grad():
+        policy.net[-1].bias.fill_(1.)
+    actual, choices = selected_features(model, view, policy, 0., 4, 2, 2)
+    assert choices.eq(1).all()
+    embedding = model.token_embeddings(view)
+    packed = embedding.gather(1, ids[:, 1, :, None].expand(-1, -1, embedding.shape[-1]))
+    expected = model.encoder(packed, src_key_padding_mask=torch.zeros(packed.shape[:2], dtype=torch.bool)).mean(1)
+    torch.testing.assert_close(actual, expected)
+
+
 def test_counts_duration_endpoint_and_shapes(cfg):
     ds = HierarchyDataset(cfg, [(Path(cfg['data']['root'])/'0.npy', 0)])
     view = ds[0]['source']
