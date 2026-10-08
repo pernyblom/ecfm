@@ -1,5 +1,9 @@
 # Learn the activity/information mixture
 
+See [the completed local 216-token experiments](LEARNED_BLEND_RESULTS_2026-10-08.md)
+for both 100-epoch selector fits and 500-epoch fresh probes, including learned
+weights, validation/test results, and learning curves.
+
 Two selectors learn how much to trust activity versus an information score:
 
 | `downstream.learned_selector.kind` | Activity weight | Predictor inputs |
