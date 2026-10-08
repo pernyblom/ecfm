@@ -437,6 +437,43 @@ retain their full range. Files are under `<output_dir>/patches/`.
 
 Tests: `python -m pytest tests/test_hierarchical_mae.py -q`.
 
+## Patch information explorer
+
+Explore information rankings without a trained checkpoint:
+
+```powershell
+python -m experiments.hierarchical_mae.visualize_information --config experiments/hierarchical_mae/configs/thu.yaml
+```
+
+This opens `http://127.0.0.1:8766`. It uses the existing Python dependencies and
+requires no frontend build. Optional arguments: `--data-root PATH`,
+`--split validation`, `--port 8767`, and `--no-browser`. Stop with Ctrl+C.
+
+Choose a recording and evaluation or deterministic training crop. Adjust the
+raw event histogram's x/y/time bins and support saturation, then rank by
+neighborhood support, entropy deficit, or excess autocorrelation. The UI explains
+each measure, its formula and limitations. **Entropy deficit** rewards
+concentration, not high entropy; autocorrelation can be negative. Scores pool
+polarities and use the same raw voxels and scoring functions as training, rather
+than resized display images.
+
+The responsive grid sorts descending, left to right and top to bottom, with
+token ID breaking ties. Select a patch for all three scores, count, duration and
+original cell coordinates. Candidate filters restrict ranking to a single
+level/representation; alternate projections of the same voxel share scores.
+Optional activity blending uses the training formula and min–max normalization
+over the chosen candidates. Product mode uses `log1p(count) * max(information, 0)`.
+**Show top** and patch size only affect display, not normalization or scoring.
+
+Changes update automatically after a short debounce. Metric, filter and blend
+changes reuse the latest in-memory view; histogram, recording and crop changes
+reload and score through `HierarchyDataset`. Disk patch caching is disabled,
+while configured training crop banks are preserved. Interactive histogram
+resolution is limited to 2–64 bins per axis. Large recordings or fine histograms
+can take longer to recompute; stale grids are dimmed while updates are pending.
+
+Tests: `python -m pytest tests/test_visualize_information.py -q`.
+
 ## Interactive reconstruction UI
 
 Run the local browser inspector from the repository root:

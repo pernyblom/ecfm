@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Patch information explorer</title>
+<style>
+:root{color-scheme:dark;--bg:#101719;--panel:#182326;--line:#344448;--ink:#e9f1ed;--muted:#a6bbb5;--accent:#b7ee90;--tile:150px;font-family:system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}header{padding:24px 30px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:20px;align-items:center}h1{font-size:25px;margin:5px 0}h2{font-size:17px;margin:0 0 12px}p{line-height:1.55;margin:7px 0}.eyebrow{color:var(--accent);text-transform:uppercase;font-size:11px;letter-spacing:2px}.muted,small{color:var(--muted)}small{display:block;line-height:1.5;margin-top:5px}main{display:grid;grid-template-columns:320px minmax(0,1fr);gap:24px;padding:24px 30px}aside{display:flex;flex-direction:column;gap:16px}.panel{padding:18px;background:var(--panel);border:1px solid var(--line);border-radius:12px}label{display:block;font-size:13px;margin:14px 0 6px}input,select,button{font:inherit;color:var(--ink);background:#101a1d;border:1px solid #49605d;border-radius:6px;padding:8px;width:100%}input[type=range]{padding:0;accent-color:var(--accent)}input:focus,select:focus,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button,summary{cursor:pointer}button:hover{border-color:var(--accent)}:disabled{opacity:.45;cursor:default}.row{display:flex;gap:8px}.row>*{min-width:0;flex:1}label:first-child{margin-top:0}.row label{margin-top:10px}.formula{font:12px ui-monospace,monospace;color:var(--accent);line-height:1.7;overflow-wrap:anywhere}.toolbar{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:0 0 16px;flex-wrap:wrap}.toolbar label{margin:0;font-size:12px}.toolbar input{width:130px}.summary{font-size:13px;color:var(--muted)}#status{min-height:24px;font-size:13px;color:var(--accent);margin-bottom:10px}#status.error{color:#ffb7a5}#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--tile),1fr));gap:12px;align-items:start}#grid[aria-busy=true]{opacity:.5}.card{text-align:left;padding:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}.card:first-child{border-color:var(--accent)}.card img{width:100%;aspect-ratio:1;object-fit:contain;image-rendering:pixelated;background:#000;border-radius:4px;margin:8px 0}.cardhead{display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:12px}.rank{color:var(--accent);font-weight:700}.score{font:13px ui-monospace,monospace}.card small{font-size:11px}.bar{height:3px;background:#344448;margin-top:8px;border-radius:2px}.bar span{display:block;height:100%;background:var(--accent)}details{margin-top:12px}summary{font-size:13px;color:var(--accent)}details p{font-size:12px}dialog{color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(520px,95vw);max-height:90vh;overflow:auto}dialog::backdrop{background:#000a}dialog img{display:block;width:min(320px,100%);margin:14px auto;image-rendering:pixelated;background:#000}dl{display:grid;grid-template-columns:1fr 1fr;font-size:13px;gap:10px}dd{margin:0;font-family:ui-monospace,monospace}.empty{padding:40px;color:var(--muted)}@media(max-width:850px){main{grid-template-columns:1fr;padding:16px}aside{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}header{padding:18px}.toolbar{align-items:flex-start}}
+/* Keep the highest-ranked patches visible while adjusting lower controls. */
+@media(min-width:851px){body{height:100dvh;display:flex;flex-direction:column}header{flex:none}main{flex:1;min-height:0}aside,section[aria-label="Ranked patches"]{overflow:auto;scrollbar-gutter:stable}aside{padding-right:8px}.panel{flex-shrink:0}}
+</style>
+</head>
+<body>
+<header><div><div class="eyebrow">Hierarchical MAE · Dataset lab</div><h1>Patch information explorer</h1><p class="muted">Change a measure. Explore what rises to the top.</p></div><span class="muted" id="dataset"></span></header>
+<main>
+<aside>
+<section class="panel"><h2>01 / Recording &amp; patches</h2>
+<label for="search">Find a recording</label><input id="search" type="search" placeholder="Filter by filename or label">
+<label for="instance">Dataset instance</label><select id="instance"></select>
+<div class="row"><button id="previous" type="button">← Previous</button><button id="next" type="button">Next →</button></div>
+<label for="crop">Crop</label><select id="crop"><option value="evaluation">Evaluation crop</option><option value="training">Training crop</option></select>
+<small>Evaluation uses the configured centered fraction. Training uses the seeded temporal/spatial sampler.</small>
+<label for="epoch">Training crop epoch</label><input id="epoch" type="number" value="0" min="0" max="1000000" step="1" disabled>
+<small>The same recording and epoch reproduce the same crop; configured crop banks repeat across epochs.</small>
+<label for="group">Candidate patches</label><select id="group"><option value="all">All levels &amp; representations</option></select>
+<small>Restricts the ranking and blend normalization. Alternate representations of the same voxel have identical information scores.</small>
+</section>
+<section class="panel"><h2>02 / Information measure</h2>
+<label for="metric">Measure</label><select id="metric"><option value="support">Neighborhood support</option><option value="entropy">Entropy deficit</option><option value="autocorrelation">Excess autocorrelation</option></select>
+<p id="metricDescription" class="summary"></p><p id="metricFormula" class="formula"></p>
+<label>Local histogram resolution</label><div class="row"><div><label for="bx">X bins</label><input id="bx" type="number" min="2" max="64" step="1" value="8"></div><div><label for="by">Y bins</label><input id="by" type="number" min="2" max="64" step="1" value="8"></div><div><label for="bt">Time bins</label><input id="bt" type="number" min="2" max="64" step="1" value="8"></div></div>
+<small>Each patch's raw event volume is binned separately in x, y and time, pooling both polarities. More bins resolve finer structure; they can also make support sparse. Display resolution is unchanged. UI limit: 64 per axis.</small>
+<label for="saturation">Support saturation</label><input id="saturation" type="number" min="0.000001" step="any" value="3">
+<small>Neighbor events needed for full support. Lower values saturate sooner. Affects support only; all three scores are available in patch details.</small>
+</section>
+<section class="panel"><h2>03 / Ranking rule</h2>
+<label for="mode">Combine with activity</label><select id="mode"><option value="information">Information only</option><option value="blend">Weighted activity blend</option><option value="product">Activity × information</option></select>
+<label for="weight">Activity weight α: <output id="weightValue">0.50</output></label><input id="weight" type="range" min="0" max="1" step="0.01" value="0.5" disabled>
+<p id="rankingDescription" class="summary"></p><p id="rankingFormula" class="formula"></p>
+<details><summary>How to read the demonstration</summary><p>Scores describe these event statistics, not learned semantic importance. Empty patches score zero for all three measures. Negative autocorrelation can rank below empty patches.</p><p>The grid reads left to right, then down: highest score at the top left. Ties use the original token ID. The bar shows relative position within the displayed score range, not confidence.</p><p>Levels cover different physical volumes. Use one level/representation group for comparisons at a fixed scale. Cell coordinates are zero-based [x, y, t] within that level.</p><p>Images reuse the reconstruction inspector's RGB mapping and clip values to [0, 1]. Two-channel projections show positive events in red and negative events in blue. CSTR shows mean positive/negative time in red/blue, with count in green when present. The score always uses raw 3-D voxels, regardless of projection.</p></details>
+</section>
+</aside>
+<section aria-label="Ranked patches">
+<div class="toolbar"><div><h2>Ranked patches</h2><div id="summary" class="summary">Choose a recording to start.</div></div><div class="row"><div><label for="limit">Show top</label><select id="limit"><option value="0">All patches</option><option value="24">24</option><option value="54">54</option><option value="108">108</option><option value="216">216</option></select></div><div><label for="size">Patch size</label><input id="size" type="range" min="110" max="280" value="150" step="10"></div></div></div>
+<div id="status" role="status" aria-live="polite">Loading dataset…</div>
+<div id="grid" aria-busy="true"></div>
+</section>
+</main>
+<dialog id="detail"><h2 id="detailTitle"></h2><img id="detailImage" alt="Selected patch"><dl id="detailValues"></dl><button id="closeDetail">Close</button></dialog>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const explanations={
+ support:['Event-weighted fraction supported by nearby activity (0–1). Each bin looks at 24 neighbors with spatial displacement and at most one time-bin offset. Same-pixel temporal repeats cannot support one another. Boundaries do not wrap.', 'Σ vᵢ min(neighborsᵢ / saturation, 1) / Σ vᵢ'],
+ entropy:['Concentration, not ordinary entropy (0–1). A uniform volume scores 0; events concentrated in one bin score 1. It ignores spatial arrangement, so a hot pixel can score highly.', '1 − H(p) / log(K), pᵢ = vᵢ / Σ vᵢ; K = X × Y × T'],
+ autocorrelation:['Neighbor similarity beyond a random rearrangement of the same bin counts. Sums correlations along positive x, y and time axes, correcting each for its exact permutation expectation. Can be negative; uniform volumes score 0.', 'Σ axes [Σ adjacent zᵢzⱼ / Σ zᵢ² + pairs / (K(K−1))], z = v − mean(v)']
+};
+let info, result, timer, revision=0, running=false;
+function describe(){
+ const [description,formula]=explanations[$('metric').value];
+ $('metricDescription').textContent=description;$('metricFormula').textContent=formula;
+ const mode=$('mode').value;$('weight').disabled=mode!=='blend';$('epoch').disabled=$('crop').value!=='training';
+ $('weightValue').textContent=Number($('weight').value).toFixed(2);
+ $('rankingDescription').textContent=mode==='information'?'Sort directly by the selected raw information score.':mode==='blend'?'Normalize activity and information separately to [0,1] over the candidate patches in this recording. A constant signal becomes zero. α = 0 uses information; α = 1 uses activity.':'Multiply log event count by the nonnegative information score. Negative information scores are clipped to zero; no min–max normalization is applied.';
+ $('rankingFormula').textContent=mode==='information'?'score = information':mode==='blend'?'score = α norm(log(1 + count)) + (1 − α) norm(information)':'score = log(1 + count) × max(information, 0)';
+}
+function request(){return {instance:Number($('instance').value),crop:$('crop').value,epoch:Number($('epoch').value),group:$('group').value,metric:$('metric').value,bins:['bx','by','bt'].map(id=>Number($(id).value)),support_saturation:Number($('saturation').value),mode:$('mode').value,activity_weight:Number($('weight').value)};}
+function valid(){return $('instance').selectedIndex>=0 && ['bx','by','bt','saturation','epoch'].every(id=>$(id).disabled||($(id).value!==''&&$(id).checkValidity()));}
+function status(message,error=false){$('status').textContent=message;$('status').className=error?'error':'';}
+function schedule(){revision++;clearTimeout(timer);describe();$('grid').setAttribute('aria-busy','true');status('Settings changed · updating ranking…');timer=setTimeout(update,250);}
+async function update(){
+ if(running)return;
+ if(!valid()){status('Choose a recording and enter valid values for the highlighted controls.',true);return;}
+ const version=revision;running=true;status('Scoring patches…');
+ try{
+  const response=await fetch('/api/instance',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(request())});
+  const data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');
+  if(version===revision){result=data;render();$('grid').setAttribute('aria-busy','false');status('Up to date · highest score first · select a patch for details');}
+ }catch(error){if(version===revision){status(error.message,true);$('grid').replaceChildren();$('summary').textContent='Unable to rank patches.';$('grid').setAttribute('aria-busy','false');}}
+ finally{running=false;if(version!==revision)update();}
+}
+function fmt(value){return Number(value).toLocaleString(undefined,{maximumSignificantDigits:5});}
+function details(token,rank){
+ $('detailTitle').textContent=`Rank ${rank} · Token ${token.id}`;$('detailImage').src=token.image;
+ const fields={'Ranking score':fmt(token.score),'Group':token.group,'Cell [x, y, t]':token.cell.join(', '),'Event count':token.count.toLocaleString(),'Duration (seconds)':fmt(token.duration),'Support':fmt(token.metrics.support),'Entropy deficit':fmt(token.metrics.entropy),'Excess autocorrelation':fmt(token.metrics.autocorrelation)};
+ $('detailValues').replaceChildren();for(const [label,value] of Object.entries(fields)){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;$('detailValues').append(dt,dd);}
+ $('detail').showModal();
+}
+function render(){
+ if(!result)return;
+ const count=Number($('limit').value)||result.tokens.length,tokens=result.tokens.slice(0,count),fragment=document.createDocumentFragment();
+ const high=tokens[0]?.score??0,low=tokens[tokens.length-1]?.score??0;
+ tokens.forEach((token,index)=>{
+  const card=document.createElement('button');card.className='card';card.type='button';
+  card.innerHTML='<div class="cardhead"><span class="rank"></span><span class="score"></span></div><img loading="lazy"><div class="identity"></div><small></small><div class="bar"><span></span></div>';
+  card.querySelector('.rank').textContent=`#${index+1}`;card.querySelector('.score').textContent=fmt(token.score);
+  const img=card.querySelector('img');img.src=token.image;img.alt=`Token ${token.id}, ${token.group}, cell ${token.cell.join(', ')}`;
+  card.querySelector('.identity').textContent=`L${token.level} · ${token.representation} · ID ${token.id}`;
+  card.querySelector('small').textContent=`[${token.cell.join(', ')}] · ${token.count.toLocaleString()} events`;
+  card.querySelector('.bar span').style.width=`${high===low?100:100*(token.score-low)/(high-low)}%`;
+  card.addEventListener('click',()=>details(token,index+1));fragment.append(card);
+ });
+ $('grid').replaceChildren(fragment);
+ const instance=info.instances.find(i=>i.id===result.instance);
+ $('summary').textContent=`${instance.name} · label ${instance.label} · ${tokens.length} / ${result.tokens.length} candidates · scores ${fmt(low)} to ${fmt(high)}`;
+}
+function instances(){
+ const prior=$('instance').value,query=$('search').value.toLowerCase();$('instance').replaceChildren();
+ for(const item of info.instances.filter(i=>`${i.name} ${i.label}`.toLowerCase().includes(query))){const option=new Option(`${item.id} · ${item.name} · label ${item.label}`,item.id);$('instance').add(option);}
+ if([...$('instance').options].some(o=>o.value===prior))$('instance').value=prior;
+ $('previous').disabled=$('next').disabled=$('instance').options.length<2;schedule();
+}
+for(const id of ['instance','crop','epoch','group','metric','bx','by','bt','saturation','mode','weight'])$(id).addEventListener('input',schedule);
+$('search').addEventListener('input',instances);$('limit').addEventListener('change',render);
+$('size').addEventListener('input',()=>document.documentElement.style.setProperty('--tile',`${$('size').value}px`));
+$('closeDetail').addEventListener('click',()=>$('detail').close());
+for(const [id,delta] of [['previous',-1],['next',1]])$(id).addEventListener('click',()=>{const select=$('instance');select.selectedIndex=(select.selectedIndex+delta+select.length)%select.length;schedule();});
+async function init(){try{const response=await fetch('/api/info');if(!response.ok)throw Error('Unable to load dataset');info=await response.json();
+ $('dataset').textContent=`${info.split} · ${info.instances.length} recordings · ${info.tokens} tokens`;
+ for(const group of info.groups)$('group').add(new Option(`L${group.level} · ${group.representation} · ${group.splits.join(' × ')} cells`,group.key));
+ ['bx','by','bt'].forEach((id,i)=>$(id).value=info.defaults.bins[i]);$('saturation').value=info.defaults.support_saturation;$('metric').value=info.defaults.metric;
+ instances();
+ }catch(error){status(error.message,true);}}
+describe();init();
+</script>
+</body>
+</html>
