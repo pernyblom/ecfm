@@ -6,6 +6,7 @@ import torch
 
 METRICS = ('support', 'entropy', 'autocorrelation')
 STRATEGIES = ('information', 'activity_information')
+BLEND_KINDS = ('global_blend', 'coarse_blend')
 
 
 def settings(cfg):
@@ -13,6 +14,8 @@ def settings(cfg):
     options = cfg['data'].get('information_selection')
     needed = any(s.get('strategy') in STRATEGIES for s in
                  (cfg.get('selection', {}), cfg.get('downstream', {}).get('selection', {})))
+    learned = cfg.get('downstream', {}).get('learned_selector')
+    needed |= isinstance(learned, dict) and learned.get('kind') in BLEND_KINDS
     return {'bins': [8, 8, 8], 'support_saturation': 3., **(options or {})} if options is not None or needed else None
 
 
@@ -87,6 +90,15 @@ def histogram_scores(volume, saturation=3.):
     return np.asarray([support, np.clip(entropy, 0, 1), autocorrelation], dtype=np.float32)
 
 
+def normalize_eligible(signal, eligible):
+    """Per-recording min-max scaling; excluded tokens cannot set the range."""
+    low = signal.masked_fill(~eligible, torch.inf).amin(1, keepdim=True)
+    high = signal.masked_fill(~eligible, -torch.inf).amax(1, keepdim=True)
+    low = torch.where(eligible.any(1, keepdim=True), low, torch.zeros_like(low))
+    high = torch.where(eligible.any(1, keepdim=True), high, low)
+    return (signal - low) / (high - low).clamp_min(torch.finfo(signal.dtype).eps)
+
+
 def selection_scores(view, eligible, options):
     """Blend normalizes each signal over eligible tokens per recording only."""
     metric = options.get('metric', 'support')
@@ -111,12 +123,4 @@ def selection_scores(view, eligible, options):
     weight = options.get('activity_weight', .5)
     if type(weight) not in (int, float) or not math.isfinite(weight) or not 0 <= weight <= 1:
         raise ValueError('activity_weight must be finite and in [0,1]')
-    def normalize(signal):
-        low = signal.masked_fill(~eligible, torch.inf).amin(1, keepdim=True)
-        high = signal.masked_fill(~eligible, -torch.inf).amax(1, keepdim=True)
-        # Also return finite scores for rows with no eligible tokens; plan validation
-        # subsequently reports that there must be at least one visible token.
-        low = torch.where(eligible.any(1, keepdim=True), low, torch.zeros_like(low))
-        high = torch.where(eligible.any(1, keepdim=True), high, low)
-        return (signal - low) / (high - low).clamp_min(torch.finfo(signal.dtype).eps)
-    return weight * normalize(activity) + (1 - weight) * normalize(information)
+    return weight * normalize_eligible(activity, eligible) + (1 - weight) * normalize_eligible(information, eligible)

@@ -214,3 +214,136 @@ def test_real_probe_suite_and_safe_continuation(cfg, tmp_path, monkeypatch):
     np.save(recording, events)
     with pytest.raises(ValueError, match='differs'):
         run_experiment(cfg, checkpoint, output, [7], 3, ['support'], [.5])
+
+
+def blend_config(cfg, kind, context='patch'):
+    cfg['downstream']['learned_selector'] = dict(kind=kind, metric='support', budget=6,
+        initial_activity_weight=.6, score_scale=10., hidden_dim=16, context=context,
+        lr=.01, temperature=[1., .25], noise_scale=[0., 0.], anneal_epochs=2)
+    validate(cfg)
+    return cfg
+
+
+@pytest.mark.parametrize('kind,context', [('global_blend', 'patch'), ('coarse_blend', 'patch'),
+                                         ('coarse_blend', 'transformer')])
+def test_blend_gradients_budget_and_hard_forward(cfg, kind, context, monkeypatch):
+    from experiments.hierarchical_mae.downstream import Classifier
+    from experiments.hierarchical_mae.learned_selector import SelectionEncoder
+    blend_config(cfg, kind, context)
+    view = next(iter(DataLoader(HierarchyDataset(cfg, splits(cfg)[0]), batch_size=2)))['source']
+    model = Classifier(SelectionEncoder(HierarchicalMAE(cfg), 'selector_train'), 2, False)
+    encoder = model.backbone
+    if kind == 'global_blend':
+        assert sum(p.numel() for p in encoder.selector.parameters()) == 1
+        def fail(*args):
+            raise AssertionError('Global blend must not read coarse features')
+        monkeypatch.setattr(encoder, 'root_features', fail)
+    model.train()
+    training = model(view)
+    torch.nn.functional.cross_entropy(training, torch.tensor([0, 1])).backward()
+    gradients = [p.grad for p in encoder.selector.parameters() if p.grad is not None]
+    assert gradients and sum(float(g.abs().sum()) for g in gradients) > 0
+    assert all(p.grad is None for p in encoder.backbone.parameters())
+    model.eval()
+    torch.testing.assert_close(training, model(view), atol=1e-6, rtol=1e-5)
+    assert encoder.last_diagnostics['token_frequency'].sum() == 12
+    assert encoder.last_diagnostics['activity_weight'] == pytest.approx(1.2)
+    # Both kinds start with a constant alpha and reproduce static blended selection.
+    expected = encoder.backbone.features(view, selection=dict(strategy='activity_information',
+        metric='support', budget=6, activity_weight=.6))
+    torch.testing.assert_close(encoder.features(view), expected, atol=1e-6, rtol=1e-5)
+
+
+def test_dynamic_blend_uses_each_recordings_coarse_features(cfg):
+    from experiments.hierarchical_mae.learned_selector import BlendSelector
+    from experiments.hierarchical_mae.data import Layout
+    blend_config(cfg, 'coarse_blend')
+    selector = BlendSelector(cfg, Layout(cfg))
+    root_features = torch.randn(2, len(selector.roots), cfg['model']['embed_dim'])
+    with torch.no_grad():
+        selector.weight_predictor[-1].weight.normal_(0, .5)
+    weights = selector.activity_weight(root_features)
+    assert 0 < weights.min() <= weights.max() < 1
+    assert weights[0] != weights[1]
+    torch.testing.assert_close(weights[:1], selector.activity_weight(root_features[:1]))
+    torch.testing.assert_close(weights.flip(0), selector.activity_weight(root_features.flip(0)))
+
+
+def test_blend_variants_share_head_initialization_and_allow_small_budgets(cfg):
+    from experiments.hierarchical_mae.downstream import Classifier
+    from experiments.hierarchical_mae.learned_selector import SelectionEncoder
+    heads = []
+    for kind in ('activity', 'global_blend', 'coarse_blend'):
+        torch.manual_seed(17)
+        if kind != 'activity':
+            blend_config(cfg, kind)
+            cfg['downstream']['learned_selector']['budget'] = 1
+            validate(cfg)
+        backbone = HierarchicalMAE(cfg)
+        if kind != 'activity':
+            backbone = SelectionEncoder(backbone, 'selector_train')
+        heads.append(Classifier(backbone, 2, False).head.state_dict())
+    for head in heads[1:]:
+        for key in heads[0]:
+            torch.testing.assert_close(head[key], heads[0][key], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('kind', ['global_blend', 'coarse_blend'])
+def test_blend_training_probe_finetune_resume_and_compatibility(cfg, tmp_path, kind):
+    from experiments.hierarchical_mae.downstream import run
+    pretrained = tmp_path / 'pretrained.pt'
+    torch.save(dict(model=HierarchicalMAE(cfg).state_dict(), config=deepcopy(cfg)), pretrained)
+    blend_config(cfg, kind)
+    directory = tmp_path / kind
+    run(cfg, pretrained, 'selector_train', directory)
+    cfg['downstream']['epochs'] = 2
+    run(cfg, resume=directory / 'last.pt')
+    source = torch.load(directory / 'best.pt', weights_only=True)
+    cfg['downstream']['epochs'] = 1
+    for mode in ('selector_probe', 'selector_finetune'):
+        output = tmp_path / mode
+        result = run(cfg, directory / 'best.pt', mode, output)
+        saved = torch.load(output / 'last.pt', weights_only=True)
+        assert result['test']['samples'] == 2
+        for key, value in source['model'].items():
+            if key.startswith('backbone.selector.') or (mode == 'selector_probe' and key.startswith('backbone.')):
+                torch.testing.assert_close(saved['model'][key], value, rtol=0, atol=0)
+        if mode == 'selector_probe':
+            assert 0 < result['feature_selection']['test']['activity_weight'] < 1
+            # Exercise cache hits and resume of the frozen policy stage.
+            assert run(cfg, resume=output / 'last.pt') == result
+        else:
+            assert any(not torch.equal(value, saved['model'][key]) for key, value in source['model'].items()
+                       if key.startswith('backbone.backbone.encoder.'))
+        if kind == 'global_blend':
+            assert result['activity_weight'] == pytest.approx(
+                source['model']['backbone.selector.weight_logit'].sigmoid().item())
+    changed = deepcopy(cfg)
+    changed['downstream']['learned_selector']['metric'] = 'entropy'
+    with pytest.raises(ValueError, match='differs in metric'):
+        run(changed, directory / 'best.pt', 'selector_probe', tmp_path / 'invalid')
+    changed = deepcopy(cfg)
+    changed['data']['information_selection']['bins'] = [8, 8, 8]
+    with pytest.raises(ValueError, match='histogram settings differ'):
+        run(changed, directory / 'best.pt', 'selector_probe', tmp_path / 'invalid')
+
+
+@pytest.mark.parametrize('kind', ['global_blend', 'coarse_blend'])
+def test_blend_auto_scores_and_presets(cfg, kind):
+    blend_config(cfg, kind)
+    del cfg['data']['information_selection']
+    assert 'information_scores' in HierarchyDataset(cfg, splits(cfg)[0])[0]['source']
+    for stage in ('', '_probe', '_finetune'):
+        preset = load_config(f'experiments/hierarchical_mae/configs/thu_{kind}{stage}216.yaml')
+        assert preset['downstream']['learned_selector']['budget'] == 216
+        assert preset['downstream']['learned_selector']['kind'] == kind
+
+
+@pytest.mark.parametrize('key,value', [('kind', 'other'), ('metric', 'other'),
+    ('initial_activity_weight', 0), ('initial_activity_weight', 1),
+    ('initial_activity_weight', float('nan')), ('score_scale', 0)])
+def test_invalid_learned_blend_options(cfg, key, value):
+    blend_config(cfg, 'global_blend')
+    cfg['downstream']['learned_selector'][key] = value
+    with pytest.raises(ValueError, match='learned_selector'):
+        validate(cfg)

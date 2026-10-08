@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 
 import yaml
-from .information_selection import METRICS, STRATEGIES as INFORMATION_STRATEGIES, validate_settings
+from .information_selection import BLEND_KINDS, METRICS, STRATEGIES as INFORMATION_STRATEGIES, validate_settings
 
 REPRESENTATIONS = ('xy', 'xt', 'yt', 'xy_p45', 'xy_m45', 'yt_p45', 'yt_m45',
                    'cstr2', 'cstr3', 'cstr3_fixed')
@@ -115,15 +115,24 @@ def validate(cfg):
     learned = cfg['downstream'].get('learned_selector')
     if learned is not None:
         allowed = {'budget', 'hidden_dim', 'context', 'lr', 'activity_prior_weight',
-                   'temperature', 'noise_scale', 'anneal_epochs', 'training_crops', 'grad_clip'}
+                   'temperature', 'noise_scale', 'anneal_epochs', 'training_crops', 'grad_clip',
+                   'kind', 'metric', 'initial_activity_weight', 'score_scale'}
         if not isinstance(learned, dict) or set(learned)-allowed:
             raise ValueError('Invalid downstream.learned_selector settings')
+        if learned.get('kind', 'coarse') not in ('coarse', *BLEND_KINDS):
+            raise ValueError('learned_selector.kind must be coarse/global_blend/coarse_blend')
+        if learned.get('metric', 'support') not in METRICS:
+            raise ValueError('Invalid learned_selector.metric')
+        initial = learned.get('initial_activity_weight', .9)
+        if type(initial) not in (int, float) or not math.isfinite(initial) or not 0 < initial < 1:
+            raise ValueError('learned_selector.initial_activity_weight must be in (0,1)')
         levels = h['levels']
         roots = len(levels[0]['representations'])
         count = sum(math.prod(level['splits'])*len(level['representations']) for level in levels)
         budget = learned.get('budget')
-        if levels[0]['splits'] != [1, 1, 1] or type(budget) is not int or not roots < budget <= count:
-            raise ValueError('learned_selector needs a [1,1,1] root level and root_count < budget <= token_count')
+        minimum = 0 if learned.get('kind') in BLEND_KINDS else roots
+        if levels[0]['splits'] != [1, 1, 1] or type(budget) is not int or not minimum < budget <= count:
+            raise ValueError('learned_selector needs a [1,1,1] root level and a budget above mandatory roots, up to token_count')
         for key, default in (('hidden_dim', 128), ('anneal_epochs', 80)):
             if type(learned.get(key, default)) is not int or learned.get(key, default) < 1:
                 raise ValueError(f'learned_selector.{key} must be a positive integer')
@@ -131,7 +140,8 @@ def validate(cfg):
             raise ValueError('learned_selector.context must be patch or transformer')
         if type(learned.get('training_crops', False)) is not bool:
             raise ValueError('learned_selector.training_crops must be boolean')
-        for key, default, positive in (('lr', .0005, True), ('activity_prior_weight', 1., False), ('grad_clip', 1., True)):
+        for key, default, positive in (('lr', .0005, True), ('activity_prior_weight', 1., False),
+                                       ('grad_clip', 1., True), ('score_scale', 10., True)):
             value = learned.get(key, default)
             if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or (positive and value == 0):
                 raise ValueError(f'Invalid learned_selector.{key}')

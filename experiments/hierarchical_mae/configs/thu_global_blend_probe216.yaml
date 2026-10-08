@@ -1,0 +1,5 @@
+extends: thu_global_blend216.yaml
+downstream:
+  epochs: 500
+  batch_size: 64
+  lr: 0.01

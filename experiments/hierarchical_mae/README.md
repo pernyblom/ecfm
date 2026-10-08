@@ -217,6 +217,11 @@ autocorrelation, alone or combined with event count. See
 [INFORMATION_SELECTION.md](INFORMATION_SELECTION.md) for score definitions,
 54-token presets, and a multi-seed linear-probe ablation suite.
 
+For a learned mixture, [LEARNED_BLEND_SELECTION.md](LEARNED_BLEND_SELECTION.md)
+adds a global activity weight and a coarse-conditioned weight per recording,
+with 216-token presets. Fit the selector first, then freeze its parameters for
+a fresh probe or encoder finetuning.
+
 The extensible contract is `TokenPlan(visible, target, gates=None)`, with boolean
 `[B,N]` masks and optional differentiable nonnegative `[B,N]` weights. Visible and
 target must be disjoint, with at least one visible token per example. MAE also

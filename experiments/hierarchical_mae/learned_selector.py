@@ -6,6 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .masking import TokenPlan
+from .information_selection import BLEND_KINDS, normalize_eligible, selection_scores
 
 
 def relaxed_topk(scores, eligible, k, temperature, noise_scale=0.):
@@ -78,6 +79,55 @@ class CoarseSelector(nn.Module):
         return self.options.get('activity_prior_weight', 1.) * count + correction
 
 
+class BlendSelector(nn.Module):
+    """One global or coarse-conditioned scalar blending activity with information.
+
+    All tokens compete for the budget, so a frozen global weight exactly matches
+    ordinary activity_information selection. Root access for context does not
+    force root tokens into the main encoder's selected set.
+    """
+    retain_roots = False
+
+    def __init__(self, cfg, layout):
+        super().__init__()
+        self.options = cfg['downstream']['learned_selector']
+        self.needs_context = self.options['kind'] == 'coarse_blend'
+        self.register_buffer('roots', (layout.level_ids == 0).nonzero().flatten())
+        self.register_buffer('candidates', torch.arange(layout.count))
+        self.register_buffer('levels', layout.level_ids)
+        self.register_buffer('planes', layout.plane_ids)
+        initial = self.options.get('initial_activity_weight', .9)
+        logit = math.log(initial / (1 - initial))
+        if self.needs_context:
+            hidden = self.options.get('hidden_dim', 128)
+            self.weight_predictor = nn.Sequential(
+                nn.Linear(len(self.roots) * cfg['model']['embed_dim'], hidden), nn.GELU(),
+                nn.LayerNorm(hidden), nn.Linear(hidden, 1))
+            nn.init.zeros_(self.weight_predictor[-1].weight)
+            nn.init.constant_(self.weight_predictor[-1].bias, logit)
+        else:
+            self.weight_logit = nn.Parameter(torch.tensor(logit, dtype=torch.float32))
+        self.last_activity_weight = None
+
+    def activity_weight(self, root_features=None, batch_size=None):
+        if self.needs_context:
+            return self.weight_predictor(root_features.flatten(1)).sigmoid()
+        return self.weight_logit.sigmoid().expand(batch_size, 1)
+
+    def forward(self, root_features, view):
+        eligible = view['valid_mask']
+        activity = view['log_counts']
+        if not torch.isfinite(activity).all() or (activity < 0).any():
+            raise ValueError('Activity must be finite and nonnegative')
+        information = selection_scores(view, eligible,
+            dict(strategy='information', metric=self.options.get('metric', 'support')))
+        weight = self.activity_weight(root_features, len(activity))
+        self.last_activity_weight = weight.detach()
+        return self.options.get('score_scale', 10.) * (
+            weight * normalize_eligible(activity, eligible) +
+            (1 - weight) * normalize_eligible(information, eligible))
+
+
 class SelectionEncoder(nn.Module):
     """Wrap a pretrained MAE encoder without changing its pretraining state format."""
     is_learned_selector = True
@@ -85,11 +135,18 @@ class SelectionEncoder(nn.Module):
     def __init__(self, backbone, mode):
         super().__init__()
         self.backbone, self.cfg, self.layout = backbone, backbone.cfg, backbone.layout
-        self.selector = CoarseSelector(self.cfg, self.layout)
         self.options = self.cfg['downstream']['learned_selector']
+        blend = self.options.get('kind') in BLEND_KINDS
+        if blend:
+            # Predictor initialization must not change the subsequent classifier
+            # initialization when comparing scalar, dynamic, and activity runs.
+            with torch.random.fork_rng(devices=[]):
+                self.selector = BlendSelector(self.cfg, self.layout)
+        else:
+            self.selector = CoarseSelector(self.cfg, self.layout)
         self.budget = self.options['budget']
         self.finetune = mode == 'selector_finetune'
-        self.train_selector = mode != 'selector_probe'
+        self.train_selector = mode == 'selector_train' if blend else mode != 'selector_probe'
         self.epoch = 0
         self.last_diagnostics = None
 
@@ -122,11 +179,14 @@ class SelectionEncoder(nn.Module):
         return torch.cat(patches, dim=1)
 
     def features(self, view):
-        roots, candidates = self.selector.roots, self.selector.candidates
+        context_roots, candidates = self.selector.roots, self.selector.candidates
+        roots = context_roots if getattr(self.selector, 'retain_roots', True) else context_roots[:0]
         valid = view['valid_mask']
-        if not valid[:, roots].all() or (valid.sum(1) < self.budget).any():
+        needs_context = getattr(self.selector, 'needs_context', True)
+        if (needs_context and not valid[:, context_roots].all()) or (valid.sum(1) < self.budget).any():
             raise ValueError('Learned selection requires valid root tokens and enough tokens for its budget')
-        scores = self.selector(self.root_features(view), view)
+        context = self.root_features(view) if needs_context else None
+        scores = self.selector(context, view)
         k = self.budget-len(roots)
         eligible = valid[:, candidates]
         training = self.training and self.train_selector
@@ -160,4 +220,8 @@ class SelectionEncoder(nn.Module):
                 tokens_by_level=torch.stack([visible[:, self.selector.levels == i].sum() for i in range(len(self.cfg['hierarchy']['levels']))]),
                 tokens_by_representation=torch.stack([visible[:, self.selector.planes == i].sum() for i in range(len(self.layout.representations))]),
                 activity_overlap=(visible & baseline).sum().float()/self.budget)
+            if isinstance(self.selector, BlendSelector):
+                weights = self.selector.last_activity_weight
+                self.last_diagnostics.update(activity_weight=weights.sum(),
+                                             activity_weight_squared=weights.square().sum())
         return features

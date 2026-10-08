@@ -19,6 +19,7 @@ from .data import HierarchyDataset, splits
 from .feature_cache import cached_features, file_digest
 from .model import HierarchicalMAE
 from .learned_selector import SelectionEncoder, schedule
+from .information_selection import BLEND_KINDS, settings as information_settings
 
 
 class Classifier(nn.Module):
@@ -164,9 +165,14 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
                 raise ValueError('selector_probe/selector_finetune require a trained selector checkpoint')
             old_options = state['config']['downstream']['learned_selector']
             new_options = cfg['downstream']['learned_selector']
-            for key, default in (('budget', None), ('hidden_dim', 128), ('context', 'patch'), ('activity_prior_weight', 1.)):
+            for key, default in (('budget', None), ('hidden_dim', 128), ('context', 'patch'), ('activity_prior_weight', 1.),
+                                 ('kind', 'coarse'), ('metric', 'support'), ('score_scale', 10.),
+                                 ('initial_activity_weight', .9)):
                 if old_options.get(key, default) != new_options.get(key, default):
                     raise ValueError(f'Trained selector differs in {key}')
+            if (new_options.get('kind') in BLEND_KINDS and
+                    information_settings(cfg) != information_settings(state['config'])):
+                raise ValueError('Trained selector information histogram settings differ')
             if state['config']['downstream']['num_classes'] != cfg['downstream']['num_classes']:
                 raise ValueError('Trained selector class count differs')
         elif 'mode' in state:
@@ -218,7 +224,11 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
     val_loader = loader(val_ds)
     groups = [dict(params=model.head.parameters(), lr=settings['lr'])]
     if learned and not frozen:
-        groups.append(dict(params=backbone.selector.parameters(), lr=settings['learned_selector'].get('lr', .0005)))
+        if backbone.train_selector:
+            groups.append(dict(params=backbone.selector.parameters(), lr=settings['learned_selector'].get('lr', .0005),
+                               # A global logit should not be pulled toward alpha=.5 by weight decay.
+                               weight_decay=0. if settings['learned_selector'].get('kind') in BLEND_KINDS
+                               else settings['weight_decay']))
         if mode == 'selector_finetune':
             groups.append(dict(params=backbone.backbone.encoder_parameters(), lr=settings['encoder_lr']))
     elif not frozen:
@@ -254,7 +264,7 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
             torch.manual_seed(12345)
             validation = classification_epoch(model, val_loader, device, max_batches=settings.get('max_val_batches', 0))
         record = dict(epoch=epoch, train=training, validation=validation)
-        if learned and not frozen:
+        if learned and not frozen and backbone.train_selector:
             temperature, noise = schedule(settings['learned_selector'], epoch)
             record['selector_schedule'] = dict(temperature=temperature, noise_scale=noise)
         print_metrics(record)
@@ -277,6 +287,12 @@ def run(cfg, checkpoint=None, mode=None, output_dir=None, resume=None):
                   test=classification_epoch(model, loader(test_ds), device),
                   selection=(dict(strategy='learned', **settings['learned_selector']) if learned
                              else settings.get('selection', {})), candidate_tokens=backbone.layout.count)
+    if learned and settings['learned_selector'].get('kind') == 'global_blend':
+        result['activity_weight'] = float(backbone.selector.weight_logit.sigmoid().detach())
+    if frozen and learned:
+        result['feature_selection'] = {name: dataset.selection_diagnostics for name, dataset in
+            (('train', train_ds), ('validation', val_ds), ('test', test_ds))
+            if hasattr(dataset, 'selection_diagnostics')}
     (output / 'results.json').write_text(json.dumps(result, indent=2))
     print_metrics(result)
     return result

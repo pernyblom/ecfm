@@ -1,0 +1,5 @@
+extends: thu_coarse_blend216.yaml
+downstream:
+  encoder_lr: 0.00002
+  learned_selector:
+    training_crops: true

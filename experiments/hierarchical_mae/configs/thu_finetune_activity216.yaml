@@ -1,0 +1,3 @@
+extends: thu_finetune.yaml
+downstream:
+  selection: {strategy: activity, budget: 216}

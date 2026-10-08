@@ -50,9 +50,13 @@ def cached_features(backbone, dataset, checkpoint, device, split, checkpoint_dig
                 or features.dtype != torch.float32 or not torch.isfinite(features).all()):
             raise ValueError(f'Invalid cache: {path}; set feature_cache.rebuild: true')
         print(f'Features {split}: cache hit {path}', flush=True)
-        return TensorDataset(features, labels)
+        dataset = TensorDataset(features, labels)
+        if 'selection_diagnostics' in payload:
+            dataset.selection_diagnostics = payload['selection_diagnostics']
+        return dataset
     backbone.eval()
     features, labels = [], []
+    diagnostic_totals = {}
     t = dataset.cfg['train']
     loader = make_loader(dataset, options.get('batch_size', dataset.cfg['downstream']['batch_size']), t['num_workers'])
     # Fixed per-recording random selection, independent of extraction batch size and cache hits.
@@ -64,6 +68,8 @@ def cached_features(backbone, dataset, checkpoint, device, split, checkpoint_dig
             if getattr(backbone, 'is_learned_selector', False):
                 features.append(backbone.features(view).float().cpu())
                 labels.append(raw['label'])
+                for name, value in (backbone.last_diagnostics or {}).items():
+                    diagnostic_totals[name] = diagnostic_totals.get(name, 0) + value.detach().cpu()
                 continue
             plans = []
             for b in range(len(raw['label'])):
@@ -75,14 +81,17 @@ def cached_features(backbone, dataset, checkpoint, device, split, checkpoint_dig
             features.append(backbone.features(view, plan=plan).float().cpu())
             labels.append(raw['label'])
     features, labels = torch.cat(features), torch.cat(labels)
+    diagnostics = {name: (value / len(labels)).tolist() for name, value in diagnostic_totals.items()}
     if not torch.isfinite(features).all():
         raise FloatingPointError('Nonfinite features')
     fd, temporary = tempfile.mkstemp(dir=directory, suffix='.tmp')
     os.close(fd)
     try:
-        torch.save(dict(metadata=metadata, features=features, labels=labels), temporary)
+        torch.save(dict(metadata=metadata, features=features, labels=labels, selection_diagnostics=diagnostics), temporary)
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
     print(f'Features {split}: saved {path}', flush=True)
-    return TensorDataset(features, labels)
+    dataset = TensorDataset(features, labels)
+    dataset.selection_diagnostics = diagnostics
+    return dataset

@@ -1,0 +1,3 @@
+extends: thu_linear_probe.yaml
+downstream:
+  selection: {strategy: activity, budget: 216}

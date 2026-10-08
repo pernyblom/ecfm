@@ -1,0 +1,14 @@
+extends: thu_selector.yaml
+data:
+  information_selection:
+    bins: [8, 8, 8]
+    support_saturation: 3.0
+downstream:
+  learned_selector:
+    kind: global_blend
+    metric: support
+    budget: 216
+    initial_activity_weight: 0.9
+    score_scale: 10.0
+    lr: 0.01
+    noise_scale: [0.1, 0.0]

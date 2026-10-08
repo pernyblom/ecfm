@@ -1,0 +1,6 @@
+extends: thu_global_blend216.yaml
+downstream:
+  learned_selector:
+    kind: coarse_blend
+    context: patch
+    lr: 0.0005

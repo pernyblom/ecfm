@@ -1,5 +1,9 @@
 # Selection by spatiotemporal structure
 
+For trainable activity/information weights with a 216-token budget, see
+[LEARNED_BLEND_SELECTION.md](LEARNED_BLEND_SELECTION.md): one globally fitted
+constant or a dynamic coarse-conditioned weight per recording.
+
 These deterministic selectors implement three ideas from
 [information_selection_ideas.md](information_selection_ideas.md), with no policy
 training or label access. They rank eligible tokens during MAE pretraining,

@@ -1,5 +1,9 @@
 # Downstream learned token selection
 
+For a global activity/information blend or a coarse-conditioned blend weight,
+see [LEARNED_BLEND_SELECTION.md](LEARNED_BLEND_SELECTION.md). Those 216-token
+variants freeze their selector parameters after the initial fitting stage.
+
 This experiment trains a coarse-conditioned selection policy using class labels.
 The default run freezes the pretrained MAE, trains the selector and classification
 head, and retains exactly 27 tokens: the three root representations plus 24 selected
