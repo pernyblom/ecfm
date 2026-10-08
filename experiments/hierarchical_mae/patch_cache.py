@@ -12,9 +12,9 @@ import torch
 def implementation_digest():
     from ecfm.data import tokenizer
     from experiments.region_worldmodel import data as event_data
-    from . import data, rendering
+    from . import data, rendering, information_selection
     digest = hashlib.sha256()
-    for path in (__file__, data.__file__, rendering.__file__, tokenizer.__file__, event_data.__file__):
+    for path in (__file__, data.__file__, rendering.__file__, information_selection.__file__, tokenizer.__file__, event_data.__file__):
         digest.update(Path(path).read_bytes())
     return digest.hexdigest()
 
@@ -28,6 +28,8 @@ class PatchCache:
                          torch_version=str(torch.__version__), numpy_version=str(np.__version__),
                          data={k: d.get(k) for k in ('image_width', 'image_height', 'time_unit',
                                                     'time_bins', 'patch_norm', 'cstr_max_count')})
+        from .information_selection import settings
+        self.spec['information_selection'] = settings(cfg)
 
     def entry(self, path, fraction, start, spatial_crop=None):
         stat = path.stat()
@@ -45,6 +47,11 @@ class PatchCache:
             if payload['metadata'] != metadata:
                 raise ValueError('metadata mismatch')
             tensors = [view['metadata'], view['log_counts'], *view['patches'].values()]
+            if self.spec['information_selection'] is not None:
+                scores = view['information_scores']
+                if scores.shape != (layout.count, 3):
+                    raise ValueError('invalid information scores')
+                tensors.append(scores)
             if (view['metadata'].shape != (layout.count, 9) or view['log_counts'].shape != (layout.count,)
                     or view['valid_mask'].shape != (layout.count,) or view['valid_mask'].dtype != torch.bool
                     or not view['valid_mask'].all() or set(view['patches']) != {g.key for g in layout.groups}

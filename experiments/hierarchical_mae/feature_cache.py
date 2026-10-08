@@ -12,7 +12,7 @@ from ecfm.data import tokenizer
 from experiments.region_worldmodel import data as event_data
 from experiments.region_worldmodel.feature_cache import file_digest
 from .loading import make_loader, to_device
-from . import data, model, masking, rendering, learned_selector
+from . import data, model, masking, rendering, learned_selector, information_selection
 from .masking import TokenPlan, make_plan
 
 
@@ -27,6 +27,7 @@ def cache_metadata(dataset, checkpoint, checkpoint_digest=None):
         seed=cfg['train']['seed'], torch_version=str(torch.__version__),
         implementation=[file_digest(p) for p in [__file__, data.__file__, model.__file__,
                                                 masking.__file__, rendering.__file__, learned_selector.__file__,
+                                                information_selection.__file__,
                                                 tokenizer.__file__, event_data.__file__]])
 
 

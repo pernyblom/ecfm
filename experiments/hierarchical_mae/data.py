@@ -12,6 +12,7 @@ from ecfm.data.tokenizer import Region
 from experiments.region_worldmodel.data import load_events, partition_entries, read_entries
 from .patch_cache import PatchCache
 from .rendering import partition_level, render_histogram
+from .information_selection import settings as information_settings, voxel_histogram, histogram_scores
 
 
 @dataclass
@@ -88,6 +89,7 @@ class HierarchyDataset(Dataset):
         self.cfg, self.entries, self.training = cfg, entries, training
         self.epoch = 0
         self.layout = Layout(cfg)
+        self.information_options = information_settings(cfg)
         options = cfg['data'].get('patch_cache', {})
         self.train_views = options.get('train_views', 0)
         self.cache = PatchCache(cfg) if options.get('enabled', False) else None
@@ -132,17 +134,24 @@ class HierarchyDataset(Dataset):
         duration = seconds * fraction
         mx, my, mt = self.layout.maximum
         patches, metadata, counts = {}, [], []
+        information, level_information = [], []
         current_level, voxels = None, None
         for group in self.layout.groups:
             if group.level != current_level:
                 voxels = partition_level(events, self.cfg['hierarchy']['levels'][group.level]['splits'],
                                          self.layout.maximum, width, height)
                 current_level = group.level
+                level_information = []
             rendered = []
-            for sub, (x, y, t, dx, dy, dt) in zip(voxels, self.layout.boxes[group.start:group.stop].tolist()):
+            for cell, (sub, (x, y, t, dx, dy, dt)) in enumerate(zip(voxels, self.layout.boxes[group.start:group.stop].tolist())):
                 x0, x1 = x * width // mx, (x+dx) * width // mx
                 y0, y1 = y * height // my, (y+dy) * height // my
                 r = Region(x0, y0, t/mt, x1-x0, y1-y0, dt/mt, group.representation)
+                if self.information_options is not None:
+                    if cell >= len(level_information):
+                        volume = voxel_histogram(sub, r, self.information_options['bins'])
+                        level_information.append(histogram_scores(volume, self.information_options['support_saturation']))
+                    information.append(level_information[cell])
                 counts.append(np.log1p(len(sub)))
                 if group.representation.startswith('cstr'):
                     patch = render_cstr(sub, r, group.size,
@@ -158,6 +167,8 @@ class HierarchyDataset(Dataset):
         view = dict(patches=patches, metadata=torch.tensor(metadata, dtype=torch.float32),
                     log_counts=torch.tensor(counts, dtype=torch.float32),
                     valid_mask=torch.ones(self.layout.count, dtype=torch.bool))
+        if self.information_options is not None:
+            view['information_scores'] = torch.from_numpy(np.stack(information))
         if use_cache:
             self.cache.write(cache_path, cache_metadata, view)
         return dict(source=view, label=label)

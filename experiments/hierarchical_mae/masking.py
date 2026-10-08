@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import math
 
 import torch
+from .information_selection import STRATEGIES as INFORMATION_STRATEGIES, selection_scores
 
 
 @dataclass
@@ -109,7 +110,9 @@ def make_plan(view, layout, masking=None, selection=None):
                 target[b] = contained & valid[b]
             # Mask all representations, parents and children intersecting targets.
             eligible &= ~(target.float() @ overlaps(boxes).float()).bool()
-    visible, gates = select(eligible, layout, selection or {}, activity)
+    options = selection or {}
+    scores = selection_scores(view, eligible, options) if options.get('strategy') in INFORMATION_STRATEGIES else None
+    visible, gates = select(eligible, layout, options, activity, scores=scores)
     result = TokenPlan(visible, target, gates)
     result.validate(valid)
     return result

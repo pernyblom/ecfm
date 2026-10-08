@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 
 import yaml
+from .information_selection import METRICS, STRATEGIES as INFORMATION_STRATEGIES, validate_settings
 
 REPRESENTATIONS = ('xy', 'xt', 'yt', 'xy_p45', 'xy_m45', 'yt_p45', 'yt_m45',
                    'cstr2', 'cstr3', 'cstr3_fixed')
@@ -28,6 +29,9 @@ def load_config(path):
 
 def validate(cfg):
     d, h, m = (cfg[k] for k in ('data', 'hierarchy', 'model'))
+    if 'information_selection' in d and not isinstance(d['information_selection'], dict):
+        raise ValueError('data.information_selection must be a mapping')
+    validate_settings(cfg)
     maximum = h['max_splits']
     if len(maximum) != 3 or any(type(v) is not int or v < 1 for v in maximum):
         raise ValueError('max_splits must be three positive cell counts [x,y,t]')
@@ -93,13 +97,21 @@ def validate(cfg):
             if type(settings[key]) is not int or settings[key] < 1:
                 raise ValueError(f'{key} must be positive')
     for selection in (cfg.get('selection', {}), cfg['downstream'].get('selection', {})):
-        if selection.get('strategy', 'all') not in ('all', 'random', 'activity', 'activity_random', 'coarse'):
-            raise ValueError('Selection strategy must be all/random/activity/activity_random/coarse')
+        if selection.get('strategy', 'all') not in ('all', 'random', 'activity', 'activity_random', 'coarse', *INFORMATION_STRATEGIES):
+            raise ValueError('Unknown selection strategy')
         if type(selection.get('budget', 0)) is not int or selection.get('budget', 0) < 0:
             raise ValueError('Selection budget must be a nonnegative integer; 0 means unlimited')
         power = selection.get('activity_power', 1.)
         if type(power) not in (int, float) or not math.isfinite(power) or power < 0:
             raise ValueError('activity_power must be finite and nonnegative')
+        if selection.get('strategy') in INFORMATION_STRATEGIES:
+            if selection.get('metric', 'support') not in METRICS:
+                raise ValueError('Information metric must be support/entropy/autocorrelation')
+            if selection.get('combination', 'blend') not in ('blend', 'product'):
+                raise ValueError('Information combination must be blend or product')
+            weight = selection.get('activity_weight', .5)
+            if type(weight) not in (int, float) or not math.isfinite(weight) or not 0 <= weight <= 1:
+                raise ValueError('activity_weight must be finite and in [0,1]')
     learned = cfg['downstream'].get('learned_selector')
     if learned is not None:
         allowed = {'budget', 'hidden_dim', 'context', 'lr', 'activity_prior_weight',

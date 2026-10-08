@@ -1,0 +1,7 @@
+extends: thu_linear_probe.yaml
+data:
+  information_selection:
+    bins: [8, 8, 8]
+    support_saturation: 3.0
+downstream:
+  selection: {strategy: information, metric: support, budget: 54}

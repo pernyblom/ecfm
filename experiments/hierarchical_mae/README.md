@@ -211,6 +211,12 @@ per recording, independent of cache extraction batch size. Activity selection us
 candidate counts as side information; report that sensing cost when comparing with
 a policy that only observes coarse tokens.
 
+Structure-based strategies `information` and `activity_information` rank raw
+voxel neighbor support, entropy deficit, or shuffled-null-corrected
+autocorrelation, alone or combined with event count. See
+[INFORMATION_SELECTION.md](INFORMATION_SELECTION.md) for score definitions,
+54-token presets, and a multi-seed linear-probe ablation suite.
+
 The extensible contract is `TokenPlan(visible, target, gates=None)`, with boolean
 `[B,N]` masks and optional differentiable nonnegative `[B,N]` weights. Visible and
 target must be disjoint, with at least one visible token per example. MAE also

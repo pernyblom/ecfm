@@ -1,0 +1,8 @@
+extends: thu_linear_probe_information54.yaml
+downstream:
+  selection:
+    strategy: activity_information
+    metric: support
+    budget: 54
+    combination: blend
+    activity_weight: 0.5
