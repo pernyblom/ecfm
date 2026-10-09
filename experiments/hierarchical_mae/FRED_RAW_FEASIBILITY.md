@@ -3,6 +3,12 @@
 Investigated 2026-10-09 against this workspace. This is a design and bounded
 performance investigation, not an implemented FRED training backend.
 
+**Follow-up:** [FRED_INDEX_INVESTIGATION.md](FRED_INDEX_INVESTIGATION.md) validates
+direct window extraction using the existing `.raw.tmp_index` bookmarks: 72/72
+windows match sequential decoding on three recordings. Prefer evaluating this
+existing-index backend before implementing the new full-state index discussed
+below. The repository's production loaders still do not perform indexed reads.
+
 **You can keep the original event recordings and train both pretraining and
 downstream tasks without exporting event chunks or frame images.** The MAE still
 needs its histogram/CSTR patch tensors, but these can be constructed in RAM.
