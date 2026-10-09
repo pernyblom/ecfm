@@ -42,7 +42,7 @@ def _process_folder(folder: str, args_dict: dict) -> str:
     if not yolo_dir.exists():
         return f"Skipping {folder}: missing labels."
     event_source = str(args_dict.get("event_source", "auto")).lower()
-    if event_source == "raw" and not raw_path.exists():
+    if event_source in {"raw", "indexed"} and not raw_path.exists():
         return f"Skipping {folder}: missing raw."
     if event_source == "npz" and not npz_path.exists():
         return f"Skipping {folder}: missing npz."
@@ -216,10 +216,11 @@ def main() -> None:
         "--event-source",
         type=str,
         default="auto",
-        choices=["raw", "npz", "auto"],
+        choices=["raw", "npz", "auto", "indexed"],
         help=(
             "Event source to use. 'auto' loads output_events.npz into memory when present "
-            "and otherwise streams events.raw to a temporary memmap. 'raw' forces the temporary "
+            "and otherwise streams events.raw to a temporary memmap. 'indexed' reads RAW windows "
+            "directly using the existing sidecar. 'raw' forces the temporary "
             "raw decode, and 'npz' forces the high-memory NPZ load."
         ),
     )

@@ -6,6 +6,12 @@ for random event-window access before building a new checkpoint index.** A bound
 prototype recovered exactly the same event arrays as sequential decoding in all
 72 tested windows, without exporting decoded events or images.
 
+**Implementation follow-up:** [FRED_INDEXED_RENDERING.md](FRED_INDEXED_RENDERING.md)
+documents the new indexed event reader, targeted missing-image generation, and
+36/36 pixel-identical comparisons against existing UAV-containing FRED renders.
+The descriptions of absent renderer support below record the investigation's
+starting state; `--event-source indexed` is now available.
+
 ## Current use in this repository
 
 `scripts/render_evt3_yolo_frames.py` reads `.raw.tmp_index` for:

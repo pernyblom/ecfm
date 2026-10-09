@@ -176,6 +176,7 @@ def _decode_evt3_words(
     state: _Evt3DecoderState | None = None,
     counters: Dict[str, int] | None = None,
     auxiliary: Evt3AuxiliaryEvents | None = None,
+    output_dtype=np.float32,
 ) -> Tuple[np.ndarray, Dict[str, int], _Evt3DecoderState]:
     state = state or _Evt3DecoderState()
     counters = counters or _empty_counters()
@@ -292,8 +293,8 @@ def _decode_evt3_words(
             counters["unknown"] += 1
 
     if not events:
-        return np.empty((0, 4), dtype=np.float32), counters, state
-    return np.asarray(events, dtype=np.float32), counters, state
+        return np.empty((0, 4), dtype=output_dtype), counters, state
+    return np.asarray(events, dtype=output_dtype), counters, state
 
 
 def decode_evt3_bytes(

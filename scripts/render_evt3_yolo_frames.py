@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from ecfm.utils.evt3 import decode_evt3_raw_to_arrayfile, read_raw_header
+from ecfm.utils.evt3_index import IndexedRawReader
 from ecfm.data.tokenizer import Region, build_patch
 from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
 
@@ -1145,6 +1146,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
         ts_shift_us = _read_ts_shift_us(args.raw)
 
     tmp_events_path = None
+    indexed_reader = None
     events = None
     t = None
     counters = {}
@@ -1155,7 +1157,14 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
     try:
         if event_reps:
             event_source = str(getattr(args, "event_source", "raw")).lower()
-            if event_source == "npz":
+            if event_source == "indexed":
+                if args.endian != 'little' or float(args.event_unit) != 1.0:
+                    raise ValueError('Indexed image rendering currently requires little-endian, event_unit=1 (us).')
+                indexed_reader = IndexedRawReader(args.raw, timestamp_mode='legacy_float32')
+                if ts_shift_us != indexed_reader.shift_us:
+                    raise ValueError('Indexed rendering requires the timestamp shift recorded in the index.')
+                meta = indexed_reader.metadata
+            elif event_source == "npz":
                 event_source_label = "output_events.npz"
                 (
                     events,
@@ -1233,6 +1242,13 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             )
 
         label_files = list(args.yolo_dir.glob("*.txt"))
+        requested_stems = getattr(args, 'label_stems', None)
+        if requested_stems:
+            requested_stems = set(requested_stems)
+            label_files = [p for p in label_files if p.stem in requested_stems]
+            missing = requested_stems - {p.stem for p in label_files}
+            if missing:
+                raise FileNotFoundError(f'Missing requested label files: {sorted(missing)}')
         label_files.sort(key=lambda p: (_parse_label_time(p) is None, _parse_label_time(p) or 0, p.name))
         if getattr(args, "max_label_files", None) is not None:
             label_files = label_files[: max(0, int(args.max_label_files))]
@@ -1306,7 +1322,14 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             existing_manifest = None
 
         progress_desc = f"{args.raw.parent.parent.name}/{event_source_label}"
+        existing_by_stem = {e['label_stem']: e for e in (existing_manifest or {}).get('files', [])}
         for label_path in _progress_items(label_files, desc=progress_desc, enabled=show_progress):
+            existing_entry = existing_by_stem.get(label_path.stem)
+            if existing_entry and not bool(getattr(args, 'overwrite_existing', False)):
+                saved = existing_entry.get('representations', {})
+                if all(rep in saved and Path(saved[rep]['path']).is_file() for rep in representations):
+                    manifest['files'].append(existing_entry)
+                    continue
             label_time_raw = _parse_label_time(label_path)
             if label_time_raw is None:
                 continue
@@ -1329,14 +1352,16 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
             t0 = max(0.0, t0)
             t1 = max(t0, t1)
 
-            idx0 = int(np.searchsorted(t, t0, side="left"))
-            idx1 = int(np.searchsorted(t, t1, side="left"))
-            ev = events[idx0:idx1]
-            ev_time = ev
-
             boxes = _read_yolo_boxes(label_path)
             if args.only_with_rects and not boxes:
                 continue
+            if indexed_reader is not None:
+                ev = indexed_reader.read_window(t0, t1)
+            else:
+                idx0 = int(np.searchsorted(t, t0, side="left"))
+                idx1 = int(np.searchsorted(t, t1, side="left"))
+                ev = events[idx0:idx1]
+            ev_time = ev
             valid = {
                 "events",
                 "xy",
@@ -1368,6 +1393,9 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 "num_events": int(ev.shape[0]),
                 "representations": {},
             }
+            if indexed_reader is not None:
+                file_entry['event_read'] = dict(source='indexed', timestamp_mode='legacy_float32',
+                                               **indexed_reader.last_read)
             existing_entry = None
             if existing_manifest is not None:
                 for candidate in existing_manifest.get("files", []):
@@ -1516,7 +1544,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 pass
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Decode EVT3 .raw, render images only for non-empty YOLO label files, "
@@ -1750,11 +1778,12 @@ def main() -> None:
         "--event-source",
         type=str,
         default="auto",
-        choices=["raw", "npz", "auto"],
+        choices=["raw", "npz", "auto", "indexed"],
         help=(
             "Event source to use. 'auto' loads output_events.npz into memory when present "
             "and otherwise streams events.raw to a temporary memmap. 'raw' forces the temporary "
-            "raw decode, and 'npz' forces the high-memory NPZ load."
+            "raw decode, 'npz' forces the high-memory NPZ load, and 'indexed' reads only "
+            "requested windows using the existing RAW index (no temporary event file)."
         ),
     )
     parser.add_argument(
@@ -1767,7 +1796,48 @@ def main() -> None:
         action="store_true",
         help="Show progress over label files while rendering this event file.",
     )
-    args = parser.parse_args()
+    parser.add_argument('--label-stems', nargs='+', help='Render only these exact label stems.')
+    return parser
+
+
+def ensure_rendered_frames(raw, yolo_dir, output_dir, label_stems, render_params):
+    """Create missing frame representations, reusing the existing render semantics.
+
+    render_params is a render_manifest.json render_params mapping. RAW and labels
+    are explicit so manifests copied from another machine do not redirect reads.
+    Returns the updated manifest, including actual output paths. Call once per
+    group of frames; downstream callers can use this before resolving image paths.
+    """
+    if not label_stems:
+        raise ValueError('At least one label stem is required')
+    args = build_parser().parse_args([str(raw), str(yolo_dir), str(output_dir)])
+    for name, value in render_params.items():
+        if hasattr(args, name):
+            setattr(args, name, value)
+    args.representation = ';'.join(render_params['representation'])
+    args.crop_representations = ';'.join(render_params.get('crop_representations', []))
+    args.image_sizes = ';'.join(f'{rep}={size[0]}x{size[1]}'
+                               for rep, size in render_params.get('image_sizes', {}).items())
+    args.event_source = 'indexed'
+    args.label_stems = list(label_stems)
+    args.max_label_files = None
+    args.overwrite_existing = False
+    # Do not silently mix parameter sets in an existing on-demand output folder.
+    manifest_path = Path(output_dir) / 'render_manifest.json'
+    previous = _load_existing_manifest(manifest_path)
+    if previous is not None:
+        if (Path(previous['raw']).resolve() != Path(raw).resolve()
+                or Path(previous['yolo_dir']).resolve() != Path(yolo_dir).resolve()):
+            raise ValueError('Existing output references a different RAW or label source.')
+        current = dict(render_params)
+        if not _manifest_params_match(previous, dict(render_params=current)):
+            raise ValueError('Existing output has different render parameters; use a separate output directory.')
+    render_yolo_frames(args)
+    return json.loads(manifest_path.read_text(encoding='utf-8'))
+
+
+def main() -> None:
+    args = build_parser().parse_args()
     render_yolo_frames(args)
 
 
