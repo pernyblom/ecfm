@@ -1,0 +1,27 @@
+extends: fred.yaml
+data:
+  max_sequences: 4
+  max_samples: 4
+  window_duration_s: [0.033333, 0.033333]
+  eval_window_s: 0.033333
+hierarchy:
+  max_splits: [2, 2, 2]
+  levels:
+    - {splits: [1, 1, 1], patch_size: 8, representations: [xt, cstr3]}
+    - {splits: [2, 2, 2], patch_size: 4, representations: [xy, yt]}
+model:
+  embed_dim: 16
+  decoder_dim: 16
+  num_heads: 2
+  num_layers: 1
+  decoder_layers: 1
+train:
+  device: cpu
+  num_workers: 0
+  pin_memory: false
+  batch_size: 2
+  epochs: 1
+  max_batches: 1
+  max_val_batches: 1
+  inspect_every: 0
+  output_dir: outputs/hierarchical_mae_fred_smoke

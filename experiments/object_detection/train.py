@@ -9,6 +9,8 @@ from typing import Dict, List
 
 import torch
 from torch.utils.data import DataLoader
+from torch.utils.data import default_collate
+from ecfm.utils.tensor_utils import to_device
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -51,7 +53,7 @@ def _collate(batch: List[DetectionSample]):
     reps = batch[0].inputs.keys()
     heatmap_reps = batch[0].heatmaps.keys()
     return Batch(
-        inputs={rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps},
+        inputs={rep: default_collate([b.inputs[rep] for b in batch]) for rep in reps},
         gt_boxes_xywh=[b.gt_boxes_xywh for b in batch],
         gt_velocities_xy=[b.gt_velocities_xy for b in batch],
         gt_velocity_mask=[b.gt_velocity_mask for b in batch],
@@ -81,6 +83,13 @@ def _build_dataset(
         if split_files and split_files.get(file_key)
         else None
     )
+    if data_cfg.get('backend') == 'raw':
+        if folders is None:
+            raise ValueError(f'RAW task split {file_key!r} requires an explicit split file or folder override')
+        from experiments.hierarchical_mae.fred_tasks import RawFredDetectionDataset
+        maximum = data_cfg.get(f'max_samples_{split}', data_cfg.get('max_samples'))
+        return RawFredDetectionDataset(cfg, folders, max_samples=maximum,
+                        seed=int(data_cfg.get('seed', 123))+{'train': 0, 'train_eval': 1, 'val': 2, 'test': 3}.get(split, 4))
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
     image_sizes = resolve_representation_image_sizes(data_cfg)
     return FredDetectionDataset(
@@ -131,6 +140,11 @@ def _split_train_eval_folders(cfg: Dict) -> tuple[List[str] | None, List[str] | 
     else:
         eval_count = int(eval_count_raw)
     eval_count = max(1, min(eval_count, len(folders) - 1))
+    if data_cfg.get('backend') == 'raw':
+        import numpy as np
+        names = list(folders)
+        np.random.default_rng(int(split_cfg.get('seed', data_cfg.get('seed', 123)))).shuffle(names)
+        return names[eval_count:], names[:eval_count]
     generator = torch.Generator()
     generator.manual_seed(int(split_cfg.get("seed", data_cfg.get("seed", 123))))
     perm = torch.randperm(len(folders), generator=generator).tolist()
@@ -305,7 +319,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
     )
     num_batches = len(loader)
     for step, batch in enumerate(loader):
-        inputs = {k: v.to(device, non_blocking=True) for k, v in batch.inputs.items()}
+        inputs = to_device(batch.inputs, device, non_blocking=True)
         target_heatmaps = {k: v.to(device, non_blocking=True) for k, v in batch.heatmaps.items()}
         target_boxes_list = batch.gt_boxes_xywh
         with torch.set_grad_enabled(train):
@@ -429,7 +443,7 @@ def _export_visualizations(model, loader, device: torch.device, cfg: Dict, epoch
     batch = next(iter(loader), None)
     if batch is None:
         return
-    inputs = {k: v.to(device) for k, v in batch.inputs.items()}
+    inputs = to_device(batch.inputs, device)
     preds = model(inputs)
     pred_heatmaps = {rep: preds["heatmaps"][rep].cpu() for rep in preds.get("heatmaps", {})}
     target_heatmaps = {

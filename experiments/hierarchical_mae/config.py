@@ -29,6 +29,15 @@ def load_config(path):
 
 def validate(cfg):
     d, h, m = (cfg[k] for k in ('data', 'hierarchy', 'model'))
+    if d.get('dataset') == 'fred':
+        durations = d.get('window_duration_s', [.033333, .4])
+        if (len(durations) != 2 or not all(math.isfinite(v) for v in durations)
+                or not 0 < durations[0] <= durations[1]
+                or not math.isfinite(d.get('eval_window_s', durations[-1]))
+                or d.get('eval_window_s', durations[-1]) <= 0):
+            raise ValueError('FRED physical window durations must be finite and positive')
+        if type(d.get('frame_stride_us', 1000000)) is not int or d.get('frame_stride_us', 1000000) < 1:
+            raise ValueError('FRED frame_stride_us must be a positive integer')
     if 'information_selection' in d and not isinstance(d['information_selection'], dict):
         raise ValueError('data.information_selection must be a mapping')
     validate_settings(cfg)

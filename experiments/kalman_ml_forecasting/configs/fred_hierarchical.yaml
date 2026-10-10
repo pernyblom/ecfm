@@ -1,0 +1,136 @@
+# RAW windows; set model.backbone.checkpoint to a pretrained MAE best.pt.
+data:
+  images_root: outputs/fred_reps
+  labels_root: datasets/FRED
+  labels_subdir: Event_YOLO
+  tracks_file: cleaned_tracks.txt
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    test: datasets/FRED/dataset_splits/canonical/test_split.txt
+  train_eval_split:
+    enabled: true
+    eval_fraction: 0.15
+    seed: 42
+  representations:
+  - hierarchy
+  representation_sequences: {}
+  spatial_cutout:
+    mode: none
+  box_augmentation:
+    enabled: false
+  frame_size:
+  - 1280
+  - 720
+  retain_spatial_dimensions: false
+  temporal_bins: 224
+  image_sizes:
+    hierarchy:
+    - 320
+    - 180
+  label_time_unit: 1.0e-06
+  track_time_unit: 1.0
+  time_align: none
+  image_window_ms: 400.0
+  image_window_mode: trailing
+  verify_render_manifest: false
+  render_manifest_name: render_manifest.json
+  window_tolerance_ms: 5.0
+  history_ms: 400.0
+  forecast_ms: 800.0
+  min_track_duration_ms: null
+  label_period_s: null
+  max_tracks: null
+  max_samples_train: null
+  max_samples_train_eval: 512
+  max_samples_val: null
+  max_samples_test: null
+  filter_missing_representations: true
+  decorrelation:
+    enabled: false
+  seed: 123
+  cache_dir: null
+  backend: raw
+  root: datasets/FRED
+  hierarchy_lookback_s: 0.4
+  frame_stride_us: 33333
+  history_steps: 12
+  future_steps: 24
+model:
+  backbone:
+    type: hierarchical_mae
+    mae_config: experiments/hierarchical_mae/configs/fred.yaml
+    checkpoint: null
+    out_dim: 128
+    freeze: false
+  temporal_aggregation:
+    type: gru
+    hidden_dim: 128
+    layers: 1
+    dropout: 0.0
+  history_steps: 13
+  history_feature_mode: relative
+  fusion_hidden_dim: 256
+  fusion_layers: 1
+  state_hidden_dim: 128
+  state_layers: 2
+  residual_hidden_dim: 256
+  residual_layers: 2
+  residual_scale: 1.0
+  predict_size_residuals: true
+  initial_state_source: kalman_filter
+  rollout_transition: constant_velocity
+  use_filter_state_features: true
+  filter_state_feature_mode: full
+  filter_state_center_position_normalization: frame_centered
+  filter_covariance_features: none
+  cell_local_first_conv: false
+  cell_local_first_conv_representations: []
+  predict_velocity: false
+inference:
+  device: cuda
+kalman:
+  enabled: true
+  motion_model: constant_velocity
+  initial_pos_std: 9.6178901e-06
+  initial_size_std: 0.020246828
+  initial_vel_std: 0.0004936771
+  initial_accel_std: 1.0
+  initial_size_accel_std: 1.0
+  process_pos_std: 4.2104816e-06
+  process_size_std: 1.2950349
+  process_vel_std: 0.13281414
+  process_size_vel_std: 0.003452712
+  process_accel_std: 0.1
+  process_size_accel_std: 0.1
+  measurement_pos_std: 0.010384851
+  measurement_size_std: 0.11314614
+train:
+  device: cuda
+  epochs: 40
+  batch_size: 8
+  accumulation_steps: 1
+  num_workers: 4
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  lr: 0.001
+  weight_decay: 0.0001
+  smooth_l1_beta: 0.05
+  residual_l2_weight: 0.0
+  grad_clip_norm: 10.0
+  log_every: 20
+  eval_splits_each_epoch:
+  - train_eval
+  best_metric_split: train_eval
+  best_metric: loss
+  best_metric_mode: min
+  run_test_on_best: false
+  test_split_key: test
+  test_metrics_json: outputs/kalman_ml_forecasting_ckpt/best_test_metrics.json
+  checkpoint_every: 0
+  checkpoint_dir: outputs/kalman_ml_forecasting_fred_hierarchical
+  resume_checkpoint: null
+  metrics_jsonl: outputs/kalman_ml_forecasting_fred_hierarchical/metrics.jsonl
+  log_file: outputs/kalman_ml_forecasting_fred_hierarchical/train.log
+  log_file_mode: w
+  vis_every: 0

@@ -5,4 +5,5 @@
     "thu_eact_dataset",
     "dvs_lip_dataset",
     "event_dataset",
+    "fred_dataset",
 ]

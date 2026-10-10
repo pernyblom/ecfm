@@ -6,6 +6,9 @@ ordinary transformer attention and additive learned encodings; it has no relativ
 position encoding or attention bias. It reuses the project's `Region`/`build_patch`
 rendering and `region_worldmodel` THU loading, split and training utilities.
 
+For indexed RAW FRED pretraining, frame/RGB/box/tracklet access, and CenterNet or
+residual-forecasting backbone adapters, see [FRED_DATASET.md](FRED_DATASET.md).
+
 ## Start with THU-EACT-50-CHL
 
 Run from the repository root with the project environment (`.venv312/Scripts/python.exe`

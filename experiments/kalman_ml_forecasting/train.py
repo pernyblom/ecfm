@@ -11,6 +11,8 @@ from typing import Dict, List, TextIO
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.utils.data import default_collate
+from ecfm.utils.tensor_utils import to_device
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -105,7 +107,7 @@ class Batch:
 def _collate(batch: List[KalmanForecastSample]) -> Batch:
     reps = batch[0].inputs.keys()
     return Batch(
-        inputs={rep: torch.stack([b.inputs[rep] for b in batch], dim=0) for rep in reps},
+        inputs={rep: default_collate([b.inputs[rep] for b in batch]) for rep in reps},
         past_boxes=torch.stack([b.past_boxes for b in batch], dim=0),
         future_boxes=torch.stack([b.future_boxes for b in batch], dim=0),
         past_times_s=torch.stack([b.past_times_s for b in batch], dim=0),
@@ -144,6 +146,13 @@ def _build_dataset(
         if split_files and split_files.get(file_key)
         else None
     )
+    if data_cfg.get('backend') == 'raw':
+        if folders is None:
+            raise ValueError(f'RAW task split {file_key!r} requires an explicit split file or folder override')
+        from experiments.hierarchical_mae.fred_tasks import RawFredForecastDataset
+        maximum = data_cfg.get(f'max_samples_{split}', data_cfg.get('max_samples'))
+        return RawFredForecastDataset(cfg, folders, max_samples=maximum,
+                        seed=int(data_cfg.get('seed', 123))+{'train': 0, 'train_eval': 1, 'val': 2, 'test': 3}.get(split, 4))
     max_samples = data_cfg.get(f"max_samples_{split}", data_cfg.get("max_samples"))
     decorrelation_cfg = dict(data_cfg.get("decorrelation") or {})
     decorrelation_splits_raw = decorrelation_cfg.get("splits", ["train"])
@@ -267,6 +276,11 @@ def _split_train_eval_folders(cfg: Dict) -> tuple[List[str] | None, List[str] | 
     else:
         eval_count = int(eval_count_raw)
     eval_count = max(1, min(eval_count, len(folders) - 1))
+    if data_cfg.get('backend') == 'raw':
+        import numpy as np
+        names = list(folders)
+        np.random.default_rng(int(split_cfg.get('seed', data_cfg.get('seed', 123)))).shuffle(names)
+        return names[eval_count:], names[:eval_count]
     generator = torch.Generator()
     generator.manual_seed(int(split_cfg.get("seed", data_cfg.get("seed", 123))))
     perm = torch.randperm(len(folders), generator=generator).tolist()
@@ -416,7 +430,7 @@ def _run_epoch(*, model, loader, device: torch.device, optimizer, cfg: Dict, tra
         raise ValueError(f"train.accumulation_steps must be >= 1, got {accumulation_steps}")
     num_batches = len(loader)
     for step, batch in enumerate(loader):
-        inputs = {k: v.to(device, non_blocking=True) for k, v in batch.inputs.items()}
+        inputs = to_device(batch.inputs, device, non_blocking=True)
         past_boxes = batch.past_boxes.to(device, non_blocking=True)
         future_boxes = batch.future_boxes.to(device, non_blocking=True)
         past_times_s = batch.past_times_s.to(device, non_blocking=True)

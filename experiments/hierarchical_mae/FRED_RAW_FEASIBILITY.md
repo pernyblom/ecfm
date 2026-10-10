@@ -3,6 +3,11 @@
 Investigated 2026-10-09 against this workspace. This is a design and bounded
 performance investigation, not an implemented FRED training backend.
 
+**Implementation update (2026-10-10):** [FRED_DATASET.md](FRED_DATASET.md) documents
+the shared FRED loader, pretraining integration, and tested CenterNet/forecasting
+backbone adapters. The inventory and implementation gaps below describe the
+earlier investigation; RAW files for 181--189 have since been restored.
+
 **Follow-up:** [FRED_INDEX_INVESTIGATION.md](FRED_INDEX_INVESTIGATION.md) validates
 direct window extraction using the existing `.raw.tmp_index` bookmarks: 72/72
 windows match sequential decoding on three recordings. Prefer evaluating this

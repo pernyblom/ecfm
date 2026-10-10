@@ -392,6 +392,10 @@ class KalmanResidualForecaster(nn.Module):
                     _, hidden = self.temporal_aggregators[rep](frame_features)
                     rep_features = hidden[-1]
             else:
+                if isinstance(value, dict):
+                    # Full causal event volume from the shared FRED loader.
+                    enc.append(self.encoders[rep](value).pooled)
+                    continue
                 if value.ndim != 4:
                     raise ValueError(
                         f"Single-image representation {rep!r} must have shape [B,C,H,W], got {tuple(value.shape)}."

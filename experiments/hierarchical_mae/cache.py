@@ -5,7 +5,7 @@ import json
 import time
 
 from .config import load_config
-from .data import HierarchyDataset, splits
+from .data import make_dataset, splits
 from .loading import make_loader
 
 
@@ -22,7 +22,7 @@ def prepare(cfg, split='all', workers=None):
     for name, entries, training in (('train', train, True), ('validation', val, False)):
         if split not in ('all', name):
             continue
-        dataset = HierarchyDataset(cfg, entries, training)
+        dataset = make_dataset(cfg, entries, training)
         loader = make_loader(dataset, 1, workers)
         for epoch in range(views if training else 1):
             dataset.epoch = epoch

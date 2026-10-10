@@ -1,0 +1,24 @@
+extends: thu.yaml
+data:
+  dataset: fred
+  root: datasets/FRED
+  train_split_file: datasets/FRED/dataset_splits/canonical/train_split.txt
+  test_split_file: datasets/FRED/dataset_splits/canonical/test_split.txt
+  # Hold out whole training sequences for validation before creating windows.
+  val_fraction: 0.15
+  image_width: 1280
+  image_height: 720
+  frame_stride_us: 1000000
+  window_duration_s: [0.033333, 0.4]
+  eval_window_s: 0.4
+  # Fractions of the full recording are unused by the FRED physical-window loader.
+  crop_fraction: [1.0, 1.0]
+  spatial_crop_fraction: [1.0, 1.0]
+  event_cache_bytes: 33554432
+  patch_cache:
+    enabled: false
+    dir: outputs/hierarchical_mae_fred_patches
+    train_views: 0
+train:
+  epochs: 100
+  output_dir: outputs/hierarchical_mae_fred

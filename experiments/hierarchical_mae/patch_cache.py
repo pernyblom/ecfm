@@ -13,8 +13,11 @@ def implementation_digest():
     from ecfm.data import tokenizer
     from experiments.region_worldmodel import data as event_data
     from . import data, rendering, information_selection
+    from ecfm.data import fred_dataset
+    from ecfm.utils import evt3, evt3_index
     digest = hashlib.sha256()
-    for path in (__file__, data.__file__, rendering.__file__, information_selection.__file__, tokenizer.__file__, event_data.__file__):
+    for path in (__file__, data.__file__, rendering.__file__, information_selection.__file__, tokenizer.__file__, event_data.__file__,
+                 fred_dataset.__file__, evt3.__file__, evt3_index.__file__):
         digest.update(Path(path).read_bytes())
     return digest.hexdigest()
 
@@ -31,10 +34,12 @@ class PatchCache:
         from .information_selection import settings
         self.spec['information_selection'] = settings(cfg)
 
-    def entry(self, path, fraction, start, spatial_crop=None):
+    def entry(self, path, fraction, start, spatial_crop=None, extra=None):
         stat = path.stat()
         metadata = dict(self.spec, source=[str(path.resolve()), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns],
                         crop=[fraction, start], spatial_crop=spatial_crop)
+        if extra is not None:
+            metadata['extra'] = extra
         key = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
         return self.directory / key[:2] / f'{key}.pt', metadata
 

@@ -82,6 +82,49 @@ def render_cstr(events, region, size, max_count=None, include_count=True):
     return F.interpolate(torch.from_numpy(patch)[None], (size, size), mode='bilinear', align_corners=False)[0]
 
 
+def render_hierarchy(cfg, layout, events, duration, width, height, information_options=None):
+    """Render normalized local [x,y,t,p] events using an explicit physical duration."""
+    d = cfg["data"]
+    mx, my, mt = layout.maximum
+    patches, metadata, counts = {}, [], []
+    information, level_information = [], []
+    current_level, voxels = None, None
+    for group in layout.groups:
+        if group.level != current_level:
+            voxels = partition_level(events, cfg['hierarchy']['levels'][group.level]['splits'],
+                                     layout.maximum, width, height)
+            current_level = group.level
+            level_information = []
+        rendered = []
+        for cell, (sub, (x, y, t, dx, dy, dt)) in enumerate(zip(voxels, layout.boxes[group.start:group.stop].tolist())):
+            x0, x1 = x * width // mx, (x+dx) * width // mx
+            y0, y1 = y * height // my, (y+dy) * height // my
+            r = Region(x0, y0, t/mt, x1-x0, y1-y0, dt/mt, group.representation)
+            if information_options is not None:
+                if cell >= len(level_information):
+                    volume = voxel_histogram(sub, r, information_options['bins'])
+                    level_information.append(histogram_scores(volume, information_options['support_saturation']))
+                information.append(level_information[cell])
+            counts.append(np.log1p(len(sub)))
+            if group.representation.startswith('cstr'):
+                patch = render_cstr(sub, r, group.size,
+                    d['cstr_max_count'] if group.representation == 'cstr3_fixed' else None,
+                    group.representation != 'cstr2')
+            else:
+                patch = render_histogram(sub, r, group.size, d['time_bins'], d['patch_norm'])
+            rendered.append(patch)
+            # Known geometry/time only. Event counts never enter masked queries.
+            metadata.append([x0/width, y0/height, r.t, r.dx/width, r.dy/height, r.dt,
+                             np.log1p(r.t*duration), np.log1p(r.dt*duration), np.log1p(duration)])
+        patches[group.key] = torch.stack(rendered)
+    view = dict(patches=patches, metadata=torch.tensor(metadata, dtype=torch.float32),
+                log_counts=torch.tensor(counts, dtype=torch.float32),
+                valid_mask=torch.ones(layout.count, dtype=torch.bool))
+    if information_options is not None:
+        view['information_scores'] = torch.from_numpy(np.stack(information))
+    return view
+
+
 class HierarchyDataset(Dataset):
     paired = False
 
@@ -132,49 +175,16 @@ class HierarchyDataset(Dataset):
         events[:, 1] -= crop_y
         events[:, 2] = np.minimum((events[:, 2] - start) / fraction, np.nextafter(np.float32(1), np.float32(0)))
         duration = seconds * fraction
-        mx, my, mt = self.layout.maximum
-        patches, metadata, counts = {}, [], []
-        information, level_information = [], []
-        current_level, voxels = None, None
-        for group in self.layout.groups:
-            if group.level != current_level:
-                voxels = partition_level(events, self.cfg['hierarchy']['levels'][group.level]['splits'],
-                                         self.layout.maximum, width, height)
-                current_level = group.level
-                level_information = []
-            rendered = []
-            for cell, (sub, (x, y, t, dx, dy, dt)) in enumerate(zip(voxels, self.layout.boxes[group.start:group.stop].tolist())):
-                x0, x1 = x * width // mx, (x+dx) * width // mx
-                y0, y1 = y * height // my, (y+dy) * height // my
-                r = Region(x0, y0, t/mt, x1-x0, y1-y0, dt/mt, group.representation)
-                if self.information_options is not None:
-                    if cell >= len(level_information):
-                        volume = voxel_histogram(sub, r, self.information_options['bins'])
-                        level_information.append(histogram_scores(volume, self.information_options['support_saturation']))
-                    information.append(level_information[cell])
-                counts.append(np.log1p(len(sub)))
-                if group.representation.startswith('cstr'):
-                    patch = render_cstr(sub, r, group.size,
-                        d['cstr_max_count'] if group.representation == 'cstr3_fixed' else None,
-                        group.representation != 'cstr2')
-                else:
-                    patch = render_histogram(sub, r, group.size, d['time_bins'], d['patch_norm'])
-                rendered.append(patch)
-                # Known geometry/time only. Event counts never enter masked queries.
-                metadata.append([x0/width, y0/height, r.t, r.dx/width, r.dy/height, r.dt,
-                                 np.log1p(r.t*duration), np.log1p(r.dt*duration), np.log1p(duration)])
-            patches[group.key] = torch.stack(rendered)
-        view = dict(patches=patches, metadata=torch.tensor(metadata, dtype=torch.float32),
-                    log_counts=torch.tensor(counts, dtype=torch.float32),
-                    valid_mask=torch.ones(self.layout.count, dtype=torch.bool))
-        if self.information_options is not None:
-            view['information_scores'] = torch.from_numpy(np.stack(information))
+        view = render_hierarchy(self.cfg, self.layout, events, duration, width, height, self.information_options)
         if use_cache:
             self.cache.write(cache_path, cache_metadata, view)
         return dict(source=view, label=label)
 
 
 def splits(cfg, include_test=False):
+    if cfg['data'].get('dataset') == 'fred':
+        from .fred import fred_splits
+        return fred_splits(cfg, include_test)
     train, val = partition_entries(cfg)
     test = read_entries(Path(cfg['data']['root']), cfg['data'].get('test_split', 'test')) if include_test else []
     if {p.resolve() for p, _ in train+val} & {p.resolve() for p, _ in test}:
@@ -182,3 +192,10 @@ def splits(cfg, include_test=False):
     if any(not 0 <= label < cfg['downstream']['num_classes'] for _, label in train+val+test):
         raise ValueError('Labels must be zero-based class indices')
     return train, val, test
+
+
+def make_dataset(cfg, entries, training=False):
+    if cfg['data'].get('dataset') == 'fred':
+        from .fred import FredHierarchyDataset
+        return FredHierarchyDataset(cfg, entries, training)
+    return HierarchyDataset(cfg, entries, training)

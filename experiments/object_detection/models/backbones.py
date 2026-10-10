@@ -194,6 +194,9 @@ class ResNet18Encoder(nn.Module):
 
 def build_single_encoder(cfg: Dict) -> nn.Module:
     backbone_type = str(cfg.get("type", "small_cnn")).lower()
+    if backbone_type == 'hierarchical_mae':
+        from experiments.hierarchical_mae.backbone import HierarchicalBackbone
+        return HierarchicalBackbone(cfg)
     in_channels = int(cfg.get("in_channels", 3))
     out_dim = int(cfg.get("out_dim", 128))
     first_conv_grid_raw = cfg.get("cell_local_first_conv_grid")

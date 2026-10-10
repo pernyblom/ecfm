@@ -11,7 +11,7 @@ import yaml
 from experiments.region_worldmodel.train import seed_all
 from .loading import make_loader, to_device
 from .config import load_config, validate
-from .data import HierarchyDataset, splits
+from .data import make_dataset, splits
 from .inspect import save_inspection
 from .model import HierarchicalMAE
 
@@ -61,7 +61,7 @@ def run(cfg, resume=None):
     output = Path(t['output_dir'])
     output.mkdir(parents=True, exist_ok=True)
     train_entries, val_entries, _ = splits(cfg)
-    train_ds, val_ds = HierarchyDataset(cfg, train_entries, True), HierarchyDataset(cfg, val_entries)
+    train_ds, val_ds = make_dataset(cfg, train_entries, True), make_dataset(cfg, val_entries)
     train_loader = make_loader(train_ds, t['batch_size'], t['num_workers'], True, t['seed'])
     val_loader = make_loader(val_ds, t['batch_size'], t['num_workers'])
     model = HierarchicalMAE(cfg).to(device)

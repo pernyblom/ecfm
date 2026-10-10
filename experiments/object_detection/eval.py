@@ -21,7 +21,8 @@ from experiments.object_detection.metrics import (
     summarize_metrics,
 )
 from experiments.object_detection.models.factory import build_model
-from experiments.object_detection.train import _build_dataset, _make_loader
+from experiments.object_detection.train import _build_dataset, _make_loader, _split_train_eval_folders
+from ecfm.utils.tensor_utils import to_device
 from experiments.object_detection.utils.config import load_config
 from experiments.object_detection.visualization import save_sample_visualization
 
@@ -54,7 +55,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    dataset = _build_dataset(cfg, args.split)
+    heldout = None
+    if cfg['data'].get('backend') == 'raw' and args.split in {'val', 'train_eval'}:
+        _, heldout = _split_train_eval_folders(cfg)
+    dataset = _build_dataset(cfg, args.split, folders_override=heldout)
     loader = _make_loader(
         dataset,
         batch_size=int(cfg["train"].get("batch_size", 16)),
@@ -79,7 +83,7 @@ def main() -> None:
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
-            inputs = {k: v.to(device) for k, v in batch.inputs.items()}
+            inputs = to_device(batch.inputs, device)
             target_heatmaps = {k: v.to(device) for k, v in batch.heatmaps.items()}
             preds = model(inputs)
             _, _, aux = compute_losses(

@@ -1,0 +1,115 @@
+# RAW windows; set model.backbone.checkpoint to a pretrained MAE best.pt.
+data:
+  images_root: outputs/fred_reps
+  labels_root: datasets/FRED
+  split_files:
+    train: datasets/FRED/dataset_splits/canonical/train_split.txt
+    test: datasets/FRED/dataset_splits/canonical/test_split.txt
+  train_eval_split:
+    enabled: true
+    eval_fraction: 0.15
+    seed: 42
+  labels_subdir: auto
+  representations:
+  - hierarchy
+  heatmap_representations: []
+  frame_size:
+  - 1280
+  - 720
+  image_sizes:
+    hierarchy:
+    - 320
+    - 180
+  retain_spatial_dimensions: false
+  temporal_bins: 224
+  label_time_unit: 1.0e-06
+  image_window_ms: 33.333
+  image_window_mode: trailing
+  verify_render_manifest: false
+  render_manifest_name: render_manifest.json
+  window_tolerance_ms: 2.0
+  require_boxes: false
+  exclude_multiple_objects: false
+  filter_missing_representations: true
+  velocity_tracks_file: cleaned_tracks.txt
+  velocity_match_iou: 0.3
+  max_samples_train: null
+  max_samples_train_eval: 512
+  max_samples_val: 32000
+  max_samples_test: null
+  seed: 123
+  cache_dir: null
+  backend: raw
+  root: datasets/FRED
+  hierarchy_lookback_s: 0.4
+  spatial_cutout:
+    mode: none
+  tracks_file: cleaned_tracks.txt
+  time_align: none
+  decorrelation:
+    enabled: false
+  box_augmentation:
+    enabled: false
+  frame_stride_us: 33333
+  min_track_duration_ms: null
+model:
+  detector: centernet
+  backbone:
+    type: hierarchical_mae
+    mae_config: experiments/hierarchical_mae/configs/fred.yaml
+    checkpoint: null
+    out_dim: 128
+    freeze: false
+  centernet_hidden_dim: 256
+  output_stride: 4
+  topk: 100
+  predict_velocity: false
+  centernet_upsampling:
+    mode: none
+    stages: 0
+    hidden_dim: 256
+  cell_local_first_conv: false
+  cell_local_first_conv_representations: []
+  history_steps: 13
+train:
+  device: cuda
+  epochs: 40
+  batch_size: 8
+  accumulation_steps: 4
+  num_workers: 4
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  lr: 0.001
+  weight_decay: 0.0001
+  heatmap_weight: 1.0
+  centernet_size_weight: 2.0
+  centernet_offset_weight: 1.0
+  velocity_weight: 0.1
+  centernet_gaussian_radius: 2
+  compute_train_epoch_map: false
+  compute_val_epoch_map: true
+  log_every: 20
+  eval_splits_each_epoch:
+  - train_eval
+  best_metric_split: train_eval
+  best_metric: loss
+  best_metric_mode: min
+  run_test_on_best: false
+  test_split_key: test
+  test_metrics_json: outputs/object_detection_centernet_ckpt/best_test_metrics.json
+  checkpoint_every: 1
+  checkpoint_dir: outputs/object_detection_fred_hierarchical
+  resume_checkpoint: null
+  metrics_jsonl: outputs/object_detection_fred_hierarchical/metrics.jsonl
+  vis_every: 0
+  vis_samples: 8
+  vis_backdrop_rep: cstr3
+  vis_score_threshold: 0.3
+  vis_output_dir: outputs/object_detection_centernet_vis
+eval:
+  vis_backdrop_rep: cstr3
+  max_visualizations: 256
+  vis_score_threshold: 0.3
+  vis_output_dir: outputs/object_detection_centernet_eval_vis
+  metrics_output: outputs/object_detection_centernet_eval/metrics.json

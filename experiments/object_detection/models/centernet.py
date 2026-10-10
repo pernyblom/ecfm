@@ -12,6 +12,9 @@ from .backbones import build_single_encoder, grid_split_from_rep_name
 
 def _encoder_fmap_dim(backbone_cfg: Dict) -> int:
     backbone_type = str(backbone_cfg.get("type", "small_cnn")).lower()
+    if backbone_type == 'hierarchical_mae':
+        from experiments.hierarchical_mae.backbone import backbone_config
+        return int(backbone_config(backbone_cfg)['model']['embed_dim'])
     if backbone_type == "resnet18":
         if bool(backbone_cfg.get("fpn", False)):
             return int(backbone_cfg.get("fpn_dim", 128))
