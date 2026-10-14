@@ -15,7 +15,10 @@ import torch
 from PIL import Image
 
 from ecfm.data.fred_dataset import FREDDataset
-from ecfm.utils.event_representations import EVENT_REPRESENTATIONS, render_event_representation, _resolve_representation_alias
+from ecfm.utils.event_representations import (
+    EVENT_REPRESENTATIONS, render_event_tensor, _resolve_representation_alias,
+    representation_options_for, event_representation_channels, resize_event_tensor,
+)
 from ..utils.config import resolve_spatial_cutout_config
 
 
@@ -416,7 +419,8 @@ def _normalize_event_count_channels(
 
     channels_value = normalization_cfg.get("channels", "auto")
     if channels_value == "auto" or channels_value is None:
-        channels = _AUTO_EVENT_COUNT_CHANNELS.get(_base_representation_name(rep).lower(), ())
+        channels = (tuple(range(arr.shape[2])) if _base_representation_name(rep).lower() == 'event_stack'
+                    else _AUTO_EVENT_COUNT_CHANNELS.get(_base_representation_name(rep).lower(), ()))
     else:
         values = channels_value if isinstance(channels_value, (list, tuple)) else [channels_value]
         channels_list: list[int] = []
@@ -459,8 +463,34 @@ def _normalize_event_count_channels(
     return out
 
 
+def _prepare_event_tensor(tensor, size, *, source_size, rep, frame_size, anchor_box, spatial_cutout):
+    """Apply the same spatial transforms to any float channel count."""
+    cfg = resolve_spatial_cutout_config(spatial_cutout, rep)
+    if not np.issubdtype(np.asarray(tensor).dtype, np.floating):
+        raise ValueError(f'Event tensor {rep} must use a floating point dtype')
+    tensor = np.asarray(tensor, dtype=np.float32)
+    if tensor.ndim != 3 or min(tensor.shape) < 1 or not np.isfinite(tensor).all():
+        raise ValueError(f'Event input {rep} must be a finite nonempty [C,H,W] tensor')
+    arr = resize_event_tensor(tensor, source_size).transpose(1, 2, 0)
+    cropped = _fixed_spatial_cutout_array(arr, rep=rep, anchor_box=anchor_box, cfg=cfg)
+    if cropped is not None:
+        arr = cropped
+        if (arr.shape[1], arr.shape[0]) != tuple(size):
+            raise ValueError(f'Fixed spatial cutout for {rep} disagrees with resolved image size')
+    else:
+        arr = resize_event_tensor(arr.transpose(2, 0, 1), size).transpose(1, 2, 0)
+        bounds = _spatial_cutout_bounds(rep=rep, image_size=size, frame_size=frame_size, anchor_box=anchor_box, cfg=cfg)
+        if bounds is not None:
+            x0, y0, x1, y1 = bounds
+            cut = np.full_like(arr, float(cfg.get('fill', cfg.get('fill_value', 0))))
+            cut[y0:y1, x0:x1] = arr[y0:y1, x0:x1]
+            arr = cut
+    arr = _normalize_event_count_channels(arr, rep=rep, cfg=cfg)
+    return torch.from_numpy(np.ascontiguousarray(arr.transpose(2, 0, 1)))
+
+
 def _load_image(
-    path: Path | Image.Image,
+    path: Path | Image.Image | np.ndarray,
     size: Tuple[int, int],
     *,
     source_size: Tuple[int, int],
@@ -469,6 +499,9 @@ def _load_image(
     anchor_box: np.ndarray,
     spatial_cutout: Dict[str, Any],
 ) -> torch.Tensor:
+    if isinstance(path, np.ndarray):
+        return _prepare_event_tensor(path, size, source_size=source_size, rep=rep, frame_size=frame_size,
+                                     anchor_box=anchor_box, spatial_cutout=spatial_cutout)
     spatial_cutout = resolve_spatial_cutout_config(spatial_cutout, rep)
     if isinstance(path, Image.Image):
         img = path.convert("RGB")
@@ -579,6 +612,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         cstr_max_count: Optional[float] = None,
         time_surface_tau_ms: Optional[float] = None,
         event_cache_bytes: int = 32 * 1024 * 1024,
+        representation_options: Optional[Dict[str, Any]] = None,
+        representation_channels: Optional[Dict[str, int]] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -589,6 +624,12 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.time_surface_tau_ms = time_surface_tau_ms
         self.event_cache_bytes = int(event_cache_bytes)
         self._indexed_source = None
+        self.representation_options = dict(representation_options or {})
+        self.representation_channels = {
+            rep: event_representation_channels(rep, representation_options_for(rep, self.representation_options))
+            for rep in representations
+        }
+        self.representation_channels.update(representation_channels or {})
         self.frame_size = (float(frame_size[0]), float(frame_size[1]))
         self.representations = list(representations)
         self.image_sizes = {str(k): (int(v[0]), int(v[1])) for k, v in image_sizes.items()}
@@ -824,9 +865,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             if not raw.is_file() or not raw.with_suffix('.raw.tmp_index').is_file():
                 return None
             return {'raw': str(raw), 'time_us': round(label_time_s * 1e6)}
-        rendered_path = self._images_dir(folder) / f"{stem}_{rep}.png"
-        if rendered_path.exists():
-            return rendered_path
+        for suffix in ('.npz', '.npy', '.png'):
+            rendered_path = self._images_dir(folder) / f"{stem}_{rep}{suffix}"
+            if rendered_path.exists():
+                return rendered_path
         if _is_dataset_rgb_rep(rep):
             return self._find_rgb_frame(folder, rep, label_time_s)
         if _is_dataset_event_frame_rep(rep):
@@ -1452,6 +1494,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "temporal_bins": self.temporal_bins,
             "cstr_max_count": self.cstr_max_count,
             "time_surface_tau_ms": self.time_surface_tau_ms,
+            "representation_options": self.representation_options,
+            "representation_channels": self.representation_channels,
             "verify_render_manifest": self.verify_render_manifest,
             "render_manifest_name": self.render_manifest_name,
             "window_tolerance_ms": self.window_tolerance_ms,
@@ -1497,22 +1541,29 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
-    def _input_image(self, rep: str, reference: Any) -> Path | Image.Image:
+    def _input_image(self, rep: str, reference: Any) -> Path | np.ndarray:
         if not isinstance(reference, dict):
-            return Path(reference)
+            path = Path(reference)
+            if path.suffix == '.npy':
+                return np.load(path, allow_pickle=False)
+            if path.suffix == '.npz':
+                with np.load(path, allow_pickle=False) as archive:
+                    return archive['tensor'].copy()
+            return path
         source = self._indexed_events()
         folder = Path(reference['raw']).parent.parent.name
         end = int(reference['time_us'])
         start = end - max(1, round(self.image_window_ms * 1000))
         info = source.sequence_info[folder]
-        pixels = render_event_representation(
+        tensor = render_event_tensor(
             source.events(folder, start, end), rep,
             width=info['width'], height=info['height'], start_us=start, end_us=end,
             output_size=self.source_image_sizes.get(rep), time_bins=self.temporal_bins,
             cstr_max_count=self.cstr_max_count,
             time_surface_tau_us=None if self.time_surface_tau_ms is None else self.time_surface_tau_ms * 1000,
+            options=representation_options_for(rep, self.representation_options),
         )
-        return Image.fromarray(pixels)
+        return tensor
 
     def __getitem__(self, idx: int) -> KalmanForecastSample:
         sample = self.samples[idx]
@@ -1538,6 +1589,9 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 )
                 for path in paths
             ]
+            if any(image.shape[0] != self.representation_channels[rep] for image in images):
+                raise ValueError(f'Input {rep} has {images[0].shape[0]} channels; expected {self.representation_channels[rep]}. '
+                                 'Check data.representation_options/representation_channels and stored tensor files.')
             inputs[rep] = torch.stack(images, dim=0) if isinstance(path_or_paths, list) else images[0]
         folder = sample["folder"]
         frame_key = f"{folder}/{sample['anchor_stem']}" if folder else sample["anchor_stem"]

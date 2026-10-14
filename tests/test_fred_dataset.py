@@ -187,6 +187,60 @@ def test_indexed_forecasting_cache_filters_missing_raw_index(fred):
         _build_dataset(cfg, 'train', folders_override=['0'])
 
 
+def test_multichannel_indexed_training_and_tensor_export_roundtrip(fred):
+    from scripts.render_fred_tensors import export_fred_tensors
+    from experiments.kalman_ml_forecasting.models.factory import build_model
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['representation_options'] = {'time_surface': {'include_activity': False},
+        'event_stack': {'bins': 5, 'split_polarity': True}}
+    cfg['data']['spatial_cutout'] = {'mode': 'fixed_pixels', 'size_px': [4, 4],
+                                   'event_count_normalization': 'joint_max'}
+    cfg['model'] = {'history_steps': 1, 'backbone': {'type': 'small_cnn', 'channels': [4], 'out_dim': 8},
+                    'fusion_hidden_dim': 8, 'state_hidden_dim': 8, 'residual_hidden_dim': 8}
+    indexed = _build_dataset(cfg, 'train', folders_override=['0'])
+    sample = indexed[0]
+    assert sample.inputs['time_surface'].shape == (2, 2, 4, 4)
+    assert sample.inputs['event_stack'].shape == (10, 4, 4)
+    batch = _collate([sample, indexed[1]])
+    model = build_model(cfg, torch.device('cpu'))
+    model(batch.inputs, batch.past_boxes, batch.past_times_s, batch.future_times_s).sum().backward()
+    assert model.representation_channels['event_stack'] == 10
+    assert export_fred_tensors(cfg, root/'tensor_export', sequences=['0'], max_frames=4) == 4
+    cfg['data']['event_image_source'] = 'rendered'
+    cfg['data']['images_root'] = str(root/'tensor_export')
+    stored = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert stored[0].frame_key == sample.frame_key
+    for rep in sample.inputs:
+        torch.testing.assert_close(stored[0].inputs[rep], sample.inputs[rep])
+    assert Path(stored[0].input_paths['event_stack']).suffix == '.npz'
+    with pytest.raises(FileExistsError):
+        export_fred_tensors(cfg, root/'tensor_export', sequences=['0'], max_frames=4)
+
+
+def test_multichannel_cutout_inspector_respects_yaml_grid_preview(fred, monkeypatch):
+    import sys
+    import yaml
+    from experiments.kalman_ml_forecasting.inspect_spatial_cutouts import main
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['representations'] = ['event_stack']
+    cfg['data']['representation_sequences'] = {}
+    cfg['data']['representation_options'] = {'event_stack': {'bins': 5, 'split_polarity': True}}
+    cfg['data']['spatial_cutout'] = {'mode': 'fixed_pixels', 'size_px': [4, 4]}
+    cfg['visualization'] = {'event_images': {'mode': 'grid', 'columns': 5, 'labels': False}}
+    config_file = root/'inspect.yaml'
+    config_file.write_text(yaml.safe_dump(cfg))
+    output = root/'preview_output'
+    monkeypatch.setattr(sys, 'argv', ['inspect_spatial_cutouts.py', '--config', str(config_file),
+        '--folder', '0', '--count', '1', '--include-original', '--output-dir', str(output)])
+    main()
+    with Image.open(next(output.rglob('event_stack_cutout.png'))) as image:
+        assert image.size == (20, 8)
+    with Image.open(next(output.rglob('event_stack_original.png'))) as image:
+        assert image.size == (40, 16)
+
+
 def test_unlabeled_sequence_and_supervision_gate(fred):
     root, cfg = fred
     ds = FREDDataset(root, sequences=['2'], tracks_file='cleaned_tracks.txt', modalities=())

@@ -45,9 +45,10 @@ Data
   `data.backend: raw` is the separate hierarchical MAE adapter; leave that
   setting unset when using indexed inputs with the standard residual model.
 - New formats are `time_surface`, `time_surface_linear`,
-  `multi_channel_time_surface`, `event_stack`, and `voxel_grid`. All produce
-  three-channel inputs, support grid aliases, and can be mixed with existing
-  formats. See [channel definitions and scaling](../../docs/event_representations.md).
+  `multi_channel_time_surface`, `event_stack`, and `voxel_grid`. They support
+  configurable channel counts, grid aliases, and mixing with existing formats.
+  Indexed inputs use float tensors directly; voxel values remain signed.
+  See [channel definitions, tensor export, and visualization settings](../../docs/event_representations.md).
   Set `data.time_surface_tau_ms` to override exponential decay (default:
   `image_window_ms / 3`). Indexed `cstr3_fixed` requires `data.cstr_max_count`.
 
@@ -66,11 +67,34 @@ data:
   time_surface_tau_ms: 30.0
   representation_sequences:
     multi_channel_time_surface: {length: 4, stride: 1}
+  representation_options:
+    # Four decay scales for each polarity -> eight float channels.
+    multi_channel_time_surface: {decay_ms: [5, 10, 20, 40], split_polarity: true}
+    # Five time bins for each polarity -> ten float channels.
+    event_stack: {bins: 5, split_polarity: true}
+visualization:
+  event_images:
+    mode: auto
+    by_representation:
+      event_stack: {mode: grid, columns: 5, labels: true}
 ```
 
 - Apply the above overrides to `configs/base.yaml`, retaining its split files,
   track settings, and model/training configuration. `image_sizes` are source
   image sizes; the usual spatial cutout determines the final encoder size.
+- Encoder channels are inferred per representation from
+  `data.representation_options`, so RGB can use three channels while an event
+  branch uses ten. No manual changes to `model.backbone.in_channels` are needed.
+  The temporal sequence axis remains separate: `[B,T,C,H,W]` uses `T` images,
+  each with `C` representation channels. Increasing bins changes `C`, while
+  increasing `representation_sequences.length` changes `T`.
+- Precomputed tensors are also supported: set `event_image_source: rendered`
+  and store float `[C,H,W]` `.npy` files or `.npz` archives containing `tensor`,
+  using the existing `<label_stem>_<representation>` naming convention.
+  `scripts/render_fred_tensors.py` exports these tensors and separately named
+  PNG previews from the same YAML. Rendering options belong in
+  `data.representation_options`; display choices belong in
+  `visualization.event_images` and never change training data.
 - Samples are track-aligned from `cleaned_tracks.txt` and anchor label times in
   `Event_YOLO`.
 - Each sample uses one anchor image at time `t`, past boxes up to `t`, and

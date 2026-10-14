@@ -5,9 +5,10 @@ from typing import Any, Dict, Iterable
 import re
 
 import yaml
-from ecfm.utils.event_representations import _GRID_SPLIT_BASE_REPS
+from ecfm.utils.event_representations import _GRID_SPLIT_BASE_REPS, resolve_representation_channels
 
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
+
 
 def resolve_event_image_options(data_cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Options shared by forecasting training, evaluation and inspection."""
@@ -18,6 +19,8 @@ def resolve_event_image_options(data_cfg: Dict[str, Any]) -> Dict[str, Any]:
         'cstr_max_count': data_cfg.get('cstr_max_count'),
         'time_surface_tau_ms': data_cfg.get('time_surface_tau_ms'),
         'event_cache_bytes': data_cfg.get('event_cache_bytes', 32 * 1024 * 1024),
+        'representation_options': data_cfg.get('representation_options') or {},
+        'representation_channels': resolve_representation_channels(data_cfg),
     }
 
 

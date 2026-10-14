@@ -5,7 +5,7 @@ from typing import Dict
 import torch
 
 from .kalman_residual import KalmanResidualForecaster
-from ..utils.config import resolve_representation_image_sizes, resolve_representation_sequences
+from ..utils.config import resolve_representation_image_sizes, resolve_representation_sequences, resolve_representation_channels
 
 
 def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
@@ -14,6 +14,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
     history_steps = int(model_cfg.get("history_steps", data_cfg.get("history_steps", 12)))
     return KalmanResidualForecaster(
         representations=list(data_cfg["representations"]),
+        representation_channels=resolve_representation_channels(data_cfg, model_cfg.get('backbone', {}).get('in_channels', 3)),
         image_sizes=resolve_representation_image_sizes(data_cfg),
         backbone_cfg=dict(model_cfg.get("backbone", {})),
         history_steps=history_steps,

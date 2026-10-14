@@ -193,9 +193,16 @@ class KalmanResidualForecaster(nn.Module):
         cell_local_first_conv_representations: List[str] | None = None,
         representation_sequences: Dict[str, Dict[str, int]] | None = None,
         temporal_aggregation_cfg: Dict | None = None,
+        representation_channels: Dict[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.representations = list(representations)
+        self.representation_channels = {
+            rep: int((representation_channels or {}).get(rep, backbone_cfg.get('in_channels', 3)))
+            for rep in self.representations
+        }
+        if any(count < 1 for count in self.representation_channels.values()):
+            raise ValueError('Representation channel counts must be positive')
         self.representation_sequences = dict(representation_sequences or {})
         unknown_sequence_reps = sorted(set(self.representation_sequences) - set(self.representations))
         if unknown_sequence_reps:
@@ -265,7 +272,7 @@ class KalmanResidualForecaster(nn.Module):
             {
                 rep: build_single_encoder(
                     _encoder_cfg_for_rep(
-                        backbone_cfg,
+                        dict(backbone_cfg, in_channels=self.representation_channels[rep]),
                         rep,
                         cell_local_first_conv=bool(cell_local_first_conv),
                         cell_local_first_conv_representations=cell_local_first_conv_representations,
@@ -379,6 +386,8 @@ class KalmanResidualForecaster(nn.Module):
                         f"Sequence representation {rep!r} must have shape [B,T,C,H,W], got {tuple(value.shape)}."
                     )
                 batch, steps, channels, height, width = value.shape
+                if channels != self.representation_channels[rep]:
+                    raise ValueError(f'Input {rep} has {channels} channels; encoder expects {self.representation_channels[rep]}')
                 frame_features = self.encoders[rep](
                     value.reshape(batch * steps, channels, height, width)
                 ).pooled.reshape(batch, steps, -1)
@@ -400,6 +409,8 @@ class KalmanResidualForecaster(nn.Module):
                     raise ValueError(
                         f"Single-image representation {rep!r} must have shape [B,C,H,W], got {tuple(value.shape)}."
                     )
+                if value.shape[1] != self.representation_channels[rep]:
+                    raise ValueError(f'Input {rep} has {value.shape[1]} channels; encoder expects {self.representation_channels[rep]}')
                 rep_features = self.encoders[rep](value).pooled
             enc.append(rep_features)
         if self.use_filter_state_features:

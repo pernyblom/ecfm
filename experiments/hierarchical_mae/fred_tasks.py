@@ -29,6 +29,7 @@ def task_source(cfg, folders):
                 image_sizes=d.get('image_sizes'), temporal_bins=d.get('temporal_bins', 224),
                 cstr_max_count=d.get('cstr_max_count'), tracks_file=d.get('tracks_file', 'tracks.txt'),
                 time_surface_tau_ms=d.get('time_surface_tau_ms'),
+                representation_options=d.get('representation_options'),
                 track_time_unit=d.get('track_time_unit', 1.), track_frame_size=d.get('track_frame_size'),
                 require_original_tracks=True, match_tolerance_us=d.get('match_tolerance_us', 32),
                 rgb_match='previous', rgb_tolerance_us=d.get('rgb_tolerance_us', 50000),

@@ -100,6 +100,7 @@ class CenterNetDetector(nn.Module):
         upsampling_hidden_dim: int | None = None,
         cell_local_first_conv: bool = False,
         cell_local_first_conv_representations: List[str] | None = None,
+        representation_channels: Dict[str, int] | None = None,
     ) -> None:
         super().__init__()
         self.representations = list(representations)
@@ -137,7 +138,7 @@ class CenterNetDetector(nn.Module):
             {
                 rep: build_single_encoder(
                     _encoder_cfg_for_rep(
-                        backbone_cfg,
+                        dict(backbone_cfg, in_channels=(representation_channels or {}).get(rep, backbone_cfg.get("in_channels", 3))),
                         rep,
                         cell_local_first_conv=bool(cell_local_first_conv),
                         cell_local_first_conv_representations=cell_local_first_conv_representations,

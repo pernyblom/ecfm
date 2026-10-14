@@ -19,7 +19,7 @@ from torch.utils.data import Dataset
 
 from ecfm.utils.evt3_index import IndexedRawReader, read_index
 from ecfm.utils.evt3 import read_raw_header
-from ecfm.utils.event_representations import render_event_representation
+from ecfm.utils.event_representations import render_event_tensor, representation_options_for
 
 _LABEL_TIME = re.compile(r'(?:_frame_|_)(\d+)$')
 _RGB_TIME = re.compile(r'_(\d{2})_(\d{2})_(\d{2})\.(\d+)$')
@@ -64,7 +64,8 @@ class FREDDataset(Dataset):
                  require_original_tracks=True, match_tolerance_us=32,
                  rgb_match='previous', rgb_tolerance_us=50000,
                  reader_cache_size=2, event_cache_bytes=32*1024*1024,
-                 max_samples=0, subset_seed=0, missing_raw='error', time_surface_tau_ms=None):
+                 max_samples=0, subset_seed=0, missing_raw='error', time_surface_tau_ms=None,
+                 representation_options=None):
         self.root = Path(root)
         if sequences is not None and (split is not None or split_file is not None):
             raise ValueError('Specify sequences or a split, not both')
@@ -88,6 +89,7 @@ class FREDDataset(Dataset):
         self.event_window_us = max(1, round(event_window_s*1e6))
         self.modalities, self.representations = tuple(modalities), tuple(representations)
         self.image_sizes, self.temporal_bins = image_sizes or {}, temporal_bins
+        self.representation_options = dict(representation_options or {})
         self.cstr_max_count, self.timestamp_mode = cstr_max_count, timestamp_mode
         if time_surface_tau_ms is not None and (not np.isfinite(time_surface_tau_ms) or time_surface_tau_ms <= 0):
             raise ValueError('time_surface_tau_ms must be finite and positive')
@@ -206,11 +208,12 @@ class FREDDataset(Dataset):
                     image = torch.nn.functional.interpolate(image[None], (h, w), mode='bilinear', align_corners=False)[0]
                 tensors[rep] = image
                 continue
-            pixels = render_event_representation(events, rep, width=info['width'], height=info['height'],
+            tensor = render_event_tensor(events, rep, width=info['width'], height=info['height'],
                         start_us=start, end_us=end, output_size=self.image_sizes.get(rep),
                         time_bins=self.temporal_bins, cstr_max_count=self.cstr_max_count,
-                        time_surface_tau_us=self.time_surface_tau_us)
-            tensors[rep] = torch.from_numpy(pixels.copy()).permute(2, 0, 1).float()/255
+                        time_surface_tau_us=self.time_surface_tau_us,
+                        options=representation_options_for(rep, self.representation_options))
+            tensors[rep] = torch.from_numpy(tensor)
         return tensors
 
     def hierarchical_patches(self, sequence, time_us, cfg, *, lookback_s, spatial_crop=None):

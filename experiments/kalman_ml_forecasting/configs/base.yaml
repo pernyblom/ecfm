@@ -90,6 +90,12 @@ data:
   # Use indexed to render causal windows from Event/events.raw + .raw.tmp_index
   # during training; rendered preserves the pre-generated PNG workflow.
   event_image_source: rendered
+  # Channels are inferred from these per-representation renderer settings.
+  # representation_options:
+  #   voxel_grid: {bins: 5}  # five signed float channels
+  #   event_stack: {bins: 5, split_polarity: true}  # ten channels
+  #   multi_channel_time_surface: {decay_ms: [5, 10, 20, 40], split_polarity: true}
+  representation_options: {}
   # events_root: datasets/FRED  # defaults to labels_root
   # time_surface_tau_ms: 30.0  # default: image_window_ms / 3
   # cstr_max_count: 20.0       # required for indexed cstr3_fixed
@@ -309,3 +315,13 @@ train:
   metrics_jsonl: outputs/kalman_ml_forecasting_ckpt/metrics.jsonl
   log_file: outputs/kalman_ml_forecasting_ckpt/train.log
   log_file_mode: w
+
+# Display settings affect previews only. Exact representation names override
+# base names, including grid aliases. Select channels using zero-based indices.
+visualization:
+  event_images:
+    mode: auto  # auto, rgb, temporal_rgb, polarity, mean, max, grid
+    normalization: auto  # auto, none, max, min_max, per_channel_min_max
+    # by_representation:
+    #   event_stack: {mode: grid, columns: 5, labels: true}
+    #   voxel_grid: {mode: rgb, channels: [0, 2, 4]}

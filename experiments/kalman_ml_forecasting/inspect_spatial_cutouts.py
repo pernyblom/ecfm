@@ -9,6 +9,8 @@ from typing import Any, Dict, List
 
 import numpy as np
 from PIL import Image, ImageDraw
+from ecfm.utils.event_visualization import representation_preview, resolve_event_visualization
+from ecfm.utils.event_representations import representation_options_for, resize_event_tensor
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -17,6 +19,7 @@ if str(ROOT) not in sys.path:
 from experiments.kalman_ml_forecasting.data.track_dataset import (
     TrackKalmanForecastDataset,
     _normalize_event_count_channels,
+    _load_image,
 )
 from experiments.kalman_ml_forecasting.utils.config import (
     resolve_event_image_options,
@@ -354,20 +357,35 @@ def main() -> None:
             # The inspector remains a one-cutout-per-representation summary;
             # for sequences it shows the anchor (last) frame.
             rep_path = rep_paths[-1] if isinstance(rep_paths, list) else rep_paths
-            original_img = _load_original(dataset._input_image(rep, rep_path), source_image_sizes[rep])
-            cutout_img, crop = _spatial_cutout_image(
-                original_img,
-                rep=rep,
-                box=anchor_box,
-                cfg=resolve_spatial_cutout_config(cutout_cfg, rep),
-            )
-            rep_cutout_cfg = resolve_spatial_cutout_config(cutout_cfg, rep)
-            cutout_arr = np.asarray(cutout_img, dtype=np.float32) / 255.0
-            cutout_arr = _normalize_event_count_channels(cutout_arr, rep=rep, cfg=rep_cutout_cfg)
-            cutout_img = Image.fromarray(
-                np.clip(np.rint(cutout_arr * 255.0), 0.0, 255.0).astype(np.uint8),
-                mode="RGB",
-            )
+            source_input = dataset._input_image(rep, rep_path)
+            settings = resolve_event_visualization(cfg, rep)
+            if isinstance(source_input, np.ndarray):
+                options = representation_options_for(rep, data_cfg.get('representation_options'))
+                original_tensor = resize_event_tensor(source_input, source_image_sizes[rep])
+                original_img = representation_preview(original_tensor, rep, options=options, settings=settings)
+                cutout_tensor = _load_image(source_input, dataset.image_sizes[rep],
+                    source_size=source_image_sizes[rep], rep=rep, frame_size=dataset.frame_size,
+                    anchor_box=anchor_box, spatial_cutout=cutout_cfg)
+                cutout_img = representation_preview(cutout_tensor, rep, options=options, settings=settings)
+                _, crop = _spatial_cutout_image(Image.new('RGB', source_image_sizes[rep]),
+                    rep=rep, box=anchor_box, cfg=resolve_spatial_cutout_config(cutout_cfg, rep))
+                if settings.get('mode') == 'grid' and args.draw_anchor_box:
+                    raise ValueError('--draw-anchor-box requires a spatial preview; choose a mode other than grid')
+            else:
+                original_img = _load_original(source_input, source_image_sizes[rep])
+                cutout_img, crop = _spatial_cutout_image(
+                    original_img,
+                    rep=rep,
+                    box=anchor_box,
+                    cfg=resolve_spatial_cutout_config(cutout_cfg, rep),
+                )
+                rep_cutout_cfg = resolve_spatial_cutout_config(cutout_cfg, rep)
+                cutout_arr = np.asarray(cutout_img, dtype=np.float32) / 255.0
+                cutout_arr = _normalize_event_count_channels(cutout_arr, rep=rep, cfg=rep_cutout_cfg)
+                cutout_img = Image.fromarray(
+                    np.clip(np.rint(cutout_arr * 255.0), 0.0, 255.0).astype(np.uint8),
+                    mode="RGB",
+                )
             if args.draw_anchor_box:
                 cutout_img = _draw_anchor_box(
                     cutout_img,

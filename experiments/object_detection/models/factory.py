@@ -6,6 +6,7 @@ import torch
 
 from .model import MultiRepObjectDetector
 from .centernet import CenterNetDetector
+from ecfm.utils.event_representations import resolve_representation_channels
 from ..utils.config import resolve_representation_image_sizes
 
 
@@ -17,6 +18,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         upsampling_cfg = dict(model_cfg.get("centernet_upsampling") or {})
         return CenterNetDetector(
             representations=list(data_cfg["representations"]),
+            representation_channels=resolve_representation_channels(data_cfg, model_cfg.get("backbone", {}).get("in_channels", 3)),
             image_sizes=resolve_representation_image_sizes(data_cfg),
             frame_size=tuple(data_cfg["frame_size"]),
             backbone_cfg=dict(model_cfg.get("backbone", {})),
@@ -38,6 +40,7 @@ def build_model(cfg: Dict, device: torch.device) -> torch.nn.Module:
         raise ValueError(f"Unknown model.detector: {detector_type}")
     return MultiRepObjectDetector(
         representations=list(data_cfg["representations"]),
+        representation_channels=resolve_representation_channels(data_cfg, model_cfg.get("backbone", {}).get("in_channels", 3)),
         heatmap_representations=list(data_cfg.get("heatmap_representations", [])),
         image_sizes=resolve_representation_image_sizes(data_cfg),
         backbone_cfg=dict(model_cfg.get("backbone", {})),

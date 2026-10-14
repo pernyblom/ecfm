@@ -70,10 +70,12 @@ def _make_inputs(cfg: dict[str, Any], device: torch.device, batch_size: int, his
     future_times = (
         torch.arange(history_steps, history_steps + future_steps, dtype=dtype).mul(dt).expand(batch_size, -1).to(device)
     )
-    channels = int(cfg["model"].get("backbone", {}).get("in_channels", 3))
+    from experiments.kalman_ml_forecasting.utils.config import resolve_representation_channels
+    channel_counts = resolve_representation_channels(cfg['data'], cfg['model'].get('backbone', {}).get('in_channels', 3))
     inputs = {}
     sequence_cfg = resolve_representation_sequences(cfg["data"])
     for rep, (width, height) in resolve_representation_image_sizes(cfg["data"]).items():
+        channels = channel_counts[rep]
         shape = (batch_size, channels, height, width)
         if rep in sequence_cfg:
             shape = (batch_size, sequence_cfg[rep]["length"], channels, height, width)

@@ -22,6 +22,8 @@ from experiments.kalman_ml_forecasting.compose_track_layers import (
     write_mp4_iter,
 )
 from experiments.kalman_ml_forecasting.models.factory import build_model
+from ecfm.utils.event_visualization import representation_preview, resolve_event_visualization
+from ecfm.utils.event_representations import representation_options_for
 from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_forecast
 from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
@@ -585,11 +587,15 @@ def main() -> None:
                 for layer_rep_l in sorted(representation_layers):
                     if layer_rep_l == "none":
                         continue
-                    if dataset._is_indexed_rep(layer_rep_l):
-                        sequence, stem = _parse_frame_key(sample.frame_key)
-                        reference = dataset._resolve_input_path(sequence, stem, layer_rep_l, sample.frame_time_s)
-                        layer_image = dataset._input_image(layer_rep_l, reference) if reference is not None else None
-                        if layer_image is not None and layer_rep_l not in NATIVE_RESOLUTION_LAYER_REPS:
+                    sequence, stem = _parse_frame_key(sample.frame_key)
+                    reference = dataset._resolve_input_path(sequence, stem, layer_rep_l, sample.frame_time_s)
+                    if dataset._is_indexed_rep(layer_rep_l) or (reference is not None and Path(reference).suffix in {'.npy', '.npz'}):
+                        tensor = dataset._input_image(layer_rep_l, reference) if reference is not None else None
+                        settings = resolve_event_visualization(cfg, layer_rep_l)
+                        layer_image = representation_preview(tensor, layer_rep_l,
+                            options=representation_options_for(layer_rep_l, data_cfg.get('representation_options')),
+                            settings=settings) if tensor is not None else None
+                        if layer_image is not None and layer_rep_l not in NATIVE_RESOLUTION_LAYER_REPS and settings.get('mode') != 'grid':
                             layer_image = layer_image.resize(frame_size_t, resample=Image.BILINEAR)
                     else:
                         layer_image = _load_backdrop(

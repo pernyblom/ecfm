@@ -17,6 +17,169 @@ EVENT_REPRESENTATIONS = {
 _GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"} | TEMPORAL_IMAGE_REPRESENTATIONS
 
 
+def representation_options_for(representation, options=None):
+    """Resolve exact-name options before grid-alias base-name options."""
+    base, _, _ = _resolve_representation_alias(representation)
+    options = options or {}
+    if not isinstance(options, dict):
+        raise ValueError('representation_options must be a mapping')
+    value = options.get(representation, options.get(base, {}))
+    if not isinstance(value, dict):
+        raise ValueError(f'Representation options for {representation} must be a mapping')
+    return dict(value)
+
+
+def event_representation_channels(representation, options=None):
+    """Channel count for the float tensor API, without rendering any events."""
+    base, _, _ = _resolve_representation_alias(representation)
+    opts = dict(options or {})
+    allowed = {
+        'time_surface': {'include_activity', 'tau_ms'},
+        'time_surface_linear': {'include_activity'},
+        'multi_channel_time_surface': {'decay_ms', 'split_polarity'},
+        'event_stack': {'bins', 'split_polarity', 'normalization'},
+        'voxel_grid': {'bins', 'split_polarity', 'normalization'},
+    }.get(base, set())
+    if set(opts) - allowed:
+        raise ValueError(f'Unknown options for {representation}: {sorted(set(opts) - allowed)}')
+    for key in ('include_activity', 'split_polarity'):
+        if key in opts and not isinstance(opts[key], bool):
+            raise ValueError(f'{key} must be a boolean')
+    if 'normalization' in opts and opts['normalization'] not in {'none', 'max'}:
+        raise ValueError('Representation normalization must be none or max')
+    if 'tau_ms' in opts and (not np.isfinite(opts['tau_ms']) or opts['tau_ms'] <= 0):
+        raise ValueError('tau_ms must be finite and positive')
+    if base in {'time_surface', 'time_surface_linear'}:
+        return 3 if opts.get('include_activity', True) else 2
+    if base == 'multi_channel_time_surface':
+        decays = opts.get('decay_ms', [1, 2, 4])
+        if not isinstance(decays, (list, tuple)) or not decays or not np.isfinite(decays).all() or min(decays) <= 0:
+            raise ValueError('decay_ms must be a nonempty list of positive finite durations')
+        return len(decays) * (2 if opts.get('split_polarity', False) else 1)
+    if base in {'event_stack', 'voxel_grid'}:
+        bins = opts.get('bins', 3)
+        if isinstance(bins, bool) or not isinstance(bins, (int, np.integer)) or bins < 1:
+            raise ValueError('bins must be a positive integer')
+        return bins * (2 if opts.get('split_polarity', False) else 1)
+    return 3
+
+
+def resolve_representation_channels(data_cfg, default_channels=3):
+    """Infer event channels from renderer options; allow explicit counts for stored tensors."""
+    overrides = data_cfg.get('representation_channels') or {}
+    if not isinstance(overrides, dict):
+        raise ValueError('data.representation_channels must be a mapping')
+    result = {}
+    for rep in data_cfg.get('representations', []):
+        opts = representation_options_for(rep, data_cfg.get('representation_options'))
+        count = event_representation_channels(rep, opts) if opts or data_cfg.get('event_image_source') == 'indexed' or data_cfg.get('backend') == 'raw' else default_channels
+        base = _resolve_representation_alias(rep)[0]
+        explicit = overrides.get(rep, overrides.get(base))
+        if rep in {'rgb', 'padded_rgb', 'event_frames', 'event_frame'}:
+            count = 3
+            if explicit is not None and explicit != 3:
+                raise ValueError(f'{rep} requires three channels')
+        elif explicit is not None:
+            if isinstance(explicit, bool) or not isinstance(explicit, int) or explicit < 1:
+                raise ValueError(f'Channel count for {rep} must be a positive integer')
+            if (opts or data_cfg.get('event_image_source') == 'indexed' or data_cfg.get('backend') == 'raw') and explicit != count:
+                raise ValueError(f'Channel count for {rep} disagrees with representation options: expected {count}')
+            count = explicit
+        result[rep] = count
+    return result
+
+
+def resize_event_tensor(tensor, size):
+    """Resize float [C,H,W] without clipping signed values or changing channels."""
+    import torch
+    import torch.nn.functional as F
+    array = np.asarray(tensor, dtype=np.float32)
+    if size is None or array.shape[1:] == (size[1], size[0]):
+        return array.copy()
+    if min(size) <= 0:
+        raise ValueError('Tensor output dimensions must be positive')
+    return F.interpolate(torch.from_numpy(array.copy())[None], size=(size[1], size[0]),
+                         mode='bilinear', align_corners=False)[0].numpy()
+
+
+def render_event_tensor(events, representation, *, width, height, start_us, end_us,
+                        output_size=None, time_bins=224, cstr_max_count=None,
+                        time_surface_tau_us=None, options=None):
+    """Return float32 [C,H,W]. Temporal formats retain full precision and signed voxels.
+
+    Split channels are polarity-major: all positive bins/decays, then negative.
+    Existing non-temporal representations retain their RGB-compatible encoding.
+    """
+    base, gx, gy = _resolve_representation_alias(representation)
+    opts = dict(options or {})
+    channels = event_representation_channels(representation, opts)
+    if base not in TEMPORAL_IMAGE_REPRESENTATIONS:
+        pixels = render_event_representation(events, representation, width=width, height=height,
+            start_us=start_us, end_us=end_us, output_size=output_size, time_bins=time_bins,
+            cstr_max_count=cstr_max_count)
+        return pixels.transpose(2, 0, 1).astype(np.float32) / 255
+    if end_us <= start_us or width <= 0 or height <= 0:
+        raise ValueError('Window duration and sensor dimensions must be positive')
+    events = np.asarray(events)
+    if events.ndim != 2 or events.shape[1] != 4:
+        raise ValueError('Events must have shape [N, 4]')
+    gx, gy = gx or 1, gy or 1
+    size = output_size or (width, height)
+    if gx > min(width, size[0]) or gy > min(height, size[1]):
+        raise ValueError('Grid cannot exceed sensor or output dimensions')
+    x_edges, y_edges = np.linspace(0, width, gx + 1, dtype=int), np.linspace(0, height, gy + 1, dtype=int)
+    ox, oy = np.linspace(0, size[0], gx + 1, dtype=int), np.linspace(0, size[1], gy + 1, dtype=int)
+    canvas = np.zeros((channels, size[1], size[0]), dtype=np.float32)
+    duration = end_us - start_us
+    for row in range(gy):
+        for col in range(gx):
+            mask = ((events[:, 0] >= x_edges[col]) & (events[:, 0] < x_edges[col+1])
+                    & (events[:, 1] >= y_edges[row]) & (events[:, 1] < y_edges[row+1])
+                    & (events[:, 2] >= start_us) & (events[:, 2] < end_us))
+            sub = events[mask]
+            x, y = (sub[:, 0] - x_edges[col]).astype(int), (sub[:, 1] - y_edges[row]).astype(int)
+            t = (sub[:, 2] - start_us).astype(np.float64) / duration
+            image = np.zeros((channels, y_edges[row+1]-y_edges[row], x_edges[col+1]-x_edges[col]), dtype=np.float32)
+            positive = sub[:, 3] == 1
+            if base in {'time_surface', 'time_surface_linear', 'multi_channel_time_surface'}:
+                tau = time_surface_tau_us if time_surface_tau_us is not None else duration / 3
+                if 'tau_ms' in opts:
+                    tau = opts['tau_ms'] * 1000
+                if not np.isfinite(tau) or tau <= 0:
+                    raise ValueError('Time surface decay must be finite and positive')
+                if base == 'multi_channel_time_surface':
+                    decays = np.asarray(opts['decay_ms']) * 1000 if 'decay_ms' in opts else np.asarray([tau/4, tau/2, tau])
+                    groups = [positive, ~positive] if opts.get('split_polarity', False) else [np.ones(len(sub), dtype=bool)]
+                else:
+                    decays = [tau]
+                    groups = [positive, np.ones(len(sub), dtype=bool), ~positive] if opts.get('include_activity', True) else [positive, ~positive]
+                for group_idx, selected in enumerate(groups):
+                    latest = np.full(image.shape[1:], -np.inf)
+                    np.maximum.at(latest, (y[selected], x[selected]), t[selected])
+                    for decay_idx, decay in enumerate(decays):
+                        image[group_idx * len(decays) + decay_idx] = (np.maximum(latest, 0) if base == 'time_surface_linear'
+                            else np.exp(-(1-latest)*duration/decay))
+            else:
+                bins = opts.get('bins', 3)
+                split = opts.get('split_polarity', False)
+                group = np.where(positive, 0, bins) if split else np.zeros(len(sub), dtype=int)
+                if base == 'event_stack':
+                    idx = np.minimum((t*bins).astype(int), bins-1) + group
+                    np.add.at(image, (idx, y, x), 1)
+                else:
+                    position = t * (bins-1)
+                    lower = position.astype(int)
+                    fraction = position-lower
+                    polarity = np.ones(len(sub)) if split else np.where(positive, 1., -1.)
+                    np.add.at(image, (lower+group, y, x), polarity*(1-fraction))
+                    np.add.at(image, (np.minimum(lower+1, bins-1)+group, y, x), polarity*fraction)
+                scale = float(np.abs(image).max())
+                if opts.get('normalization', 'max') == 'max' and scale > 0:
+                    image /= scale
+            canvas[:, oy[row]:oy[row+1], ox[col]:ox[col+1]] = resize_event_tensor(image, (ox[col+1]-ox[col], oy[row+1]-oy[row]))
+    return canvas
+
+
 def render_event_representation(events, representation, *, width, height, start_us,
                                 end_us, output_size=None, time_bins=224, patch_size=224,
                                 cstr_max_count=None, time_surface_tau_us=None):
