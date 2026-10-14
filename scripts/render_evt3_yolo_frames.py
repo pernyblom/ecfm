@@ -12,7 +12,7 @@ import numpy as np
 from ecfm.utils.evt3 import decode_evt3_raw_to_arrayfile, read_raw_header
 from ecfm.utils.evt3_index import IndexedRawReader
 from ecfm.utils.event_representations import (
-    _cstr_patch, _default_output_size_for_rep, _mean_axis_map, _patch_to_rgb, _render_histogram_grid, _resize_gray, _resize_rgb, _resize_to, _resolve_representation_alias,
+    EVENT_REPRESENTATIONS, TEMPORAL_IMAGE_REPRESENTATIONS, _GRID_SPLIT_BASE_REPS, _cstr_patch, _default_output_size_for_rep, _mean_axis_map, _patch_to_rgb, _render_histogram_grid, _resize_gray, _resize_rgb, _resize_to, _resolve_representation_alias,
 )
 from ecfm.data.tokenizer import Region, build_patch
 from ecfm.utils.evt3_vis import draw_rectangles, events_to_image, write_image
@@ -22,9 +22,7 @@ _FRAME_RE = re.compile(r"_frame_(\d+)", re.IGNORECASE)
 _TRAILING_TIME_RE = re.compile(r"_(\d+)$")
 _RGB_TIME_RE = re.compile(r"_(\d{2})_(\d{2})_(\d{2})\.(\d+)$")
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
-_GRID_SPLIT_BASE_REPS = {
-    "xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"
-}
+
 
 
 def _progress_items(items: list[Path], *, desc: str, enabled: bool) -> Iterator[Path]:
@@ -790,7 +788,7 @@ def _apply_transform(
     if transform == "none":
         return img
     if transform == "spectrogram":
-        if rep in {"events", "xy", "cstr2", "cstr3", "cstr3_fixed", "rgb", "grayscale", "gray"}:
+        if rep in {"events", "xy", "cstr2", "cstr3", "cstr3_fixed", "rgb", "grayscale", "gray"} | TEMPORAL_IMAGE_REPRESENTATIONS:
             print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
             return img
         return _spectrogram_from_image(
@@ -799,7 +797,7 @@ def _apply_transform(
     if transform == "spectrum2d":
         return _spectrum2d(img, scale_mode=scale_mode, eps=eps)
     if transform == "spectrogram_bin":
-        if rep in {"events", "xy", "cstr2", "cstr3", "cstr3_fixed", "rgb", "grayscale", "gray"}:
+        if rep in {"events", "xy", "cstr2", "cstr3", "cstr3_fixed", "rgb", "grayscale", "gray"} | TEMPORAL_IMAGE_REPRESENTATIONS:
             print(f"Warning: spectrogram ignored for spatial-only rep '{rep}'.")
             return img
         return _spectrogram_from_image_bin(
@@ -1058,24 +1056,7 @@ def render_yolo_frames(args: argparse.Namespace) -> None:
                 idx1 = int(np.searchsorted(t, t1, side="left"))
                 ev = events[idx0:idx1]
             ev_time = ev
-            valid = {
-                "events",
-                "xy",
-                "xt",
-                "yt",
-                "xy_p45",
-                "xy_m45",
-                "yt_p45",
-                "yt_m45",
-                "cstr2",
-                "cstr3",
-                "cstr3_fixed",
-                "rgb",
-                "grayscale",
-                "gray",
-                "xt_my",
-                "yt_mx",
-            }
+            valid = EVENT_REPRESENTATIONS | {"rgb", "grayscale", "gray"}
             file_entry = {
                 "label_path": str(label_path),
                 "label_stem": label_path.stem,
@@ -1329,7 +1310,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="events",
         help=(
             "Representation(s) to render, separated by ';' (default: events). "
-            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, cstr3_fixed, "
+            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, cstr3_fixed, time_surface, time_surface_linear, multi_channel_time_surface, event_stack, voxel_grid, "
             "xt_my, yt_mx, rgb, grayscale."
         ),
     )

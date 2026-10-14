@@ -14,6 +14,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from ecfm.data.fred_dataset import FREDDataset
+from ecfm.utils.event_representations import EVENT_REPRESENTATIONS, render_event_representation, _resolve_representation_alias
 from ..utils.config import resolve_spatial_cutout_config
 
 
@@ -54,6 +56,7 @@ _AUTO_EVENT_COUNT_CHANNELS = {
     "yt_m45": (0, 2),
     "cstr3": (1,),
     "cstr3_fixed": (1,),
+    "event_stack": (0, 1, 2),
 }
 _CHANNEL_NAME_TO_INDEX = {"red": 0, "r": 0, "green": 1, "g": 1, "blue": 2, "b": 2}
 
@@ -457,7 +460,7 @@ def _normalize_event_count_channels(
 
 
 def _load_image(
-    path: Path,
+    path: Path | Image.Image,
     size: Tuple[int, int],
     *,
     source_size: Tuple[int, int],
@@ -467,7 +470,11 @@ def _load_image(
     spatial_cutout: Dict[str, Any],
 ) -> torch.Tensor:
     spatial_cutout = resolve_spatial_cutout_config(spatial_cutout, rep)
-    img = Image.open(path).convert("RGB")
+    if isinstance(path, Image.Image):
+        img = path.convert("RGB")
+    else:
+        with Image.open(path) as source:
+            img = source.convert("RGB")
     if img.size != (source_size[0], source_size[1]):
         img = img.resize(source_size, resample=Image.BILINEAR)
     arr = np.asarray(img, dtype=np.float32) / 255.0
@@ -530,7 +537,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackKalmanForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 5
+    CACHE_VERSION = 6
 
     def __init__(
         self,
@@ -566,9 +573,22 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         spatial_cutout: Optional[Dict[str, Any]] = None,
         box_augmentation: Optional[Dict[str, Any]] = None,
         representation_sequences: Optional[Dict[str, Dict[str, int]]] = None,
+        event_image_source: str = "rendered",
+        events_root: Optional[Path] = None,
+        temporal_bins: int = 224,
+        cstr_max_count: Optional[float] = None,
+        time_surface_tau_ms: Optional[float] = None,
+        event_cache_bytes: int = 32 * 1024 * 1024,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
+        self.event_image_source = str(event_image_source)
+        self.events_root = Path(events_root) if events_root is not None else self.labels_root
+        self.temporal_bins = int(temporal_bins)
+        self.cstr_max_count = cstr_max_count
+        self.time_surface_tau_ms = time_surface_tau_ms
+        self.event_cache_bytes = int(event_cache_bytes)
+        self._indexed_source = None
         self.frame_size = (float(frame_size[0]), float(frame_size[1]))
         self.representations = list(representations)
         self.image_sizes = {str(k): (int(v[0]), int(v[1])) for k, v in image_sizes.items()}
@@ -626,6 +646,26 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             raise ValueError(f"Missing source image sizes for representations: {missing_source_sizes}")
         if self.image_window_mode not in {"trailing", "center", "leading"}:
             raise ValueError(f"Unknown image_window_mode: {self.image_window_mode}")
+        if self.event_image_source not in {"rendered", "indexed"}:
+            raise ValueError('event_image_source must be rendered or indexed')
+        if self.event_image_source == 'indexed':
+            if self.folders is None:
+                raise ValueError('Indexed event inputs require explicit FRED sequence folders')
+            if self.image_window_mode != 'trailing':
+                raise ValueError('Indexed forecasting inputs require causal trailing windows')
+            if not np.isfinite(self.image_window_ms) or self.image_window_ms <= 0:
+                raise ValueError('image_window_ms must be finite and positive')
+            if self.temporal_bins < 1 or self.event_cache_bytes < 0:
+                raise ValueError('temporal_bins must be positive and event_cache_bytes nonnegative')
+            if time_surface_tau_ms is not None and (not np.isfinite(time_surface_tau_ms) or time_surface_tau_ms <= 0):
+                raise ValueError('time_surface_tau_ms must be finite and positive')
+            for rep in self.representations:
+                if self._is_indexed_rep(rep):
+                    base, _, _ = _resolve_representation_alias(rep)
+                    if base not in EVENT_REPRESENTATIONS:
+                        raise ValueError(f'Unsupported indexed event representation: {rep}')
+                    if base == 'cstr3_fixed' and (cstr_max_count is None or not np.isfinite(cstr_max_count) or cstr_max_count <= 0):
+                        raise ValueError('Indexed cstr3_fixed requires positive cstr_max_count')
         _validate_box_augmentation(self.box_augmentation)
         unknown_sequence_reps = sorted(set(self.representation_sequences) - set(self.representations))
         if unknown_sequence_reps:
@@ -762,7 +802,28 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         after_t, after_path = frame_index[idx]
         return before_path if abs(label_time_s - before_t) <= abs(after_t - label_time_s) else after_path
 
-    def _resolve_input_path(self, folder: str, stem: str, rep: str, label_time_s: float) -> Optional[Path]:
+    def _is_indexed_rep(self, rep: str) -> bool:
+        return self.event_image_source == 'indexed' and not _is_dataset_native_rep(rep)
+
+    def _indexed_events(self) -> FREDDataset:
+        if self._indexed_source is None:
+            folders = [folder for folder in self.folders
+                       if (self.events_root / folder / 'Event/events.raw').is_file()
+                       and (self.events_root / folder / 'Event/events.raw.tmp_index').is_file()]
+            # FREDDataset owns bounded reader/event caches and metadata only at construction.
+            self._indexed_source = FREDDataset(
+                self.events_root, sequences=folders, frame_source='grid', frame_stride_us=1, modalities=(),
+                event_window_s=self.image_window_ms / 1000, missing_raw='skip',
+                event_cache_bytes=self.event_cache_bytes,
+            )
+        return self._indexed_source
+
+    def _resolve_input_path(self, folder: str, stem: str, rep: str, label_time_s: float) -> Optional[Path | dict]:
+        if self._is_indexed_rep(rep):
+            raw = self.events_root / folder / 'Event/events.raw'
+            if not raw.is_file() or not raw.with_suffix('.raw.tmp_index').is_file():
+                return None
+            return {'raw': str(raw), 'time_us': round(label_time_s * 1e6)}
         rendered_path = self._images_dir(folder) / f"{stem}_{rep}.png"
         if rendered_path.exists():
             return rendered_path
@@ -778,26 +839,26 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         frames: List[FrameItem],
         anchor_frame_idx: int,
         rep: str,
-    ) -> Optional[str | List[str]]:
+    ) -> Optional[str | dict | List[Any]]:
         """Resolve one image or a causal sequence ending at the anchor frame."""
         spec = self.representation_sequences.get(rep)
         if spec is None:
             item = frames[anchor_frame_idx]
             path = self._resolve_input_path(folder, item.stem, rep, item.time_s)
-            return None if path is None else str(path)
+            return None if path is None else path if isinstance(path, dict) else str(path)
         indices = [
             anchor_frame_idx - offset * spec["stride"]
             for offset in range(spec["length"] - 1, -1, -1)
         ]
         if indices[0] < 0:
             return None
-        paths: List[str] = []
+        paths: List[Any] = []
         for frame_idx in indices:
             item = frames[frame_idx]
             path = self._resolve_input_path(folder, item.stem, rep, item.time_s)
             if path is None:
                 return None
-            paths.append(str(path))
+            paths.append(path if isinstance(path, dict) else str(path))
         return paths
 
     def _has_all_reps(self, folder: str, stem: str, label_time_s: float) -> bool:
@@ -820,7 +881,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def _validate_manifest_entry(self, folder: str, stem: str) -> None:
         if not self.verify_render_manifest:
             return
-        if all(_is_dataset_native_rep(rep) for rep in self.representations):
+        if all(_is_dataset_native_rep(rep) or self._is_indexed_rep(rep) for rep in self.representations):
             return
         manifest = self._load_render_manifest(folder)
         if manifest is None:
@@ -996,7 +1057,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                             )
                         manifest_stems = {anchor_stem}
                         for rep, spec in self.representation_sequences.items():
-                            if _is_dataset_native_rep(rep):
+                            if _is_dataset_native_rep(rep) or self._is_indexed_rep(rep):
                                 continue
                             manifest_stems.update(
                                 frames[anchor_frame_idx - offset * spec["stride"]].stem
@@ -1039,9 +1100,14 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         if not self.samples:
             return
         kept = []
+        def exists(item):
+            if isinstance(item, dict):
+                raw = Path(item['raw'])
+                return raw.is_file() and raw.with_suffix('.raw.tmp_index').is_file()
+            return Path(item).exists()
         for sample in self.samples:
             if all(
-                all(Path(item).exists() for item in path) if isinstance(path, list) else Path(path).exists()
+                all(exists(item) for item in path) if isinstance(path, list) else exists(path)
                 for path in sample.get("input_paths", {}).values()
             ):
                 kept.append(sample)
@@ -1381,6 +1447,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             "time_align": self.time_align,
             "image_window_ms": self.image_window_ms,
             "image_window_mode": self.image_window_mode,
+            "event_image_source": self.event_image_source,
+            "events_root": str(self.events_root),
+            "temporal_bins": self.temporal_bins,
+            "cstr_max_count": self.cstr_max_count,
+            "time_surface_tau_ms": self.time_surface_tau_ms,
             "verify_render_manifest": self.verify_render_manifest,
             "render_manifest_name": self.render_manifest_name,
             "window_tolerance_ms": self.window_tolerance_ms,
@@ -1426,6 +1497,23 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    def _input_image(self, rep: str, reference: Any) -> Path | Image.Image:
+        if not isinstance(reference, dict):
+            return Path(reference)
+        source = self._indexed_events()
+        folder = Path(reference['raw']).parent.parent.name
+        end = int(reference['time_us'])
+        start = end - max(1, round(self.image_window_ms * 1000))
+        info = source.sequence_info[folder]
+        pixels = render_event_representation(
+            source.events(folder, start, end), rep,
+            width=info['width'], height=info['height'], start_us=start, end_us=end,
+            output_size=self.source_image_sizes.get(rep), time_bins=self.temporal_bins,
+            cstr_max_count=self.cstr_max_count,
+            time_surface_tau_us=None if self.time_surface_tau_ms is None else self.time_surface_tau_ms * 1000,
+        )
+        return Image.fromarray(pixels)
+
     def __getitem__(self, idx: int) -> KalmanForecastSample:
         sample = self.samples[idx]
         if bool(self.box_augmentation.get("enabled", False)) and bool(
@@ -1440,7 +1528,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
             images = [
                 _load_image(
-                    Path(path),
+                    self._input_image(rep, path),
                     self.image_sizes[rep],
                     source_size=self.source_image_sizes[rep],
                     rep=rep,

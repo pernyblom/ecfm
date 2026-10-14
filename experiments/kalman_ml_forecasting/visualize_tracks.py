@@ -25,6 +25,7 @@ from experiments.kalman_ml_forecasting.models.factory import build_model
 from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_forecast
 from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
+    resolve_event_image_options,
     load_config,
     resolve_representation_image_sizes,
     resolve_representation_sequences,
@@ -349,7 +350,7 @@ def _load_backdrop(
 def _build_dataset(cfg: Dict, folder: str) -> TrackKalmanForecastDataset:
     data_cfg = cfg["data"]
     return TrackKalmanForecastDataset(
-        images_root=Path(data_cfg["images_root"]),
+        images_root=Path(data_cfg.get("images_root", data_cfg["labels_root"])),
         labels_root=Path(data_cfg["labels_root"]),
         frame_size=tuple(data_cfg["frame_size"]),
         representations=list(data_cfg["representations"]),
@@ -364,6 +365,7 @@ def _build_dataset(cfg: Dict, folder: str) -> TrackKalmanForecastDataset:
         track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
         time_align=data_cfg.get("time_align", "auto"),
         image_window_ms=float(data_cfg.get("image_window_ms", 400.0)),
+        **resolve_event_image_options(data_cfg),
         image_window_mode=data_cfg.get("image_window_mode", "trailing"),
         verify_render_manifest=bool(data_cfg.get("verify_render_manifest", True)),
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),
@@ -583,16 +585,23 @@ def main() -> None:
                 for layer_rep_l in sorted(representation_layers):
                     if layer_rep_l == "none":
                         continue
-                    layer_image = _load_backdrop(
-                        images_root=Path(data_cfg["images_root"]),
-                        labels_root=Path(data_cfg["labels_root"]),
-                        frame_key=sample.frame_key,
-                        frame_time_s=sample.frame_time_s,
-                        rep=layer_rep_l,
-                        frame_size=frame_size_t,
-                        label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
-                        preserve_native_size=layer_rep_l in NATIVE_RESOLUTION_LAYER_REPS,
-                    )
+                    if dataset._is_indexed_rep(layer_rep_l):
+                        sequence, stem = _parse_frame_key(sample.frame_key)
+                        reference = dataset._resolve_input_path(sequence, stem, layer_rep_l, sample.frame_time_s)
+                        layer_image = dataset._input_image(layer_rep_l, reference) if reference is not None else None
+                        if layer_image is not None and layer_rep_l not in NATIVE_RESOLUTION_LAYER_REPS:
+                            layer_image = layer_image.resize(frame_size_t, resample=Image.BILINEAR)
+                    else:
+                        layer_image = _load_backdrop(
+                            images_root=Path(data_cfg.get("images_root", data_cfg["labels_root"])),
+                            labels_root=Path(data_cfg["labels_root"]),
+                            frame_key=sample.frame_key,
+                            frame_time_s=sample.frame_time_s,
+                            rep=layer_rep_l,
+                            frame_size=frame_size_t,
+                            label_time_unit=float(data_cfg.get("label_time_unit", 1.0e-6)),
+                            preserve_native_size=layer_rep_l in NATIVE_RESOLUTION_LAYER_REPS,
+                        )
                     if layer_image is None:
                         raise FileNotFoundError(
                             f"Could not resolve composition layer {layer_rep_l!r} for {sample.frame_key}."

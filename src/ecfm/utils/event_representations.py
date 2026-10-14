@@ -6,22 +6,37 @@ from ecfm.data.tokenizer import Region, build_patch
 from ecfm.utils.evt3_vis import events_to_image
 
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
-_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"}
+TEMPORAL_IMAGE_REPRESENTATIONS = {
+    "time_surface", "time_surface_linear", "multi_channel_time_surface",
+    "event_stack", "voxel_grid",
+}
+EVENT_REPRESENTATIONS = {
+    'events', 'xy', 'xt', 'yt', 'xy_p45', 'xy_m45', 'yt_p45', 'yt_m45',
+    'cstr2', 'cstr3', 'cstr3_fixed', 'xt_my', 'yt_mx',
+} | TEMPORAL_IMAGE_REPRESENTATIONS
+_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"} | TEMPORAL_IMAGE_REPRESENTATIONS
 
 
 def render_event_representation(events, representation, *, width, height, start_us,
                                 end_us, output_size=None, time_bins=224, patch_size=224,
-                                cstr_max_count=None):
+                                cstr_max_count=None, time_surface_tau_us=None):
     """Return RGB uint8 pixels without writing an image or decoded event file."""
     if end_us <= start_us:
         raise ValueError('Representation window must have positive duration')
     plane, gx, gy = _resolve_representation_alias(representation)
-    valid = {'events', 'xy', 'xt', 'yt', 'xy_p45', 'xy_m45', 'yt_p45', 'yt_m45',
-             'cstr2', 'cstr3', 'cstr3_fixed', 'xt_my', 'yt_mx'}
-    if plane not in valid:
+    if plane not in EVENT_REPRESENTATIONS:
         raise ValueError(f'Unsupported event representation: {representation}')
     if plane == 'cstr3_fixed' and (cstr_max_count is None or cstr_max_count <= 0):
         raise ValueError('cstr3_fixed requires a positive cstr_max_count')
+    events = np.asarray(events)
+    if events.ndim != 2 or events.shape[1] != 4:
+        raise ValueError('Events must have shape [N, 4] (x, y, t, p)')
+    if width <= 0 or height <= 0 or time_bins <= 0:
+        raise ValueError('Sensor dimensions and time_bins must be positive')
+    # Apply the same half-open causal window to every representation.
+    events = events[(events[:, 2] >= start_us) & (events[:, 2] < end_us)
+                    & (events[:, 0] >= 0) & (events[:, 0] < width)
+                    & (events[:, 1] >= 0) & (events[:, 1] < height)]
     local = np.asarray(events, dtype=np.float64).copy()
     # Subtract integer timestamps before float conversion whenever possible.
     local[:, 2] = np.asarray(events)[:, 2] - start_us
@@ -34,7 +49,58 @@ def render_event_representation(events, representation, *, width, height, start_
                                   plane='xy' if plane == 'events' else plane,
                                   time_bins=time_bins, patch_size=patch_size,
                                   grid_x=gx or 1, grid_y=gy or 1, output_size=output_size,
-                                  cstr3_max_count=cstr_max_count)
+                                  cstr3_max_count=cstr_max_count,
+                                  time_surface_tau=time_surface_tau_us)
+
+
+def _temporal_image_patch(events, region, *, plane, output_size, time_surface_tau=None):
+    """Three-channel temporal images; timestamps and tau share region units.
+
+    Time surfaces use the latest timestamp, independently of input ordering.
+    Polarity surfaces map positive/all/negative to R/G/B. Multi-channel surfaces
+    use all polarities with tau/4, tau/2, tau in R/G/B. Stacks count events in
+    three equal time slices. Voxel grids linearly splat signed polarity into
+    three temporal bins and encode signed values around neutral byte 128.
+    """
+    mask = ((events[:, 0] >= region.x) & (events[:, 0] < region.x + region.dx)
+            & (events[:, 1] >= region.y) & (events[:, 1] < region.y + region.dy)
+            & (events[:, 2] >= region.t) & (events[:, 2] < region.t + region.dt))
+    sub = events[mask]
+    x = (sub[:, 0] - region.x).astype(np.int64)
+    y = (sub[:, 1] - region.y).astype(np.int64)
+    t = (sub[:, 2] - region.t) / region.dt
+    image = np.zeros((region.dy, region.dx, 3), dtype=np.float64)
+    if 'time_surface' in plane:
+        tau = region.dt / 3 if time_surface_tau is None else float(time_surface_tau)
+        if not np.isfinite(tau) or tau <= 0:
+            raise ValueError('time_surface_tau must be finite and positive')
+        for channel in range(3):
+            selected = (np.ones(len(sub), dtype=bool) if plane == 'multi_channel_time_surface' or channel == 1
+                        else (sub[:, 3] == 1 if channel == 0 else sub[:, 3] != 1))
+            latest = np.full((region.dy, region.dx), -np.inf)
+            np.maximum.at(latest, (y[selected], x[selected]), t[selected])
+            if plane == 'time_surface_linear':
+                image[:, :, channel] = np.maximum(latest, 0)
+            else:
+                decay = tau / (4, 2, 1)[channel] if plane == 'multi_channel_time_surface' else tau
+                image[:, :, channel] = np.exp(-(1 - latest) * region.dt / decay)
+    elif plane == 'event_stack':
+        bins = np.minimum((t * 3).astype(np.int64), 2)
+        np.add.at(image, (y, x, bins), 1)
+        image /= max(float(image.max()), 1)
+    elif plane == 'voxel_grid':
+        position = t * 2
+        lower = position.astype(np.int64)
+        fraction = position - lower
+        polarity = np.where(sub[:, 3] == 1, 1., -1.)
+        np.add.at(image, (y, x, lower), polarity * (1 - fraction))
+        np.add.at(image, (y, x, np.minimum(lower + 1, 2)), polarity * fraction)
+        scale = float(np.abs(image).max())
+        if scale > 0:
+            image /= scale
+        return _resize_to(np.rint(128 + 127 * image).astype(np.uint8), output_size)
+    return _resize_to(np.clip(image * 255, 0, 255).astype(np.uint8), output_size)
+
 
 def _resolve_representation_alias(rep: str) -> tuple[str, int | None, int | None]:
     match = _GRID_REP_RE.match(rep)
@@ -250,6 +316,7 @@ def _render_histogram_grid(
     retain_spatial_dimensions: bool = False,
     output_size: tuple[int, int] | None = None,
     cstr3_max_count: float | None = None,
+    time_surface_tau: float | None = None,
 ) -> np.ndarray:
     x_edges = np.linspace(0, width, grid_x + 1, dtype=np.int64)
     y_edges = np.linspace(0, height, grid_y + 1, dtype=np.int64)
@@ -299,7 +366,12 @@ def _render_histogram_grid(
                 dt=dt,
                 plane=plane,
             )
-            if plane in {"cstr2", "cstr3", "cstr3_fixed"}:
+            if plane in TEMPORAL_IMAGE_REPRESENTATIONS:
+                patch_img = _temporal_image_patch(
+                    events, region, plane=plane, output_size=(cell_w, cell_h),
+                    time_surface_tau=time_surface_tau,
+                )
+            elif plane in {"cstr2", "cstr3", "cstr3_fixed"}:
                 patch_img = _cstr_patch(
                     events,
                     region,

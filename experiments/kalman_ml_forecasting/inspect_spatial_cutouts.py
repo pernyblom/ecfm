@@ -19,6 +19,7 @@ from experiments.kalman_ml_forecasting.data.track_dataset import (
     _normalize_event_count_channels,
 )
 from experiments.kalman_ml_forecasting.utils.config import (
+    resolve_event_image_options,
     load_config,
     read_split_file,
     resolve_spatial_cutout_config,
@@ -60,7 +61,7 @@ def _build_dataset(
             if rep in representations
         }
     return TrackKalmanForecastDataset(
-        images_root=Path(data_cfg["images_root"]),
+        images_root=Path(data_cfg.get("images_root", data_cfg["labels_root"])),
         labels_root=Path(data_cfg["labels_root"]),
         frame_size=tuple(data_cfg["frame_size"]),
         representations=list(data_cfg["representations"]),
@@ -75,6 +76,7 @@ def _build_dataset(
         track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
         time_align=data_cfg.get("time_align", "auto"),
         image_window_ms=float(data_cfg.get("image_window_ms", 400.0)),
+        **resolve_event_image_options(data_cfg),
         image_window_mode=data_cfg.get("image_window_mode", "trailing"),
         verify_render_manifest=bool(data_cfg.get("verify_render_manifest", True)),
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),
@@ -114,8 +116,12 @@ def _base_representation_name(rep: str) -> str:
     return match.group("base") if match is not None else str(rep)
 
 
-def _load_original(path: str, source_size: tuple[int, int]) -> Image.Image:
-    img = Image.open(path).convert("RGB")
+def _load_original(path: str | Path | Image.Image, source_size: tuple[int, int]) -> Image.Image:
+    if isinstance(path, Image.Image):
+        img = path.convert('RGB')
+    else:
+        with Image.open(path) as source:
+            img = source.convert('RGB')
     if img.size != source_size:
         img = img.resize(source_size, resample=Image.BILINEAR)
     return img
@@ -348,7 +354,7 @@ def main() -> None:
             # The inspector remains a one-cutout-per-representation summary;
             # for sequences it shows the anchor (last) frame.
             rep_path = rep_paths[-1] if isinstance(rep_paths, list) else rep_paths
-            original_img = _load_original(rep_path, source_image_sizes[rep])
+            original_img = _load_original(dataset._input_image(rep, rep_path), source_image_sizes[rep])
             cutout_img, crop = _spatial_cutout_image(
                 original_img,
                 rep=rep,

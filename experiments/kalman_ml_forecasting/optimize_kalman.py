@@ -23,6 +23,7 @@ from experiments.kalman_ml_forecasting.models.kalman_filter import (
 )
 from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_constant_velocity_forecast
 from experiments.kalman_ml_forecasting.utils.config import (
+    resolve_event_image_options,
     load_config,
     read_split_file,
     resolve_representation_image_sizes,
@@ -62,7 +63,7 @@ def _build_split_dataset(
         raise KeyError(f"Unknown data split '{split_key}'. Available split_files: {available}")
     folders = read_split_file(Path(split_files[split_key])) if split_files else None
     return TrackKalmanForecastDataset(
-        images_root=Path(data_cfg["images_root"]),
+        images_root=Path(data_cfg.get("images_root", data_cfg["labels_root"])),
         labels_root=Path(data_cfg["labels_root"]),
         frame_size=tuple(data_cfg["frame_size"]),
         representations=list(data_cfg["representations"]),
@@ -77,6 +78,7 @@ def _build_split_dataset(
         track_time_unit=float(data_cfg.get("track_time_unit", 1.0)),
         time_align=data_cfg.get("time_align", "auto"),
         image_window_ms=float(data_cfg.get("image_window_ms", 400.0)),
+        **resolve_event_image_options(data_cfg),
         image_window_mode=data_cfg.get("image_window_mode", "trailing"),
         verify_render_manifest=False,
         render_manifest_name=data_cfg.get("render_manifest_name", "render_manifest.json"),

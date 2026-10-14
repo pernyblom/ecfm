@@ -13,6 +13,8 @@ from ecfm.utils.evt3_index import INDEX_DTYPE, INDEX_MAGIC
 from experiments.hierarchical_mae.config import load_config
 from experiments.hierarchical_mae.data import make_dataset, splits
 from experiments.hierarchical_mae.backbone import HierarchicalBackbone
+from experiments.kalman_ml_forecasting.train import _build_dataset, _collate
+from experiments.kalman_ml_forecasting.models.kalman_residual import KalmanResidualForecaster
 
 
 @pytest.fixture
@@ -79,6 +81,110 @@ def test_frame_modalities_and_causal_rgb(fred):
     assert not frame['event_boxes']['available']  # absent differs from empty negative
     empty = ds.get_frame('0', 33333)['event_boxes']
     assert empty['available'] and empty['boxes'].shape == (0, 4)
+
+
+def indexed_forecast_config(root):
+    return {'data': {
+        'labels_root': str(root), 'frame_size': [8, 8],
+        'representations': ['time_surface', 'event_stack', 'padded_rgb'],
+        'image_sizes': {'time_surface': [8, 8], 'event_stack': [8, 8], 'padded_rgb': [8, 8]},
+        'event_image_source': 'indexed', 'image_window_ms': 30,
+        'history_ms': 33.333, 'forecast_ms': 33.333, 'label_period_s': .033333,
+        'time_align': 'none', 'verify_render_manifest': True,
+        'representation_sequences': {'time_surface': {'length': 2, 'stride': 1}},
+        'cache_dir': str(root / 'cache'),
+    }}
+
+
+def test_indexed_forecasting_training_sequences_crop_and_cache(fred, monkeypatch):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['spatial_cutout'] = {'mode': 'fixed_pixels', 'size_px': [4, 4]}
+    ds = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert len(ds) > 0 and ds._indexed_source is None  # metadata-only sample building
+    sample = ds[0]
+    assert sample.inputs['time_surface'].shape == (2, 3, 4, 4)
+    assert sample.inputs['event_stack'].shape == sample.inputs['padded_rgb'].shape == (3, 4, 4)
+    refs = sample.input_paths['time_surface']
+    assert [r['time_us'] for r in refs] == [33333, 66666]
+    assert Path(refs[0]['raw']).is_file()
+    reads = []
+    original = ds._indexed_source.events
+    def observe(sequence, start, end):
+        reads.append((start, end))
+        return original(sequence, start, end)
+    monkeypatch.setattr(ds._indexed_source, 'events', observe)
+    ds[0]
+    assert reads == [(3333, 33333), (36666, 66666), (36666, 66666)]
+    cached = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert len(cached) == len(ds)
+    for rep in sample.inputs:
+        torch.testing.assert_close(cached[0].inputs[rep], sample.inputs[rep])
+    # The normal trainer contract reaches the encoders and supports backpropagation.
+    batch = _collate([sample, cached[0]])
+    model = KalmanResidualForecaster(
+        representations=list(sample.inputs), image_sizes={rep: (4, 4) for rep in sample.inputs},
+        backbone_cfg={'type': 'small_cnn', 'in_channels': 3, 'channels': [4], 'out_dim': 8},
+        history_steps=1, fusion_hidden_dim=8, state_hidden_dim=8, residual_hidden_dim=8,
+        representation_sequences=cfg['data']['representation_sequences'],
+    )
+    prediction = model(batch.inputs, batch.past_boxes, batch.past_times_s, batch.future_times_s)
+    assert prediction.shape == batch.future_boxes.shape
+    (prediction - batch.future_boxes).square().mean().backward()
+    assert any(p.grad is not None and torch.isfinite(p.grad).all() for p in model.encoders.parameters())
+    restored = pickle.loads(pickle.dumps(cached))
+    torch.testing.assert_close(restored[0].inputs['event_stack'], sample.inputs['event_stack'])
+
+
+def test_indexed_forecasting_window_changes_inputs_and_cache_key(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['representations'] = ['event_stack']
+    cfg['data']['representation_sequences'] = {}
+    short = _build_dataset(cfg, 'train', folders_override=['0'])
+    cfg['data']['image_window_ms'] = 70
+    long = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert short._cache_key() != long._cache_key()
+    assert short.samples[0]['anchor_stem'] == long.samples[0]['anchor_stem']
+    assert not torch.equal(short[0].inputs['event_stack'], long[0].inputs['event_stack'])
+
+
+def test_indexed_forecasting_rejects_future_windows_and_missing_fixed_scale(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['image_window_mode'] = 'center'
+    with pytest.raises(ValueError, match='trailing'):
+        _build_dataset(cfg, 'train', folders_override=['0'])
+    cfg['data']['image_window_mode'] = 'trailing'
+    cfg['data']['representations'] = ['cstr3_fixed']
+    cfg['data']['representation_sequences'] = {}
+    cfg['data']['image_sizes']['cstr3_fixed'] = [8, 8]
+    with pytest.raises(ValueError, match='cstr_max_count'):
+        _build_dataset(cfg, 'train', folders_override=['0'])
+
+
+def test_indexed_forecasting_uses_label_sequence_not_assumed_cadence(fred):
+    root, _ = fred
+    # Removing one label makes consecutive label frames nonuniform in time.
+    (root / '0/Event_YOLO/Video_0_frame_66666.txt').unlink()
+    cfg = indexed_forecast_config(root)
+    cfg['data']['representations'] = ['time_surface']
+    ds = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert ds.samples[0]['anchor_time_s'] == pytest.approx(.099999)
+    assert [r['time_us'] for r in ds[0].input_paths['time_surface']] == [33333, 99999]
+
+
+def test_indexed_forecasting_cache_filters_missing_raw_index(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    original = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert len(original) > 0
+    (root / '0/Event/events.raw.tmp_index').unlink()
+    missing = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert len(missing) == 0
+    cfg['data']['filter_missing_representations'] = False
+    with pytest.raises(FileNotFoundError, match='cached representation'):
+        _build_dataset(cfg, 'train', folders_override=['0'])
 
 
 def test_unlabeled_sequence_and_supervision_gate(fred):

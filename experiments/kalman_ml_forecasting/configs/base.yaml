@@ -76,12 +76,23 @@ data:
     cstr2: [640, 360]
     cstr3: [640, 360]
     cstr3_fixed: [640, 360]
+    time_surface: [640, 360]
+    time_surface_linear: [640, 360]
+    multi_channel_time_surface: [640, 360]
+    event_stack: [640, 360]
+    voxel_grid: [640, 360]
     rgb: [640, 360]
     padded_rgb: [640, 360]
   label_time_unit: 1.0e-6
   track_time_unit: 1.0
   time_align: auto
   image_window_ms: 400.0
+  # Use indexed to render causal windows from Event/events.raw + .raw.tmp_index
+  # during training; rendered preserves the pre-generated PNG workflow.
+  event_image_source: rendered
+  # events_root: datasets/FRED  # defaults to labels_root
+  # time_surface_tau_ms: 30.0  # default: image_window_ms / 3
+  # cstr_max_count: 20.0       # required for indexed cstr3_fixed
   image_window_mode: trailing
   verify_render_manifest: false
   render_manifest_name: render_manifest.json

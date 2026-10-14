@@ -8,9 +8,9 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torchvision import models
+from ecfm.utils.event_representations import _GRID_SPLIT_BASE_REPS
 
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
-_GRID_SPLIT_BASE_REPS = {"xy", "xt", "yt", "cstr2", "cstr3", "xt_my", "yt_mx", "events"}
 
 
 @dataclass

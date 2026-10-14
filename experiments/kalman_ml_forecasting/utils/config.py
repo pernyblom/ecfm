@@ -5,11 +5,20 @@ from typing import Any, Dict, Iterable
 import re
 
 import yaml
+from ecfm.utils.event_representations import _GRID_SPLIT_BASE_REPS
 
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
-_GRID_SPLIT_BASE_REPS = {
-    "xy", "xt", "yt", "cstr2", "cstr3", "cstr3_fixed", "xt_my", "yt_mx", "events"
-}
+
+def resolve_event_image_options(data_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Options shared by forecasting training, evaluation and inspection."""
+    return {
+        'event_image_source': data_cfg.get('event_image_source', 'rendered'),
+        'events_root': data_cfg.get('events_root', data_cfg.get('root', data_cfg['labels_root'])),
+        'temporal_bins': data_cfg.get('temporal_bins', 224),
+        'cstr_max_count': data_cfg.get('cstr_max_count'),
+        'time_surface_tau_ms': data_cfg.get('time_surface_tau_ms'),
+        'event_cache_bytes': data_cfg.get('event_cache_bytes', 32 * 1024 * 1024),
+    }
 
 
 def resolve_representation_sequences(data_cfg: Dict[str, Any]) -> Dict[str, Dict[str, int]]:

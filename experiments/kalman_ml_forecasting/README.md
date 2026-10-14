@@ -2,7 +2,7 @@ Kalman ML Forecasting
 
 This experiment forecasts UAV boxes with a configurable constant-velocity,
 constant-acceleration, or coupled Kalman
-baseline plus learned residual dynamics from rendered FRED images.
+baseline plus learned residual dynamics from rendered or indexed FRED events.
 
 Model
 - State is `[cx, cy, w, h, vx, vy, vw, vh]` in normalized box coordinates.
@@ -26,6 +26,51 @@ Model
   `(cx, cy, w, h)`.
 
 Data
+- Set `data.event_image_source: indexed` to render event images on demand from
+  `<events_root>/<folder>/Event/events.raw` and its OpenEB v2
+  `events.raw.tmp_index`. `events_root` defaults to `data.root` if set, otherwise
+  `data.labels_root`. No pre-rendered event PNGs or render manifests are needed.
+  `data.image_window_ms` determines the exact causal window ending at each
+  label timestamp. Indexed mode requires `image_window_mode: trailing` and
+  explicit sequence folders from split files. It uses the standard forecasting
+  sampler, so track alignment, sample limits, decorrelation, box augmentation,
+  spatial cutouts, and representation sequences remain available. Sequence
+  stride is measured in actual label frames. Bounded event caches are reused
+  through `FREDDataset`; DataLoader workers can use the indexed reader without
+  sharing file handles. `data.event_cache_bytes` defaults to 32 MiB per worker;
+  the dataset sample cache stores event references rather than rendered pixels.
+- `data.event_image_source: rendered` is the backward-compatible default.
+  Indexed mode always renders event branches from RAW even if PNGs exist;
+  `rgb`, `padded_rgb`, and `event_frames` retain their existing file readers.
+  `data.backend: raw` is the separate hierarchical MAE adapter; leave that
+  setting unset when using indexed inputs with the standard residual model.
+- New formats are `time_surface`, `time_surface_linear`,
+  `multi_channel_time_surface`, `event_stack`, and `voxel_grid`. All produce
+  three-channel inputs, support grid aliases, and can be mixed with existing
+  formats. See [channel definitions and scaling](../../docs/event_representations.md).
+  Set `data.time_surface_tau_ms` to override exponential decay (default:
+  `image_window_ms / 3`). Indexed `cstr3_fixed` requires `data.cstr_max_count`.
+
+```yaml
+data:
+  event_image_source: indexed
+  events_root: datasets/FRED
+  labels_root: datasets/FRED
+  representations: [multi_channel_time_surface, event_stack, padded_rgb]
+  image_sizes:
+    multi_channel_time_surface: [640, 360]
+    event_stack: [640, 360]
+    padded_rgb: [640, 360]
+  image_window_ms: 100.0
+  image_window_mode: trailing
+  time_surface_tau_ms: 30.0
+  representation_sequences:
+    multi_channel_time_surface: {length: 4, stride: 1}
+```
+
+- Apply the above overrides to `configs/base.yaml`, retaining its split files,
+  track settings, and model/training configuration. `image_sizes` are source
+  image sizes; the usual spatial cutout determines the final encoder size.
 - Samples are track-aligned from `cleaned_tracks.txt` and anchor label times in
   `Event_YOLO`.
 - Each sample uses one anchor image at time `t`, past boxes up to `t`, and

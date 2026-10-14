@@ -64,7 +64,7 @@ class FREDDataset(Dataset):
                  require_original_tracks=True, match_tolerance_us=32,
                  rgb_match='previous', rgb_tolerance_us=50000,
                  reader_cache_size=2, event_cache_bytes=32*1024*1024,
-                 max_samples=0, subset_seed=0, missing_raw='error'):
+                 max_samples=0, subset_seed=0, missing_raw='error', time_surface_tau_ms=None):
         self.root = Path(root)
         if sequences is not None and (split is not None or split_file is not None):
             raise ValueError('Specify sequences or a split, not both')
@@ -89,6 +89,9 @@ class FREDDataset(Dataset):
         self.modalities, self.representations = tuple(modalities), tuple(representations)
         self.image_sizes, self.temporal_bins = image_sizes or {}, temporal_bins
         self.cstr_max_count, self.timestamp_mode = cstr_max_count, timestamp_mode
+        if time_surface_tau_ms is not None and (not np.isfinite(time_surface_tau_ms) or time_surface_tau_ms <= 0):
+            raise ValueError('time_surface_tau_ms must be finite and positive')
+        self.time_surface_tau_us = None if time_surface_tau_ms is None else time_surface_tau_ms * 1000
         self.tracks_file, self.track_time_unit = tracks_file, track_time_unit
         self.track_frame_size, self.require_original_tracks = track_frame_size, require_original_tracks
         self.match_tolerance_us = match_tolerance_us
@@ -205,7 +208,8 @@ class FREDDataset(Dataset):
                 continue
             pixels = render_event_representation(events, rep, width=info['width'], height=info['height'],
                         start_us=start, end_us=end, output_size=self.image_sizes.get(rep),
-                        time_bins=self.temporal_bins, cstr_max_count=self.cstr_max_count)
+                        time_bins=self.temporal_bins, cstr_max_count=self.cstr_max_count,
+                        time_surface_tau_us=self.time_surface_tau_us)
             tensors[rep] = torch.from_numpy(pixels.copy()).permute(2, 0, 1).float()/255
         return tensors
 

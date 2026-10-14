@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from ecfm.utils.event_representations import EVENT_REPRESENTATIONS, _resolve_representation_alias
 from ecfm.utils.evt3_vis import events_to_image, write_image
 from scripts.render_evt3_yolo_frames import (
     _apply_transform,
@@ -32,23 +33,7 @@ from scripts.render_evt3_yolo_frames import (
 )
 
 
-VALID_REPRESENTATIONS = {
-    "events",
-    "xy",
-    "xt",
-    "yt",
-    "xy_p45",
-    "xy_m45",
-    "yt_p45",
-    "yt_m45",
-    "cstr2",
-    "cstr3",
-    "rgb",
-    "grayscale",
-    "gray",
-    "xt_my",
-    "yt_mx",
-}
+VALID_REPRESENTATIONS = (EVENT_REPRESENTATIONS - {"cstr3_fixed"}) | {"rgb", "grayscale", "gray"}
 
 
 def _load_events(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, dict, dict, Optional[Path], Optional[float], bool]:
@@ -198,7 +183,8 @@ def render_event_representations(args: argparse.Namespace) -> None:
     representations = _representation_list(args.representation)
     if not representations:
         raise ValueError("At least one representation must be requested.")
-    unknown = sorted(set(representations) - VALID_REPRESENTATIONS)
+    rep_specs = {rep: _resolve_representation_alias(rep) for rep in representations}
+    unknown = sorted(rep for rep in representations if rep_specs[rep][0] not in VALID_REPRESENTATIONS)
     if unknown:
         raise ValueError(f"Unknown representation(s): {unknown}")
 
@@ -286,6 +272,8 @@ def render_event_representations(args: argparse.Namespace) -> None:
                 "representations": {},
             }
             for rep in representations:
+                base_rep, grid_x, grid_y = rep_specs[rep]
+                grid_x, grid_y = grid_x or int(args.grid_x), grid_y or int(args.grid_y)
                 if rep in {"rgb", "grayscale", "gray"}:
                     rgb_path = _find_rgb_frame(rgb_index, t1)
                     if rgb_path is None:
@@ -294,8 +282,8 @@ def render_event_representations(args: argparse.Namespace) -> None:
                     img = _read_rgb_image(rgb_path)
                     if rep in {"grayscale", "gray"}:
                         img = _to_grayscale(img)
-                elif rep == "events":
-                    if args.grid_x == 1 and args.grid_y == 1:
+                elif base_rep == "events":
+                    if grid_x == 1 and grid_y == 1:
                         img = events_to_image(ev, int(width), int(height), pixel_size=int(args.pixel_size))
                     else:
                         img = _render_histogram_grid(
@@ -307,8 +295,8 @@ def render_event_representations(args: argparse.Namespace) -> None:
                             plane="xy",
                             time_bins=1,
                             patch_size=int(args.spatial_bins),
-                            grid_x=int(args.grid_x),
-                            grid_y=int(args.grid_y),
+                            grid_x=grid_x,
+                            grid_y=grid_y,
                             retain_spatial_dimensions=bool(args.retain_spatial_dimensions),
                             output_size=image_sizes.get(rep),
                         )
@@ -319,11 +307,11 @@ def render_event_representations(args: argparse.Namespace) -> None:
                         height=int(height),
                         t0=t0,
                         dt=max(0.0, t1 - t0),
-                        plane=rep,
+                        plane=base_rep,
                         time_bins=int(args.temporal_bins),
                         patch_size=int(args.spatial_bins),
-                        grid_x=int(args.grid_x),
-                        grid_y=int(args.grid_y),
+                        grid_x=grid_x,
+                        grid_y=grid_y,
                         retain_spatial_dimensions=bool(args.retain_spatial_dimensions),
                         output_size=image_sizes.get(rep),
                     )
