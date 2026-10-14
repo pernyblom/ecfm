@@ -270,6 +270,11 @@ Evaluation protocol:
 
 Optimize Kalman Parameters
 
+See [Kalman variants and residual training](KALMAN_VARIANTS.md) for the 8-D
+fixed/separate/coupled dynamics and diagonal/local/full covariance variants,
+training commands, residual-config export, and dataset-shortcut considerations.
+The existing 12-D constant-acceleration variant remains supported.
+
 Tune the Kalman filter trust parameters on the training split only:
 
 ```bash

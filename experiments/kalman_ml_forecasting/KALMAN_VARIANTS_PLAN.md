@@ -1,6 +1,9 @@
 # Kalman variant audit and implementation plan
 
-Reviewed against the working tree on 2026-10-14. This document proposes implementation; it does not add filter variants.
+Reviewed against the working tree on 2026-10-14. This is the original audit and
+proposal. The 8-D variants have since been implemented; see
+[KALMAN_VARIANTS.md](KALMAN_VARIANTS.md) for current behavior and training examples.
+The proposed 12-D extensions remain outside the implementation scope.
 
 ## Terminology and current behavior
 

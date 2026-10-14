@@ -23,7 +23,36 @@ DEFAULT_KALMAN_CONFIG: dict[str, Any] = {
     "measurement_pos_std": 0.01,
     "measurement_size_std": 0.01,
     "dynamics_generator": None,
+    "dynamics_structure": "full",
+    "initial_covariance_structure": "legacy_diagonal",
+    "process_covariance_structure": "legacy_diagonal",
+    "measurement_covariance_structure": "legacy_diagonal",
+    "initial_covariance": None,
+    "process_covariance": None,
+    "measurement_covariance": None,
 }
+
+
+def channel_mask(dim: int, *, device=None) -> torch.Tensor:
+    indices = torch.arange(dim, device=device)
+    return indices[:, None] % 4 == indices[None, :] % 4
+
+
+def _validate_covariance(value: Any, *, key: str, dim: int, structure: str) -> list[list[float]]:
+    try:
+        matrix = torch.as_tensor(value, dtype=torch.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"kalman.{key} must be a numeric {dim}x{dim} matrix.") from exc
+    if matrix.shape != (dim, dim) or not torch.isfinite(matrix).all():
+        raise ValueError(f"kalman.{key} must be a finite {dim}x{dim} matrix.")
+    if not torch.allclose(matrix, matrix.T, atol=1e-12, rtol=1e-6):
+        raise ValueError(f"kalman.{key} must be symmetric.")
+    if torch.linalg.cholesky_ex(matrix).info.item() != 0:
+        raise ValueError(f"kalman.{key} must be positive definite.")
+    mask = channel_mask(dim) if structure == "per_channel" else torch.eye(dim, dtype=torch.bool)
+    if structure != "full" and torch.count_nonzero(matrix[~mask]):
+        raise ValueError(f"kalman.{key} violates covariance structure {structure!r}.")
+    return matrix.tolist()
 
 
 def _validate_dynamics_generator(value: Any) -> list[list[float]]:
@@ -52,6 +81,8 @@ def kalman_config_from_dict(cfg: Dict[str, Any] | None) -> dict[str, Any]:
     if cfg:
         for key, value in cfg.items():
             if key not in out:
+                if "covariance" in key or key.startswith("dynamics_"):
+                    raise ValueError(f"Unknown kalman configuration key: {key}.")
                 continue
             if key == "motion_model":
                 value = str(value).lower()
@@ -63,6 +94,17 @@ def kalman_config_from_dict(cfg: Dict[str, Any] | None) -> dict[str, Any]:
                 out[key] = value
             elif key == "dynamics_generator":
                 out[key] = None if value is None else _validate_dynamics_generator(value)
+            elif key.endswith("_structure"):
+                choices = {"full", "per_channel"} if key == "dynamics_structure" else {
+                    "legacy_diagonal", "diagonal", "per_channel", "full"
+                }
+                if key == "measurement_covariance_structure":
+                    choices.discard("per_channel")
+                if value not in choices:
+                    raise ValueError(f"kalman.{key} must be one of {sorted(choices)}.")
+                out[key] = value
+            elif key.endswith("_covariance"):
+                out[key] = value
             elif isinstance(out[key], bool):
                 out[key] = bool(value)
             else:
@@ -72,6 +114,21 @@ def kalman_config_from_dict(cfg: Dict[str, Any] | None) -> dict[str, Any]:
             raise ValueError("kalman.motion_model 'coupled' requires kalman.dynamics_generator.")
     elif out["dynamics_generator"] is not None:
         raise ValueError("kalman.dynamics_generator is only valid when kalman.motion_model is 'coupled'.")
+    if out["motion_model"] == "constant_acceleration" and any(
+        out[f"{prefix}_covariance"] is not None
+        or out[f"{prefix}_covariance_structure"] != "legacy_diagonal"
+        for prefix in ("initial", "process", "measurement")
+    ):
+        raise ValueError("New covariance variants are 8-D only; use legacy_diagonal for 12-D constant_acceleration.")
+    for prefix in ("initial", "process", "measurement"):
+        key = f"{prefix}_covariance"
+        if out[key] is not None:
+            structure = out[f"{key}_structure"]
+            out[key] = _validate_covariance(out[key], key=key, dim=4 if prefix == "measurement" else 8, structure=structure)
+    if out["dynamics_generator"] is not None and out["dynamics_structure"] == "per_channel":
+        generator = torch.tensor(out["dynamics_generator"])
+        if torch.count_nonzero(generator[~channel_mask(8)]):
+            raise ValueError("kalman.dynamics_generator violates per_channel dynamics structure.")
     return out
 
 
@@ -123,13 +180,17 @@ def kalman_std_tensors_from_config(
     *,
     device,
     dtype,
+    _validated: bool = False,
 ) -> dict[str, torch.Tensor]:
-    params = kalman_config_from_dict(cfg)
-    return {
+    params = dict(cfg or {}) if _validated else kalman_config_from_dict(cfg)
+    tensors = {
         key: torch.tensor(float(value), device=device, dtype=dtype)
         for key, value in params.items()
-        if key not in {"enabled", "motion_model", "dynamics_generator"}
+        if key.endswith("_std")
     }
+    tensors.update({key: torch.tensor(value, device=device, dtype=dtype)
+                    for key, value in params.items() if key.endswith("_covariance") and value is not None})
+    return tensors
 
 
 def _std_vector_from_tensors(params: Dict[str, torch.Tensor], *, prefix: str, motion_model: str) -> torch.Tensor:
@@ -206,6 +267,8 @@ def _predict(
     q_base: torch.Tensor,
     motion_model: str,
     dynamics_generator: Any = None,
+    *,
+    process_covariance: torch.Tensor | None = None,
 ):
     f = _transition(dt, motion_model, dynamics_generator)
     state = torch.bmm(f, state.unsqueeze(-1)).squeeze(-1)
@@ -213,13 +276,17 @@ def _predict(
     if motion_model == "constant_acceleration":
         scales += [torch.ones_like(dt)] * 4
     q_scale = torch.stack(scales, dim=1)
-    q_diag = (q_base.unsqueeze(0) * q_scale.clamp(min=1.0e-6)).square()
-    q = torch.diag_embed(q_diag)
+    q_scale = q_scale.clamp(min=1.0e-6)
+    if process_covariance is None:
+        q = torch.diag_embed((q_base.unsqueeze(0) * q_scale).square())
+    else:
+        q = process_covariance.unsqueeze(0) * q_scale[:, :, None] * q_scale[:, None, :]
     cov = torch.bmm(torch.bmm(f, cov), f.transpose(1, 2)) + q
     return state, cov
 
 
-def _update(state: torch.Tensor, cov: torch.Tensor, measurement: torch.Tensor, r_diag: torch.Tensor):
+def _update(state: torch.Tensor, cov: torch.Tensor, measurement: torch.Tensor, r_diag: torch.Tensor,
+            *, measurement_covariance: torch.Tensor | None = None):
     batch = int(state.shape[0])
     state_dim = int(state.shape[1])
     h = torch.zeros((batch, 4, state_dim), device=state.device, dtype=state.dtype)
@@ -227,7 +294,8 @@ def _update(state: torch.Tensor, cov: torch.Tensor, measurement: torch.Tensor, r
     h[:, 1, 1] = 1.0
     h[:, 2, 2] = 1.0
     h[:, 3, 3] = 1.0
-    r = torch.diag_embed(r_diag.unsqueeze(0).expand(batch, -1).square())
+    r = (torch.diag_embed(r_diag.unsqueeze(0).expand(batch, -1).square())
+         if measurement_covariance is None else measurement_covariance.unsqueeze(0).expand(batch, -1, -1))
     residual = measurement - torch.bmm(h, state.unsqueeze(-1)).squeeze(-1)
     s = torch.bmm(torch.bmm(h, cov), h.transpose(1, 2)) + r
     k = torch.linalg.solve(s, torch.bmm(h, cov)).transpose(1, 2)
@@ -253,25 +321,11 @@ def kalman_filter_history(
     _validated: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     cfg = dict(params or {}) if _validated else kalman_config_from_dict(params)
-    batch = int(past_boxes.shape[0])
-    device = past_boxes.device
-    dtype = past_boxes.dtype
-    motion_model = str(cfg["motion_model"])
-    state_dim = 12 if motion_model == "constant_acceleration" else 8
-    state = torch.zeros((batch, state_dim), device=device, dtype=dtype)
-    state[:, :4] = past_boxes[:, 0]
-    init_std = _std_vector(cfg, prefix="initial", device=device, dtype=dtype)
-    process_std = _std_vector(cfg, prefix="process", device=device, dtype=dtype)
-    meas_std = _std_vector(cfg, prefix="measurement", device=device, dtype=dtype)
-    cov = torch.diag_embed(init_std.unsqueeze(0).expand(batch, -1).square())
-    state, cov = _update(state, cov, past_boxes[:, 0], meas_std)
-    for idx in range(1, past_boxes.shape[1]):
-        dt = (past_times_s[:, idx] - past_times_s[:, idx - 1]).clamp(min=1.0e-6)
-        state, cov = _predict(
-            state, cov, dt, process_std, motion_model, cfg.get("dynamics_generator")
-        )
-        state, cov = _update(state, cov, past_boxes[:, idx], meas_std)
-    return state, cov
+    tensors = kalman_std_tensors_from_config(cfg, device=past_boxes.device, dtype=past_boxes.dtype, _validated=True)
+    return kalman_filter_history_tensor_params(
+        past_boxes, past_times_s, tensors, motion_model=str(cfg["motion_model"]),
+        dynamics_generator=cfg.get("dynamics_generator"),
+    )
 
 
 def kalman_forecast(
@@ -281,27 +335,11 @@ def kalman_forecast(
     params: Dict[str, Any] | None = None,
 ) -> torch.Tensor:
     cfg = kalman_config_from_dict(params)
-    state, cov = kalman_filter_history(
-        past_boxes, past_times_s, cfg, _validated=True
+    return kalman_cv_forecast_tensor_params(
+        past_boxes, past_times_s, future_times_s,
+        kalman_std_tensors_from_config(cfg, device=past_boxes.device, dtype=past_boxes.dtype, _validated=True),
+        motion_model=str(cfg["motion_model"]), dynamics_generator=cfg.get("dynamics_generator"),
     )
-    process_std = _std_vector(cfg, prefix="process", device=past_boxes.device, dtype=past_boxes.dtype)
-    current_time = past_times_s[:, -1]
-    preds: list[torch.Tensor] = []
-    for idx in range(future_times_s.shape[1]):
-        next_time = future_times_s[:, idx]
-        dt = (next_time - current_time).clamp(min=1.0e-6)
-        state, cov = _predict(
-            state,
-            cov,
-            dt,
-            process_std,
-            str(cfg["motion_model"]),
-            cfg.get("dynamics_generator"),
-        )
-        state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
-        preds.append(state[:, :4])
-        current_time = next_time
-    return torch.stack(preds, dim=1)
 
 
 def kalman_cv_forecast(
@@ -335,12 +373,17 @@ def kalman_filter_history_tensor_params(
     init_std = _std_vector_from_tensors(params, prefix="initial", motion_model=motion_model).to(device=device, dtype=dtype)
     process_std = _std_vector_from_tensors(params, prefix="process", motion_model=motion_model).to(device=device, dtype=dtype)
     meas_std = _std_vector_from_tensors(params, prefix="measurement", motion_model=motion_model).to(device=device, dtype=dtype)
-    cov = torch.diag_embed(init_std.unsqueeze(0).expand(batch, -1).square())
-    state, cov = _update(state, cov, past_boxes[:, 0], meas_std)
+    matrices = {
+        key: value.to(device=device, dtype=dtype)
+        for key, value in params.items() if key.endswith("_covariance")
+    }
+    cov = (torch.diag_embed(init_std.unsqueeze(0).expand(batch, -1).square())
+           if "initial_covariance" not in matrices else matrices["initial_covariance"].unsqueeze(0).expand(batch, -1, -1))
+    state, cov = _update(state, cov, past_boxes[:, 0], meas_std, measurement_covariance=matrices.get("measurement_covariance"))
     for idx in range(1, past_boxes.shape[1]):
         dt = (past_times_s[:, idx] - past_times_s[:, idx - 1]).clamp(min=1.0e-6)
-        state, cov = _predict(state, cov, dt, process_std, motion_model, dynamics_generator)
-        state, cov = _update(state, cov, past_boxes[:, idx], meas_std)
+        state, cov = _predict(state, cov, dt, process_std, motion_model, dynamics_generator, process_covariance=matrices.get("process_covariance"))
+        state, cov = _update(state, cov, past_boxes[:, idx], meas_std, measurement_covariance=matrices.get("measurement_covariance"))
     return state, cov
 
 
@@ -364,12 +407,16 @@ def kalman_cv_forecast_tensor_params(
         device=past_boxes.device,
         dtype=past_boxes.dtype,
     )
+    process_covariance = params.get("process_covariance")
+    if process_covariance is not None:
+        process_covariance = process_covariance.to(device=past_boxes.device, dtype=past_boxes.dtype)
     current_time = past_times_s[:, -1]
     preds: list[torch.Tensor] = []
     for idx in range(future_times_s.shape[1]):
         next_time = future_times_s[:, idx]
         dt = (next_time - current_time).clamp(min=1.0e-6)
-        state, cov = _predict(state, cov, dt, process_std, motion_model, dynamics_generator)
+        state, cov = _predict(state, cov, dt, process_std, motion_model, dynamics_generator,
+                              process_covariance=process_covariance)
         state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
         preds.append(state[:, :4])
         current_time = next_time
@@ -388,10 +435,12 @@ class ConfiguredBoxKalmanFilter(nn.Module):
             None if generator is None else torch.tensor(generator, dtype=torch.float32),
         )
         for key, value in self.config.items():
-            if key in {"enabled", "motion_model", "dynamics_generator"}:
+            if not key.endswith("_std") and not key.endswith("_covariance"):
+                continue
+            if value is None:
                 continue
             self.register_buffer(
-                f"_noise_{key}", torch.tensor(float(value), dtype=torch.float32), persistent=False
+                f"_noise_{key}", torch.tensor(value, dtype=torch.float32), persistent=False
             )
 
     @property
@@ -406,7 +455,7 @@ class ConfiguredBoxKalmanFilter(nn.Module):
         return {
             key: getattr(self, f"_noise_{key}")
             for key in self.config
-            if key not in {"enabled", "motion_model", "dynamics_generator"}
+            if (key.endswith("_std") or key.endswith("_covariance")) and self.config[key] is not None
         }
 
     def transition(self, dt: torch.Tensor) -> torch.Tensor:
@@ -433,31 +482,7 @@ class ConfiguredBoxKalmanFilter(nn.Module):
         past_times_s: torch.Tensor,
         future_times_s: torch.Tensor,
     ) -> torch.Tensor:
-        params = self._noise_tensors()
-        state, covariance = kalman_filter_history_tensor_params(
-            past_boxes,
-            past_times_s,
-            params,
-            motion_model=self.motion_model,
-            dynamics_generator=self.dynamics_generator,
+        return kalman_cv_forecast_tensor_params(
+            past_boxes, past_times_s, future_times_s, self._noise_tensors(),
+            motion_model=self.motion_model, dynamics_generator=self.dynamics_generator,
         )
-        process_std = _std_vector_from_tensors(
-            params, prefix="process", motion_model=self.motion_model
-        ).to(device=past_boxes.device, dtype=past_boxes.dtype)
-        current_time = past_times_s[:, -1]
-        predictions: list[torch.Tensor] = []
-        for index in range(future_times_s.shape[1]):
-            next_time = future_times_s[:, index]
-            dt = (next_time - current_time).clamp(min=1.0e-6)
-            state, covariance = _predict(
-                state,
-                covariance,
-                dt,
-                process_std,
-                self.motion_model,
-                self.dynamics_generator,
-            )
-            state = torch.cat([state[:, :4].clamp(0.0, 1.0), state[:, 4:]], dim=-1)
-            predictions.append(state[:, :4])
-            current_time = next_time
-        return torch.stack(predictions, dim=1)

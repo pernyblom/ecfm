@@ -185,6 +185,7 @@ def _log_uniform(rng: random.Random, lo: float, hi: float) -> float:
 
 def _sample_params(rng: random.Random, base_cfg: Dict[str, Any]) -> dict[str, Any]:
     params = kalman_config_from_dict(base_cfg)
+    _require_scalar_noise(params)
     params["enabled"] = True
     for key, bounds in SEARCH_RANGES.items():
         if "accel" in key and params["motion_model"] != "constant_acceleration":
@@ -205,13 +206,20 @@ def _format_yaml(params: Dict[str, Any]) -> str:
             lines.append(f"  {key}: {str(value).lower()}")
         elif isinstance(value, str):
             lines.append(f"  {key}: {value}")
-        elif key == "dynamics_generator":
-            lines.append("  dynamics_generator:")
+        elif key == "dynamics_generator" or key.endswith("_covariance"):
+            lines.append(f"  {key}:")
             for row in value:
                 lines.append("    - [" + ", ".join(f"{float(item):.9g}" for item in row) + "]")
         else:
             lines.append(f"  {key}: {float(value):.8g}")
     return "\n".join(lines)
+
+
+def _require_scalar_noise(params: Dict[str, Any]) -> None:
+    if any(params.get(f"{prefix}_covariance") is not None
+           or params.get(f"{prefix}_covariance_structure", "legacy_diagonal") != "legacy_diagonal"
+           for prefix in ("initial", "process", "measurement")):
+        raise ValueError("Matrix/independent covariance optimization uses optimize_coupled_kalman.py; this optimizer tunes legacy scalar noise only.")
 
 
 def _parse_objective_weights(raw: str | None, objective: str, maximize_objective: bool) -> dict[str, float]:
@@ -313,6 +321,7 @@ def main() -> None:
     print(f"Objective score minimized: {objective_label}")
 
     configured = kalman_config_from_dict(cfg.get("kalman"))
+    _require_scalar_noise(configured)
     last4_train = _evaluate(
         dataset.samples,
         train_idx,

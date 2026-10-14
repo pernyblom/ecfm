@@ -1,15 +1,20 @@
-"""Convert an optimized coupled-Kalman JSON report to YAML configuration."""
+"""Convert an optimized Kalman JSON report to a runtime/residual YAML config."""
 from __future__ import annotations
 
 import argparse
 import copy
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict
 
 NOISE_KEYS = (
     "initial_pos_std",
@@ -41,6 +46,10 @@ _ConfigDumper.add_representer(_FlowList, _represent_flow_list)
 
 
 def kalman_config_from_report(report: dict[str, Any]) -> dict[str, Any]:
+    # Scalar optimizers (including the existing 12-D CA optimizer) export best.params.
+    best = report.get("best")
+    if isinstance(best, dict) and "model" not in best and isinstance(best.get("params"), dict):
+        return kalman_config_from_dict(best["params"])
     try:
         model = report["best"]["model"]
     except (KeyError, TypeError) as exc:
@@ -53,6 +62,15 @@ def kalman_config_from_report(report: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"Expected coupled state_layout {EXPECTED_LAYOUT}, got {layout!r}."
         )
+    if model.get("schema_version") == 2:
+        config = model.get("kalman_config")
+        if not isinstance(config, dict):
+            raise ValueError("Version 2 report requires best.model.kalman_config.")
+        if config.get("motion_model") not in {"constant_velocity", "coupled"}:
+            raise ValueError("Version 2 variant reports require an 8-D motion model.")
+        return kalman_config_from_dict(config)
+    if model.get("schema_version") not in (None, 1):
+        raise ValueError(f"Unsupported Kalman report schema_version: {model.get('schema_version')}.")
     parameterization = str(model.get("parameterization", ""))
     if "matrix_exp" not in parameterization or "dynamics_generator" not in parameterization:
         raise ValueError(f"Unsupported coupled parameterization: {parameterization!r}.")
@@ -104,6 +122,8 @@ def main() -> None:
         help="Optional YAML config whose kalman section will be replaced.",
     )
     parser.add_argument("--output", type=Path, help="Write YAML here instead of stdout.")
+    parser.add_argument("--training-output-dir", type=Path,
+                        help="Set separate residual checkpoint/log/metrics paths and clear resume_checkpoint.")
     parser.add_argument(
         "--use-for-residual-rollout",
         action="store_true",
@@ -127,11 +147,22 @@ def main() -> None:
         if not isinstance(model_cfg, dict):
             raise ValueError("The base config's model section must be a mapping.")
         model_cfg["initial_state_source"] = "kalman_filter"
-        model_cfg["rollout_transition"] = "configured_kalman"
+        # CA remains available for history/baseline; residual rollout is still 8-D.
+        model_cfg["rollout_transition"] = (
+            "constant_velocity" if kalman_cfg["motion_model"] == "constant_acceleration" else "configured_kalman"
+        )
+    if args.training_output_dir is not None:
+        train_cfg = output.setdefault("train", {})
+        if not isinstance(train_cfg, dict):
+            raise ValueError("The base config's train section must be a mapping.")
+        directory = args.training_output_dir
+        train_cfg.update(checkpoint_dir=str(directory), metrics_jsonl=str(directory / "metrics.jsonl"),
+                         log_file=str(directory / "train.log"), test_metrics_json=str(directory / "best_test_metrics.json"),
+                         resume_checkpoint=None)
 
-    output["kalman"]["dynamics_generator"] = [
-        _FlowList(row) for row in output["kalman"]["dynamics_generator"]
-    ]
+    for key in ("dynamics_generator", "initial_covariance", "process_covariance", "measurement_covariance"):
+        if output["kalman"].get(key) is not None:
+            output["kalman"][key] = [_FlowList(row) for row in output["kalman"][key]]
     rendered = yaml.dump(
         output, Dumper=_ConfigDumper, sort_keys=False, allow_unicode=False, width=240
     )

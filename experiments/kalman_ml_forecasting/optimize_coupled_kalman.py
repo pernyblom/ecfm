@@ -100,6 +100,7 @@ def _train_epoch(
     transition_l2: float,
     gradient_clip: float,
     max_dynamics_abs: float,
+    covariance_l2: float = 0.0,
 ) -> float:
     shuffled = list(indices)
     random.Random(seed).shuffle(shuffled)
@@ -113,7 +114,9 @@ def _train_epoch(
         prediction = model(past, past_times, future_times)
         loss = _weighted_loss(_metric_tensors(prediction, future, frame_size), objective_weights)
         if transition_l2:
-            loss = loss + float(transition_l2) * (model.dynamics_generator - cv_generator).square().mean()
+            loss = loss + float(transition_l2) * (model.effective_generator() - cv_generator).square().mean()
+        if covariance_l2:
+            loss = loss + float(covariance_l2) * model.covariance_penalty()
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         if gradient_clip > 0:
@@ -134,19 +137,38 @@ def _median_dt(samples: list[dict], indices: list[int]) -> float:
 
 
 def _new_model(args: argparse.Namespace, cfg: dict[str, Any], device: torch.device) -> CoupledBoxKalmanFilter:
+    kalman_cfg = dict(cfg.get("kalman") or {})
+    common_structure = args.covariance_structure
+    for prefix in ("initial", "process", "measurement"):
+        structure = getattr(args, f"{prefix}_covariance_structure")
+        if structure is None and common_structure is not None:
+            structure = "diagonal" if prefix == "measurement" and common_structure == "per_channel" else common_structure
+        if structure is not None:
+            kalman_cfg[f"{prefix}_covariance_structure"] = structure
     return CoupledBoxKalmanFilter(
-        cfg.get("kalman"),
+        kalman_cfg,
+        dynamics=args.dynamics,
+        optimize_dynamics=not args.freeze_dynamics,
         optimize_noise=bool(args.optimize_noise),
+        optimize_initial=args.optimize_initial,
+        optimize_process=args.optimize_process,
+        optimize_measurement=args.optimize_measurement,
         min_std=float(args.min_std),
         max_std=float(args.max_std),
         device=device,
     ).to(device)
 
 
+def _tune_indices(samples: list[dict], *, mode: str, val_fraction: float, seed: int) -> tuple[list[int], list[int]]:
+    # Reuse the existing group split while grouping every track in a sequence together.
+    groups = samples if mode == "track" else [{"folder": row["folder"], "track_id": 0} for row in samples]
+    return _split_indices_by_track(groups, val_fraction=val_fraction, seed=seed)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Learn a fully coupled continuous-time box Kalman transition from FRED "
+            "Optimize 8-D box Kalman dynamics and covariance variants from FRED "
             "cleaned_tracks.txt tracklets."
         )
     )
@@ -155,10 +177,24 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1.0e-3)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--tune-val-fraction", type=float, default=0.2)
+    parser.add_argument("--tune-split", choices=["track", "sequence"], default="track",
+                        help="Sequence mode keeps all tracks from one folder in one subset.")
     parser.add_argument("--objective", type=str, default="fde_center_px")
     parser.add_argument("--maximize-objective", action="store_true")
     parser.add_argument("--objective-weights", type=str, default=None)
     parser.add_argument("--optimize-noise", action="store_true")
+    parser.add_argument("--dynamics", choices=["constant_velocity", "per_channel", "full"], default=None)
+    parser.add_argument("--freeze-dynamics", action="store_true")
+    structures = ["legacy_diagonal", "diagonal", "per_channel", "full"]
+    parser.add_argument("--covariance-structure", choices=structures, default=None,
+                        help="Set P0/Q/R together; per_channel uses diagonal R.")
+    for prefix in ("initial", "process", "measurement"):
+        parser.add_argument(f"--{prefix}-covariance-structure",
+                            choices=[s for s in structures if prefix != "measurement" or s != "per_channel"], default=None)
+        parser.add_argument(f"--optimize-{prefix}", action=argparse.BooleanOptionalAction, default=None,
+                            help="Override --optimize-noise for this covariance only.")
+    parser.add_argument("--covariance-l2", type=float, default=0.0,
+                        help="Penalty on covariance correlations; does not alter reported forecast metrics.")
     parser.add_argument("--transition-l2", type=float, default=0.0)
     parser.add_argument("--gradient-clip", type=float, default=10.0)
     parser.add_argument("--max-dynamics-abs", type=float, default=20.0)
@@ -175,6 +211,14 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-json", type=Path, default=None)
     args = parser.parse_args()
+    if not 0 < args.tune_val_fraction < 1:
+        parser.error("--tune-val-fraction must be between zero and one.")
+    if args.epochs < 0 or args.batch_size < 1 or args.lr <= 0 or args.max_dynamics_abs <= 0:
+        parser.error("Require epochs >= 0 and positive batch-size, lr, and max-dynamics-abs.")
+    if args.transition_l2 < 0 or args.covariance_l2 < 0:
+        parser.error("Regularization weights must be nonnegative.")
+    if args.reference_dt is not None and args.reference_dt <= 0:
+        parser.error("--reference-dt must be positive.")
 
     torch.manual_seed(args.seed)
     cfg = load_config(args.config)
@@ -193,8 +237,8 @@ def main() -> None:
     dataset = _build_train_dataset(cfg, max_samples=args.max_samples)
     if not dataset.samples:
         raise RuntimeError("Training dataset yielded zero cleaned-track Kalman samples.")
-    train_indices, val_indices = _split_indices_by_track(
-        dataset.samples, val_fraction=args.tune_val_fraction, seed=args.seed
+    train_indices, val_indices = _tune_indices(
+        dataset.samples, mode=args.tune_split, val_fraction=args.tune_val_fraction, seed=args.seed
     )
     train_indices = _limit_indices(
         train_indices, max_count=args.max_tune_train_samples, seed=args.seed + 1
@@ -210,7 +254,10 @@ def main() -> None:
     print(f"Objective weights: {json.dumps(objective_weights, sort_keys=True)}")
 
     model = _new_model(args, cfg, device)
-    optimizer = torch.optim.Adam([parameter for parameter in model.parameters() if parameter.requires_grad], lr=args.lr)
+    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad and parameter.numel()]
+    if not parameters:
+        raise ValueError("No trainable parameters; enable --optimize-noise or one --optimize-* flag, or learn dynamics.")
+    optimizer = torch.optim.Adam(parameters, lr=args.lr)
     initial_train, initial_train_score = _evaluate(
         dataset.samples, train_indices, model=model, frame_size=frame_size,
         objective_weights=objective_weights, batch_size=args.batch_size, device=device,
@@ -241,6 +288,7 @@ def main() -> None:
             batch_size=args.batch_size, device=device, seed=args.seed + epoch,
             transition_l2=args.transition_l2, gradient_clip=args.gradient_clip,
             max_dynamics_abs=args.max_dynamics_abs,
+            covariance_l2=args.covariance_l2,
         )
         train_metrics, train_score = _evaluate(
             dataset.samples, train_indices, model=model, frame_size=frame_size,
@@ -287,6 +335,22 @@ def main() -> None:
         print(f"Best test score={test_score:.6f} metrics={json.dumps(test_metrics, sort_keys=True)}")
 
     result = {
+        "schema_version": 2,
+        "config": str(args.config),
+        "seed": args.seed,
+        "tune_split": args.tune_split,
+        "tune_val_fraction": args.tune_val_fraction,
+        "tune_train_samples": len(train_indices),
+        "tune_val_samples": len(val_indices),
+        "stored_trainable_parameters": sum(parameter.numel() for parameter in parameters),
+        "trainable_parameters": sum(parameter.numel() for parameter in parameters) - (
+            int((~model.dynamics_mask).sum()) if model.optimize_dynamics else 0
+        ),
+        "optimization": {key: getattr(args, key) for key in (
+            "dynamics", "freeze_dynamics", "optimize_initial", "optimize_process", "optimize_measurement",
+            "transition_l2", "covariance_l2", "lr", "epochs", "batch_size",
+            "min_std", "max_std", "gradient_clip", "max_dynamics_abs",
+        )},
         "track_source": tracks_file,
         "optimize_noise": bool(args.optimize_noise),
         "objective_weights": objective_weights,

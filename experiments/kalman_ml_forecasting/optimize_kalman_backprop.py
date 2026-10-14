@@ -31,6 +31,7 @@ from experiments.kalman_ml_forecasting.optimize_kalman import (
     _parse_objective_weights,
     _split_indices_by_track,
     _stack_batch,
+    _require_scalar_noise,
 )
 from experiments.kalman_ml_forecasting.utils.config import load_config
 
@@ -50,6 +51,7 @@ class KalmanStdParameters(nn.Module):
     def __init__(self, cfg: Dict[str, Any] | None, *, min_std: float, max_std: float, device) -> None:
         super().__init__()
         params = kalman_config_from_dict(cfg)
+        _require_scalar_noise(params)
         self.motion_model = str(params["motion_model"])
         self.register_buffer(
             "dynamics_generator",
