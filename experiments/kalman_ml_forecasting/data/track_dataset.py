@@ -15,6 +15,7 @@ import torch
 from PIL import Image
 
 from ecfm.data.fred_dataset import FREDDataset
+from ecfm.utils.file_io import retry_file_io
 from ecfm.utils.event_representations import (
     EVENT_REPRESENTATIONS, render_event_tensor, _resolve_representation_alias,
     representation_options_for, event_representation_channels, resize_event_tensor,
@@ -523,8 +524,10 @@ def _load_image(
     if isinstance(path, Image.Image):
         img = path.convert("RGB")
     else:
-        with Image.open(path) as source:
-            img = source.convert("RGB")
+        def read_image():
+            with Image.open(path) as source:
+                return source.convert("RGB")
+        img = retry_file_io(read_image, description=f"Reading input image {path}")
     if img.size != (source_size[0], source_size[1]):
         img = img.resize(source_size, resample=Image.BILINEAR)
     arr = np.asarray(img, dtype=np.float32) / 255.0
@@ -731,8 +734,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                         raise ValueError('Indexed cstr3_fixed requires positive cstr_max_count')
         _validate_box_augmentation(self.box_augmentation)
         if bool(self.instance_cache.get("enabled", False)):
-            if self.event_image_source != "indexed":
-                raise ValueError("data.instance_cache requires data.event_image_source: indexed.")
+            if self.event_image_source != "indexed" and not bool(self.instance_cache.get("include_rgb", False)):
+                raise ValueError("data.instance_cache requires data.event_image_source: indexed or include_rgb: true.")
             if bool(self.box_augmentation.get("enabled", False)):
                 raise ValueError("data.instance_cache does not support data.box_augmentation.enabled: true.")
             if not self.instance_cache.get("dir") and self.cache_dir is None:
@@ -766,13 +769,13 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             self._save_cache()
 
         if self.samples and bool(self.instance_cache.get("enabled", False)) and any(
-            self._is_indexed_rep(rep) for rep in self.representations
+            self._cache_representation(rep) for rep in self.representations
         ):
             directory = Path(self.instance_cache["dir"]) if self.instance_cache.get("dir") else self.cache_dir
             self._input_cache = IndexedInputCache(
                 directory, compression_level=int(self.instance_cache.get("compression_level", 1))
             )
-            print(f"Indexed input cache: {self._input_cache.path} (populated only as selected samples are read)")
+            print(f"Input cutout cache: {self._input_cache.path} (populated only as selected samples are read)")
 
     def _labels_dir(self, folder: str) -> Path:
         return self.labels_root / folder / self.labels_subdir if self.folders is not None else self.labels_root
@@ -886,6 +889,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
 
     def _is_indexed_rep(self, rep: str) -> bool:
         return self.event_image_source == 'indexed' and not _is_dataset_native_rep(rep)
+
+    def _cache_representation(self, rep: str) -> bool:
+        return self._is_indexed_rep(rep) or (
+            bool(self.instance_cache.get("include_rgb", False)) and _is_dataset_rgb_rep(rep)
+        )
 
     def _indexed_events(self) -> FREDDataset:
         if self._indexed_source is None:
@@ -1556,16 +1564,19 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def _cache_path(self) -> Optional[Path]:
         if self.cache_dir is None:
             return None
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        retry_file_io(lambda: self.cache_dir.mkdir(parents=True, exist_ok=True),
+                      description=f"Creating sample cache directory {self.cache_dir}")
         return self.cache_dir / f"kalman_ml_samples_{self._cache_key()}.pkl"
 
     def _load_cache(self):
         path = self._cache_path()
-        if path is None or not path.exists():
+        if path is None:
             return None
-        try:
+        def read_samples():
             with path.open("rb") as f:
                 return pickle.load(f)
+        try:
+            return retry_file_io(read_samples, description=f"Reading sample cache {path}")
         except Exception:
             return None
 
@@ -1573,9 +1584,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         path = self._cache_path()
         if path is None:
             return
-        try:
+        def write_samples():
             with path.open("wb") as f:
                 pickle.dump(self.samples, f)
+        try:
+            retry_file_io(write_samples, description=f"Writing sample cache {path}")
         except Exception:
             pass
 
@@ -1586,10 +1599,13 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         if not isinstance(reference, dict):
             path = Path(reference)
             if path.suffix == '.npy':
-                return np.load(path, allow_pickle=False)
+                return retry_file_io(lambda: np.load(path, allow_pickle=False),
+                                     description=f"Reading input tensor {path}")
             if path.suffix == '.npz':
-                with np.load(path, allow_pickle=False) as archive:
-                    return archive['tensor'].copy()
+                def read_archive():
+                    with np.load(path, allow_pickle=False) as archive:
+                        return archive['tensor'].copy()
+                return retry_file_io(read_archive, description=f"Reading input tensor {path}")
             return path
         source = self._indexed_events()
         folder = Path(reference['raw']).parent.parent.name
@@ -1606,7 +1622,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         )
         return tensor
 
-    def _input_cache_key(self, rep: str, reference: dict, anchor_box: np.ndarray) -> bytes:
+    def _input_cache_key(self, rep: str, reference: Any, anchor_box: np.ndarray) -> bytes:
         # Selection settings (including max_samples, seed, folders and sequence
         # length) do not affect a particular image and must not partition it.
         if rep not in self._input_cache_signatures:
@@ -1617,30 +1633,40 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                 "source_image_size": self.source_image_sizes[rep],
                 "frame_size": self.frame_size,
                 "spatial_cutout": resolve_spatial_cutout_config(self.spatial_cutout, rep),
-                "image_window_ms": self.image_window_ms,
-                "temporal_bins": self.temporal_bins,
-                "cstr_max_count": self.cstr_max_count,
-                "time_surface_tau_ms": self.time_surface_tau_ms,
-                "representation_options": representation_options_for(rep, self.representation_options),
                 "representation_channels": self.representation_channels[rep],
             }
+            if self._is_indexed_rep(rep):
+                # Preserve the v1 event key format so existing caches extend
+                # in place when RGB caching is switched on.
+                settings.update(
+                    image_window_ms=self.image_window_ms, temporal_bins=self.temporal_bins,
+                    cstr_max_count=self.cstr_max_count, time_surface_tau_ms=self.time_surface_tau_ms,
+                    representation_options=representation_options_for(rep, self.representation_options),
+                )
             self._input_cache_signatures[rep] = hashlib.sha256(
                 json.dumps(settings, sort_keys=True).encode("utf-8")
             ).digest()
-        raw = reference["raw"]
-        if raw not in self._input_cache_sources:
-            path = Path(raw).resolve()
-            files = (path, path.with_suffix(".raw.tmp_index"))
+        indexed = self._is_indexed_rep(rep)
+        source = reference["raw"] if indexed else str(reference)
+        source_key = (indexed, source)
+        if source_key not in self._input_cache_sources:
             # Fingerprint once per dataset/worker, avoiding RAW reads and a stat
             # for each cutout. Sources must remain unchanged during a run.
-            stamps = []
-            for file in files:
-                stat = file.stat()
-                stamps.append((str(file), stat.st_size, stat.st_mtime_ns))
-            self._input_cache_sources[raw] = json.dumps(stamps).encode("utf-8")
+            def fingerprint():
+                path = Path(source).resolve(strict=True)
+                files = (path, path.with_suffix(".raw.tmp_index")) if indexed else (path,)
+                stamps = []
+                for file in files:
+                    stat = file.stat()
+                    stamps.append((str(file), stat.st_size, stat.st_mtime_ns))
+                return json.dumps(stamps).encode("utf-8")
+            self._input_cache_sources[source_key] = retry_file_io(
+                fingerprint, description=f"Checking input cache source {source}",
+            )
         key = hashlib.sha256(self._input_cache_signatures[rep])
-        key.update(self._input_cache_sources[raw])
-        key.update(str(int(reference["time_us"])).encode("ascii"))
+        key.update(self._input_cache_sources[source_key])
+        if indexed:
+            key.update(str(int(reference["time_us"])).encode("ascii"))
         cfg = resolve_spatial_cutout_config(self.spatial_cutout, rep)
         geometry = _fixed_spatial_cutout_geometry(
             self.source_image_sizes[rep], rep=rep, anchor_box=anchor_box, cfg=cfg,
@@ -1658,7 +1684,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def _prepared_input(self, rep: str, reference: Any, anchor_box: np.ndarray) -> torch.Tensor:
         cache = getattr(self, "_input_cache", None)
         key = None
-        if cache is not None and self._is_indexed_rep(rep):
+        if cache is not None and self._cache_representation(rep):
             key = self._input_cache_key(rep, reference, anchor_box)
             cached = cache.get(key)
             if cached is not None:

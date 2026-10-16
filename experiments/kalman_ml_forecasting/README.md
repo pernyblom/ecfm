@@ -49,13 +49,15 @@ Data
   `rgb`, `padded_rgb`, and `event_frames` retain their existing file readers.
   `data.backend: raw` is the separate hierarchical MAE adapter; leave that
   setting unset when using indexed inputs with the standard residual model.
-- Enable `data.instance_cache` to reuse the final indexed event-image tensors:
+- Enable `data.instance_cache` to reuse the final indexed event-image tensors
+  and optionally RGB cutouts:
 
   ```yaml
   data:
     event_image_source: indexed
     instance_cache:
       enabled: true
+      include_rgb: true  # optional; default false; caches rgb and padded_rgb
       dir: outputs/kalman_indexed_cutouts  # optional; defaults to data.cache_dir
       compression_level: 1
     box_augmentation:
@@ -66,8 +68,12 @@ Data
   decorrelation. Only cutouts actually fetched by the loader are written; the
   first epoch still renders cache misses. Later epochs/runs read losslessly
   compressed float32 tensors after all resizing, cropping and normalization.
-  Raw event arrays and intermediate full images are never cached. RGB and
-  dataset-native event frames keep their usual readers. Boxes, times and other
+  Raw event arrays and intermediate full images are never cached. With
+  `include_rgb: true`, `rgb` and `padded_rgb` (including sequences) also reuse
+  finished cutouts without reopening, decoding or resizing the source images.
+  This works with indexed inputs, RGB-only datasets, and rendered mode; rendered
+  event branches and dataset-native event frames keep their usual readers.
+  Existing event caches extend in place when RGB is enabled. Boxes, times and other
   sample metadata remain in the existing `data.cache_dir` sample cache.
 
   Storage is one appendable `indexed_cutouts_v1.sqlite3` file, using standard
@@ -76,7 +82,7 @@ Data
   exclude sample limits, subset selection, split names and sequence lengths,
   so smaller subsets reuse a larger cache and larger subsets append only
   missing cutouts. Share the same directory across compatible runs. Changed
-  render/crop/normalization settings or RAW/index path, size or modification
+  render/crop/normalization settings or source-image/RAW/index path, size or modification
   time produce new entries. Source files must stay unchanged during a run.
   Old entries are retained; stop users of a cache before deleting its directory
   to reclaim space. Changing renderer/preprocessing code requires clearing the
@@ -88,8 +94,17 @@ Data
   levels range from 0 to 9 (default 1 favors speed), without quantization or
   float16 conversion. Disk use can still be substantial. Enabling the cache
   with box augmentation on the same split raises an error.
+  Cache initialization, reads and writes retry brief Windows sharing/access
+  locks and SQLite busy/locked or temporary I/O errors. Failed database attempts
+  reopen their connections; inserts remain atomic and safe to repeat. Retries
+  use the RAW reader's eight attempts and 4.5 seconds of backoff, with a short
+  100 ms SQLite busy timeout per attempt. A warning names the operation and
+  path; persistent failures propagate. Missing sources, corrupt databases and
+  full disks fail immediately. Source fingerprint checks, RGB image reads and
+  the existing sample-metadata cache also use the file-access retry helper.
   See the [real-data cache benchmark](INPUT_CACHE_BENCHMARK.md) for measured
-  loading/training speedups and a repeatable benchmark command.
+  loading/training speedups with event-only caching and a repeatable benchmark
+  command. Add `--include-rgb` to benchmark caching RGB as well.
 - New formats are `time_surface`, `time_surface_linear`,
   `multi_channel_time_surface`, `event_stack`, and `voxel_grid`. They support
   configurable channel counts, grid aliases, and mixing with existing formats.

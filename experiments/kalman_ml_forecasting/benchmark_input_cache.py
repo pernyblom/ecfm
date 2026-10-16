@@ -89,13 +89,14 @@ def benchmark_case(args, original_cfg, profile, workers):
     loaders = {}
     for mode in ('uncached', 'cached'):
         data['instance_cache'] = {'enabled': mode == 'cached', 'dir': str(case_dir / 'cache'),
-                                  'compression_level': 1}
+                                  'compression_level': 1, 'include_rgb': args.include_rgb}
         dataset = _build_dataset(cfg, 'train', folders_override=args.folders)
         if len(dataset) != args.samples:
             raise ValueError(f'Requested {args.samples} samples, got {len(dataset)}')
         datasets[mode] = dataset
         loaders[mode] = _make_loader(dataset, batch_size=args.batch_size, shuffle=False, train_cfg=cfg['train'])
     result = dict(profile=profile, workers=workers, samples=args.samples,
+                  include_rgb=args.include_rgb,
                   representations=data['representations'], first={}, steady={mode: [] for mode in loaders})
     expected_digest = None
     for repeat in range(args.repeats + 1):
@@ -163,6 +164,7 @@ def main():
     parser.add_argument('--workers', nargs='+', type=int, default=[0, 2])
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--training', action='store_true')
+    parser.add_argument('--include-rgb', action='store_true', help='Also cache rgb/padded_rgb cutouts')
     parser.add_argument('--output-dir', type=Path, required=True)
     args = parser.parse_args()
     if min(args.samples, args.batch_size, args.repeats) < 1 or min(args.workers) < 0:

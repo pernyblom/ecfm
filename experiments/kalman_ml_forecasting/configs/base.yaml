@@ -92,10 +92,11 @@ data:
   event_image_source: rendered
   # Optional disk cache for final indexed event tensors, after cropping and
   # normalization. Filled lazily by selected samples; reusable/extendable when
-  # max_samples changes. RGB/native frames keep their existing readers.
-  # Requires event_image_source: indexed and box_augmentation.enabled: false.
+  # max_samples changes. include_rgb also caches rgb/padded_rgb cutouts.
+  # Requires box_augmentation.enabled: false. Rendered mode can cache RGB only.
   instance_cache:
     enabled: false
+    include_rgb: false  # opt in to caching rgb and padded_rgb (including sequences)
     dir: null  # defaults to data.cache_dir; use a shared local SSD directory
     compression_level: 1  # lossless zlib, 0 (fastest/largest) through 9
   # Channels are inferred from these per-representation renderer settings.

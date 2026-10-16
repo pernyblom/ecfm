@@ -173,7 +173,8 @@ def _cutout_count(dataset):
         return connection.execute('SELECT COUNT(*) FROM cutouts').fetchone()[0]
 
 
-def test_indexed_input_cache_roundtrip_sequences_multichannel_and_rgb(fred, monkeypatch):
+@pytest.mark.parametrize('include_rgb', [False, True])
+def test_indexed_input_cache_roundtrip_sequences_multichannel_and_rgb(fred, monkeypatch, include_rgb):
     root, _ = fred
     cfg = indexed_forecast_config(root)
     cfg['data']['representation_options'] = {
@@ -184,11 +185,11 @@ def test_indexed_input_cache_roundtrip_sequences_multichannel_and_rgb(fred, monk
         'mode': 'fixed_pixels', 'size_px': [4, 4], 'event_count_normalization': 'joint_max',
     }
     reference = _build_dataset(cfg, 'train', folders_override=['0'])[0]
-    cfg['data']['instance_cache'] = {'enabled': True}
+    cfg['data']['instance_cache'] = {'enabled': True, 'include_rgb': include_rgb}
     dataset = _build_dataset(cfg, 'train', folders_override=['0'])
     assert dataset._indexed_source is None and _cutout_count(dataset) == 0
     first = dataset[0]
-    assert _cutout_count(dataset) == 3  # two time surfaces and one event stack; no RGB
+    assert _cutout_count(dataset) == (4 if include_rgb else 3)
     for rep in reference.inputs:
         torch.testing.assert_close(first.inputs[rep], reference.inputs[rep], rtol=0, atol=0)
     # Mutation of a fetched tensor must not change future cache hits.
@@ -199,12 +200,13 @@ def test_indexed_input_cache_roundtrip_sequences_multichannel_and_rgb(fred, monk
 
     def native_only(rep, ref):
         assert not warm._is_indexed_rep(rep), 'cache hit must bypass RAW decoding and rendering'
+        assert not include_rgb, 'cached RGB must also bypass image decoding'
         native_reads.append(rep)
         return original(rep, ref)
 
     monkeypatch.setattr(warm, '_input_image', native_only)
     restored = warm[0]
-    assert native_reads == ['padded_rgb']
+    assert native_reads == ([] if include_rgb else ['padded_rgb'])
     assert warm._indexed_source is None
     for rep in reference.inputs:
         torch.testing.assert_close(restored.inputs[rep], reference.inputs[rep], rtol=0, atol=0)
@@ -213,7 +215,125 @@ def test_indexed_input_cache_roundtrip_sequences_multichannel_and_rgb(fred, monk
     assert restored.frame_key == reference.frame_key
     assert restored.input_paths == reference.input_paths
     dataset[1]
-    assert _cutout_count(dataset) == 5  # overlapping sequence frame shares an entry
+    assert _cutout_count(dataset) == (7 if include_rgb else 5)
+
+
+@pytest.mark.parametrize('rep', ['rgb', 'padded_rgb'])
+@pytest.mark.parametrize('event_source', ['indexed', 'rendered'])
+def test_rgb_only_cutout_cache_supports_sequences(fred, monkeypatch, rep, event_source):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=[rep], image_sizes={rep: [8, 8]}, cache_dir=None,
+                       event_image_source=event_source,
+                       representation_sequences={rep: {'length': 2, 'stride': 1}},
+                       spatial_cutout={'mode': 'fixed_pixels', 'size_px': [4, 4]})
+    reference = _build_dataset(cfg, 'train', folders_override=['0'])
+    cfg['data']['instance_cache'] = {'enabled': True, 'include_rgb': True, 'dir': str(root / 'rgb_cache')}
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    expected = []
+    for index in range(2):
+        expected.append(dataset[index].inputs[rep])
+        torch.testing.assert_close(expected[-1], reference[index].inputs[rep], rtol=0, atol=0)
+    assert expected[0].shape == (2, 3, 4, 4)
+    assert _cutout_count(dataset) == 3  # adjacent sequences share the overlapping frame
+    warm = _build_dataset(cfg, 'train', folders_override=['0'])
+
+    def unexpected_read(*args):
+        pytest.fail('warm RGB cutouts must not reopen source images')
+
+    monkeypatch.setattr(warm, '_input_image', unexpected_read)
+    for index in range(2):
+        torch.testing.assert_close(warm[index].inputs[rep], expected[index], rtol=0, atol=0)
+    assert warm._indexed_source is None
+
+
+def test_rgb_cutout_cache_source_changes_and_event_settings(fred, monkeypatch):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['padded_rgb'], representation_sequences={},
+                       instance_cache={'enabled': True, 'include_rgb': True})
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    original = dataset[0]
+    path = Path(original.input_paths['padded_rgb'])
+    Image.new('RGB', (8, 8), (210, 130, 70)).save(path)
+    changed = _build_dataset(cfg, 'train', folders_override=['0'])
+    expected = changed[0].inputs['padded_rgb']
+    assert not torch.equal(expected, original.inputs['padded_rgb'])
+    assert _cutout_count(changed) == 2
+    cfg['data'].update(image_window_ms=70, temporal_bins=10)
+    warm = _build_dataset(cfg, 'train', folders_override=['0'])
+
+    def unexpected_read(*args):
+        pytest.fail('event window settings should not invalidate unchanged RGB cutouts')
+
+    monkeypatch.setattr(warm, '_input_image', unexpected_read)
+    torch.testing.assert_close(warm[0].inputs['padded_rgb'], expected, rtol=0, atol=0)
+    assert _cutout_count(warm) == 2
+
+
+@pytest.mark.parametrize('failure', ['fingerprint', 'decode'])
+def test_rgb_cutout_cache_retries_source_access_locks(fred, monkeypatch, failure):
+    from ecfm.utils import file_io
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['padded_rgb'], representation_sequences={},
+                       instance_cache={'enabled': True, 'include_rgb': True})
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    original_stat, original_load = Path.stat, Image.Image.load
+    path = Path(dataset.samples[0]['input_paths']['padded_rgb']).resolve()
+    backoffs = []
+    failed = []
+
+    def fail_once():
+        failed.append(1)
+        raise PermissionError(13, 'simulated scanner lock', str(path))
+
+    def stat(file, *args, **kwargs):
+        if file == path and not failed:
+            fail_once()
+        return original_stat(file, *args, **kwargs)
+
+    def load(image, *args, **kwargs):
+        if not failed:
+            fail_once()
+        return original_load(image, *args, **kwargs)
+
+    monkeypatch.setattr(file_io.time, 'sleep', backoffs.append)
+    if failure == 'fingerprint':
+        monkeypatch.setattr(Path, 'stat', stat)
+    else:
+        monkeypatch.setattr(Image.Image, 'load', load)
+    with pytest.warns(RuntimeWarning, match='temporary file access failure'):
+        sample = dataset[0]
+    assert failed == [1] and backoffs == [.1]
+    torch.testing.assert_close(dataset[0].inputs['padded_rgb'], sample.inputs['padded_rgb'])
+    assert _cutout_count(dataset) == 1
+
+
+@pytest.mark.parametrize('mode', ['rb', 'wb'])
+def test_forecasting_sample_cache_retries_access_locks(fred, monkeypatch, mode):
+    from ecfm.utils import file_io
+    root, _ = fred
+    dataset = _build_dataset(indexed_forecast_config(root), 'train', folders_override=['0'])
+    path = dataset._cache_path()
+    original_open = Path.open
+    failures, backoffs = [], []
+
+    def open_file(file, *args, **kwargs):
+        if file == path and args and args[0] == mode and len(failures) < 2:
+            failures.append(1)
+            raise PermissionError(13, 'simulated scanner lock', str(file))
+        return original_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(file_io.time, 'sleep', backoffs.append)
+    monkeypatch.setattr(Path, 'open', open_file)
+    with pytest.warns(RuntimeWarning, match='sample cache'):
+        if mode == 'rb':
+            assert len(dataset._load_cache()) == len(dataset)
+        else:
+            dataset._save_cache()
+    assert len(failures) == 2 and backoffs == [.1, .2]
+    assert len(dataset._load_cache()) == len(dataset)
 
 
 def test_indexed_input_cache_only_selected_samples_and_extends(fred, monkeypatch):
@@ -338,10 +458,10 @@ def test_indexed_input_cache_deduplicates_equivalent_pixel_crops(fred, monkeypat
 def test_indexed_input_cache_concurrent_cold_workers(fred):
     root, _ = fred
     cfg = indexed_forecast_config(root)
-    cfg['data'].update(representations=['time_surface', 'event_stack'], max_samples=6)
+    cfg['data'].update(representations=['time_surface', 'event_stack', 'padded_rgb'], max_samples=6)
     reference = _build_dataset(cfg, 'train', folders_override=['0', '1'])
     expected = _collate([reference[i] for i in range(len(reference))])
-    cfg['data']['instance_cache'] = {'enabled': True}
+    cfg['data']['instance_cache'] = {'enabled': True, 'include_rgb': True}
     dataset = _build_dataset(cfg, 'train', folders_override=['0', '1'])
     # Repeated indices deliberately send duplicate cache misses to both workers.
     from torch.utils.data import DataLoader
