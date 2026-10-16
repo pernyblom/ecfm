@@ -19,6 +19,7 @@ from torch.utils.data import Dataset
 
 from ecfm.utils.evt3_index import IndexedRawReader, read_index
 from ecfm.utils.evt3 import read_raw_header
+from ecfm.utils.file_io import retry_file_io
 from ecfm.utils.event_representations import render_event_tensor, representation_options_for
 
 _LABEL_TIME = re.compile(r'(?:_frame_|_)(\d+)$')
@@ -115,7 +116,8 @@ class FREDDataset(Dataset):
                 self.excluded[name] = 'missing RAW'
                 continue
             records, shift, _, _ = read_index(raw)
-            meta = read_raw_header(raw)[2]
+            meta = retry_file_io(lambda: read_raw_header(raw)[2],
+                                 description=f'Reading FRED RAW header {raw}')
             end = int(records[-1]['t'])
             info = dict(raw=raw, width=int(meta['width']), height=int(meta['height']),
                         end_us=end, shift_us=shift,

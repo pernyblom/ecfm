@@ -6,6 +6,7 @@ import pytest
 
 from ecfm.utils.evt3 import _decode_evt3_words
 from ecfm.utils.evt3_index import INDEX_DTYPE, INDEX_MAGIC, IndexedRawReader
+from ecfm.utils.file_io import retry_file_io
 from scripts.render_evt3_yolo_frames import build_parser, ensure_rendered_frames, render_yolo_frames
 
 
@@ -72,6 +73,103 @@ def test_rejects_stale_and_incomplete_indexes(tmp_path):
     raw.write_bytes(raw.read_bytes()+b'\x00\x00')
     with pytest.raises(ValueError, match='size'):
         IndexedRawReader(raw)
+
+
+@pytest.mark.parametrize('target', ['raw', 'index'])
+def test_index_loading_retries_temporary_locks(tmp_path, monkeypatch, target):
+    raw, _, _ = recording(tmp_path)
+    locked = raw if target == 'raw' else raw.with_suffix('.raw.tmp_index')
+    original_open = Path.open
+    calls = 0
+
+    def open_file(path, *args, **kwargs):
+        nonlocal calls
+        if path == locked:
+            calls += 1
+            if calls <= 2:
+                raise PermissionError(13, 'simulated scanner lock', str(path))
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', open_file)
+    monkeypatch.setattr('ecfm.utils.file_io.time.sleep', lambda _: None)
+    with pytest.warns(RuntimeWarning, match='retrying'):
+        reader = IndexedRawReader(raw)
+    assert len(reader.read_window(0, 18000)) > 0
+    assert calls >= 3
+
+
+def test_index_short_read_reports_truncation(tmp_path, monkeypatch):
+    raw, _, _ = recording(tmp_path)
+    monkeypatch.setattr('ecfm.utils.evt3_index.np.fromfile',
+                        lambda *args, **kwargs: np.empty(0, dtype=INDEX_DTYPE))
+    with pytest.raises(ValueError, match='Index changed or was truncated'):
+        IndexedRawReader(raw)
+
+
+def test_window_retry_restarts_decoder_after_partial_read(tmp_path, monkeypatch):
+    raw, _, _ = recording(tmp_path)
+    reader = IndexedRawReader(raw, chunk_bytes=8)
+    expected = reader.read_window(0, 18000)
+    expected_stats = reader.last_read.copy()
+    original_open = Path.open
+    streams = []
+
+    class InterruptedStream:
+        def __init__(self, stream):
+            self.stream = stream
+            self.reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.stream.close()
+
+        def seek(self, offset):
+            return self.stream.seek(offset)
+
+        def read(self, size):
+            self.reads += 1
+            if self.reads == 2:
+                raise PermissionError(13, 'simulated lock during read', str(raw))
+            return self.stream.read(size)
+
+    def open_file(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        streams.append(stream)
+        return InterruptedStream(stream) if len(streams) == 1 else stream
+
+    monkeypatch.setattr(Path, 'open', open_file)
+    monkeypatch.setattr('ecfm.utils.file_io.time.sleep', lambda _: None)
+    with pytest.warns(RuntimeWarning, match='retrying'):
+        actual = reader.read_window(0, 18000)
+    np.testing.assert_array_equal(actual, expected)
+    assert reader.last_read == expected_stats
+    assert len(streams) == 2 and all(s.closed for s in streams)
+
+
+@pytest.mark.parametrize('error, attempts', [
+    (PermissionError(13, 'persistent lock'), 8),
+    (FileNotFoundError(2, 'missing'), 1),
+    (OSError(5, 'disk I/O error'), 1),
+    (ValueError('corrupt index'), 1),
+])
+def test_file_retries_are_bounded_and_selective(monkeypatch, error, attempts):
+    calls, delays = [], []
+
+    def fail():
+        calls.append(1)
+        raise error
+
+    monkeypatch.setattr('ecfm.utils.file_io.time.sleep', delays.append)
+    if attempts > 1:
+        with pytest.warns(RuntimeWarning), pytest.raises(type(error)):
+            retry_file_io(fail, description='test file')
+    else:
+        with pytest.raises(type(error)):
+            retry_file_io(fail, description='test file')
+    assert len(calls) == attempts
+    assert sum(delays) == pytest.approx(4.5 if attempts > 1 else 0)
 
 
 def test_missing_representation_regenerated_and_hits_do_not_decode(tmp_path, monkeypatch):

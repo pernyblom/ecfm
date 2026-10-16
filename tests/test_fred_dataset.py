@@ -13,7 +13,7 @@ from ecfm.utils.evt3_index import INDEX_DTYPE, INDEX_MAGIC
 from experiments.hierarchical_mae.config import load_config
 from experiments.hierarchical_mae.data import make_dataset, splits
 from experiments.hierarchical_mae.backbone import HierarchicalBackbone
-from experiments.kalman_ml_forecasting.train import _build_dataset, _collate
+from experiments.kalman_ml_forecasting.train import _build_dataset, _collate, _make_loader
 from experiments.kalman_ml_forecasting.models.kalman_residual import KalmanResidualForecaster
 
 
@@ -147,6 +147,21 @@ def test_indexed_forecasting_window_changes_inputs_and_cache_key(fred):
     assert short._cache_key() != long._cache_key()
     assert short.samples[0]['anchor_stem'] == long.samples[0]['anchor_stem']
     assert not torch.equal(short[0].inputs['event_stack'], long[0].inputs['event_stack'])
+
+
+def test_indexed_forecasting_spawned_training_workers(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['event_stack'], representation_sequences={}, max_samples=4)
+    dataset = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    # Populate parent caches before spawning; workers must rebuild their own.
+    expected = _collate([dataset[i] for i in range(len(dataset))])
+    loader = _make_loader(dataset, batch_size=2, shuffle=False,
+                          train_cfg={'num_workers': 2, 'persistent_workers': False})
+    actual = list(loader)
+    torch.testing.assert_close(torch.cat([batch.inputs['event_stack'] for batch in actual]),
+                               expected.inputs['event_stack'])
+    assert [key for batch in actual for key in batch.frame_keys] == expected.frame_keys
 
 
 def test_indexed_forecasting_rejects_future_windows_and_missing_fixed_scale(fred):

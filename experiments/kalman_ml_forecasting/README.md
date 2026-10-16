@@ -39,6 +39,11 @@ Data
   through `FREDDataset`; DataLoader workers can use the indexed reader without
   sharing file handles. `data.event_cache_bytes` defaults to 32 MiB per worker;
   the dataset sample cache stores event references rather than rendered pixels.
+  RAW/header/index reads retry temporary access or sharing conflicts up to eight
+  times (4.5 seconds of backoff), warning with the path and requested window.
+  Interrupted windows restart with a fresh decoder. Missing files, invalid
+  indexes, and other data errors still fail immediately; persistent access
+  failures propagate after the retry limit.
 - `data.event_image_source: rendered` is the backward-compatible default.
   Indexed mode always renders event branches from RAW even if PNGs exist;
   `rgb`, `padded_rgb`, and `event_frames` retain their existing file readers.

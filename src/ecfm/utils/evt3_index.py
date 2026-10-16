@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .evt3 import _Evt3DecoderState, _decode_evt3_words, read_raw_header
+from .file_io import retry_file_io
 
 
 INDEX_DTYPE = np.dtype([('t', '<i8'), ('offset', '<u8'), ('count', '<u4')])
@@ -17,6 +18,11 @@ INDEX_MAGIC = _magic[8:16] + _magic[:8] + _magic[16:20]
 
 
 def read_index(raw: Path):
+    raw = Path(raw)
+    return retry_file_io(lambda: _read_index(raw), description=f'Reading EVT3 index for {raw}')
+
+
+def _read_index(raw: Path):
     raw = Path(raw)
     sidecar = raw.with_suffix(raw.suffix + '.tmp_index')
     _, offset, meta = read_raw_header(sidecar)
@@ -30,7 +36,12 @@ def read_index(raw: Path):
         raise ValueError('Indexed reader requires EVT3')
     if any(meta.get(k) != v for k, v in raw_meta.items()):
         raise ValueError('RAW header differs from index header')
-    records = np.fromfile(sidecar, dtype=INDEX_DTYPE, offset=offset)
+    # Use an explicit handle so every retry closes and reopens the sidecar.
+    with sidecar.open('rb') as stream:
+        stream.seek(offset)
+        records = np.fromfile(stream, dtype=INDEX_DTYPE)
+    if len(records) * INDEX_DTYPE.itemsize != payload:
+        raise ValueError(f'Index changed or was truncated while reading: {sidecar}')
     if records[-1].tobytes() != INDEX_MAGIC:
         raise ValueError('Missing/unrecognized index completion marker')
     records = records[:-1]
@@ -61,7 +72,8 @@ class IndexedRawReader:
     def __init__(self, raw, *, timestamp_mode='integer', chunk_bytes=65536, guard_us=4000):
         self.raw = Path(raw)
         self.records, self.shift_us, self.period_us, self.data_offset = read_index(self.raw)
-        self.metadata = read_raw_header(self.raw)[2]
+        self.metadata = retry_file_io(lambda: read_raw_header(self.raw)[2],
+                                     description=f'Reading EVT3 header {self.raw}')
         if timestamp_mode not in {'integer', 'legacy_float32'}:
             raise ValueError('timestamp_mode must be integer or legacy_float32')
         if chunk_bytes < 2 or chunk_bytes % 2 or guard_us < 0:
@@ -76,6 +88,10 @@ class IndexedRawReader:
         legacy_float32 intentionally reproduces the old RAW renderer's rounding
         before and after timestamp shifting, for compatibility with saved PNGs.
         """
+        return retry_file_io(lambda: self._read_window(start_us, end_us),
+                             description=f'Reading EVT3 window [{start_us}, {end_us}) from {self.raw}')
+
+    def _read_window(self, start_us, end_us):
         if not np.isfinite(start_us) or not np.isfinite(end_us) or end_us < start_us:
             raise ValueError('Window bounds must be finite and ordered')
         start_us = max(0, start_us)
