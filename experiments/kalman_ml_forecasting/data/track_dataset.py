@@ -20,6 +20,7 @@ from ecfm.utils.event_representations import (
     representation_options_for, event_representation_channels, resize_event_tensor,
 )
 from ..utils.config import resolve_spatial_cutout_config
+from .input_cache import IndexedInputCache
 
 
 @dataclass
@@ -278,18 +279,18 @@ def _crop_array_with_padding(
     return out
 
 
-def _fixed_spatial_cutout_array(
-    arr: np.ndarray,
+def _fixed_spatial_cutout_geometry(
+    image_size: Tuple[int, int],
     *,
     rep: str,
     anchor_box: np.ndarray,
     cfg: Dict[str, Any],
-) -> np.ndarray | None:
+) -> tuple[int, int, int, int] | None:
     fixed_size = _fixed_spatial_cutout_size(cfg)
     if fixed_size is None:
         return None
     cut_w, cut_h = fixed_size
-    img_h, img_w = int(arr.shape[0]), int(arr.shape[1])
+    img_w, img_h = image_size
     cx = float(anchor_box[0]) * img_w
     cy = float(anchor_box[1]) * img_h
     base_rep = _base_representation_name(rep).lower()
@@ -308,6 +309,22 @@ def _fixed_spatial_cutout_array(
         height = cut_h
         left = int(round(cx - width / 2.0))
         top = int(round(cy - height / 2.0))
+    return left, top, width, height
+
+
+def _fixed_spatial_cutout_array(
+    arr: np.ndarray,
+    *,
+    rep: str,
+    anchor_box: np.ndarray,
+    cfg: Dict[str, Any],
+) -> np.ndarray | None:
+    geometry = _fixed_spatial_cutout_geometry(
+        (int(arr.shape[1]), int(arr.shape[0])), rep=rep, anchor_box=anchor_box, cfg=cfg,
+    )
+    if geometry is None:
+        return None
+    left, top, width, height = geometry
     return _crop_array_with_padding(
         arr,
         left=left,
@@ -614,6 +631,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         event_cache_bytes: int = 32 * 1024 * 1024,
         representation_options: Optional[Dict[str, Any]] = None,
         representation_channels: Optional[Dict[str, int]] = None,
+        instance_cache: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.images_root = Path(images_root)
         self.labels_root = Path(labels_root)
@@ -661,6 +679,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.sample_decorrelation = dict(sample_decorrelation or {})
         self.spatial_cutout = dict(spatial_cutout or {})
         self.box_augmentation = dict(box_augmentation or {})
+        self.instance_cache = dict(instance_cache or {})
+        self._input_cache = None
+        self._input_cache_signatures = {}
+        self._input_cache_sources = {}
         self.representation_sequences = {
             str(rep): {
                 "length": int(spec["length"]),
@@ -708,6 +730,16 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     if base == 'cstr3_fixed' and (cstr_max_count is None or not np.isfinite(cstr_max_count) or cstr_max_count <= 0):
                         raise ValueError('Indexed cstr3_fixed requires positive cstr_max_count')
         _validate_box_augmentation(self.box_augmentation)
+        if bool(self.instance_cache.get("enabled", False)):
+            if self.event_image_source != "indexed":
+                raise ValueError("data.instance_cache requires data.event_image_source: indexed.")
+            if bool(self.box_augmentation.get("enabled", False)):
+                raise ValueError("data.instance_cache does not support data.box_augmentation.enabled: true.")
+            if not self.instance_cache.get("dir") and self.cache_dir is None:
+                raise ValueError("data.instance_cache requires instance_cache.dir or data.cache_dir.")
+            level = int(self.instance_cache.get("compression_level", 1))
+            if not 0 <= level <= 9:
+                raise ValueError("data.instance_cache.compression_level must be between 0 and 9.")
         unknown_sequence_reps = sorted(set(self.representation_sequences) - set(self.representations))
         if unknown_sequence_reps:
             raise ValueError(
@@ -732,6 +764,15 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             self._apply_sample_decorrelation()
             self._apply_cache_box_augmentation()
             self._save_cache()
+
+        if self.samples and bool(self.instance_cache.get("enabled", False)) and any(
+            self._is_indexed_rep(rep) for rep in self.representations
+        ):
+            directory = Path(self.instance_cache["dir"]) if self.instance_cache.get("dir") else self.cache_dir
+            self._input_cache = IndexedInputCache(
+                directory, compression_level=int(self.instance_cache.get("compression_level", 1))
+            )
+            print(f"Indexed input cache: {self._input_cache.path} (populated only as selected samples are read)")
 
     def _labels_dir(self, folder: str) -> Path:
         return self.labels_root / folder / self.labels_subdir if self.folders is not None else self.labels_root
@@ -1565,6 +1606,75 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         )
         return tensor
 
+    def _input_cache_key(self, rep: str, reference: dict, anchor_box: np.ndarray) -> bytes:
+        # Selection settings (including max_samples, seed, folders and sequence
+        # length) do not affect a particular image and must not partition it.
+        if rep not in self._input_cache_signatures:
+            settings = {
+                "version": IndexedInputCache.VERSION,
+                "rep": rep,
+                "image_size": self.image_sizes[rep],
+                "source_image_size": self.source_image_sizes[rep],
+                "frame_size": self.frame_size,
+                "spatial_cutout": resolve_spatial_cutout_config(self.spatial_cutout, rep),
+                "image_window_ms": self.image_window_ms,
+                "temporal_bins": self.temporal_bins,
+                "cstr_max_count": self.cstr_max_count,
+                "time_surface_tau_ms": self.time_surface_tau_ms,
+                "representation_options": representation_options_for(rep, self.representation_options),
+                "representation_channels": self.representation_channels[rep],
+            }
+            self._input_cache_signatures[rep] = hashlib.sha256(
+                json.dumps(settings, sort_keys=True).encode("utf-8")
+            ).digest()
+        raw = reference["raw"]
+        if raw not in self._input_cache_sources:
+            path = Path(raw).resolve()
+            files = (path, path.with_suffix(".raw.tmp_index"))
+            # Fingerprint once per dataset/worker, avoiding RAW reads and a stat
+            # for each cutout. Sources must remain unchanged during a run.
+            stamps = []
+            for file in files:
+                stat = file.stat()
+                stamps.append((str(file), stat.st_size, stat.st_mtime_ns))
+            self._input_cache_sources[raw] = json.dumps(stamps).encode("utf-8")
+        key = hashlib.sha256(self._input_cache_signatures[rep])
+        key.update(self._input_cache_sources[raw])
+        key.update(str(int(reference["time_us"])).encode("ascii"))
+        cfg = resolve_spatial_cutout_config(self.spatial_cutout, rep)
+        geometry = _fixed_spatial_cutout_geometry(
+            self.source_image_sizes[rep], rep=rep, anchor_box=anchor_box, cfg=cfg,
+        )
+        if geometry is None:
+            geometry = _spatial_cutout_bounds(
+                rep=rep, image_size=self.image_sizes[rep], frame_size=self.frame_size,
+                anchor_box=anchor_box, cfg=cfg,
+            )
+        # Pixel geometry, rather than floating boxes, also shares identical
+        # cutouts across tracks and ignores the unused XT/YT spatial axis.
+        key.update(json.dumps(geometry).encode("ascii"))
+        return key.digest()
+
+    def _prepared_input(self, rep: str, reference: Any, anchor_box: np.ndarray) -> torch.Tensor:
+        cache = getattr(self, "_input_cache", None)
+        key = None
+        if cache is not None and self._is_indexed_rep(rep):
+            key = self._input_cache_key(rep, reference, anchor_box)
+            cached = cache.get(key)
+            if cached is not None:
+                return cached
+        image = _load_image(
+            self._input_image(rep, reference), self.image_sizes[rep],
+            source_size=self.source_image_sizes[rep], rep=rep, frame_size=self.frame_size,
+            anchor_box=anchor_box, spatial_cutout=self.spatial_cutout,
+        )
+        if image.shape[0] != self.representation_channels[rep]:
+            raise ValueError(f'Input {rep} has {image.shape[0]} channels; expected {self.representation_channels[rep]}. '
+                             'Check data.representation_options/representation_channels and stored tensor files.')
+        if key is not None:
+            cache.put(key, image)
+        return image
+
     def __getitem__(self, idx: int) -> KalmanForecastSample:
         sample = self.samples[idx]
         if bool(self.box_augmentation.get("enabled", False)) and bool(
@@ -1578,20 +1688,9 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         for rep, path_or_paths in sample["input_paths"].items():
             paths = path_or_paths if isinstance(path_or_paths, list) else [path_or_paths]
             images = [
-                _load_image(
-                    self._input_image(rep, path),
-                    self.image_sizes[rep],
-                    source_size=self.source_image_sizes[rep],
-                    rep=rep,
-                    frame_size=self.frame_size,
-                    anchor_box=past_boxes[-1],
-                    spatial_cutout=self.spatial_cutout,
-                )
+                self._prepared_input(rep, path, past_boxes[-1])
                 for path in paths
             ]
-            if any(image.shape[0] != self.representation_channels[rep] for image in images):
-                raise ValueError(f'Input {rep} has {images[0].shape[0]} channels; expected {self.representation_channels[rep]}. '
-                                 'Check data.representation_options/representation_channels and stored tensor files.')
             inputs[rep] = torch.stack(images, dim=0) if isinstance(path_or_paths, list) else images[0]
         folder = sample["folder"]
         frame_key = f"{folder}/{sample['anchor_stem']}" if folder else sample["anchor_stem"]

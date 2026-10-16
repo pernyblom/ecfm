@@ -1,6 +1,8 @@
 from copy import deepcopy
+from contextlib import closing
 from pathlib import Path
 import pickle
+import sqlite3
 
 import numpy as np
 import pytest
@@ -149,10 +151,12 @@ def test_indexed_forecasting_window_changes_inputs_and_cache_key(fred):
     assert not torch.equal(short[0].inputs['event_stack'], long[0].inputs['event_stack'])
 
 
-def test_indexed_forecasting_spawned_training_workers(fred):
+@pytest.mark.parametrize('cache_enabled', [False, True])
+def test_indexed_forecasting_spawned_training_workers(fred, cache_enabled):
     root, _ = fred
     cfg = indexed_forecast_config(root)
     cfg['data'].update(representations=['event_stack'], representation_sequences={}, max_samples=4)
+    cfg['data']['instance_cache'] = {'enabled': cache_enabled}
     dataset = _build_dataset(cfg, 'train', folders_override=['0', '1'])
     # Populate parent caches before spawning; workers must rebuild their own.
     expected = _collate([dataset[i] for i in range(len(dataset))])
@@ -162,6 +166,214 @@ def test_indexed_forecasting_spawned_training_workers(fred):
     torch.testing.assert_close(torch.cat([batch.inputs['event_stack'] for batch in actual]),
                                expected.inputs['event_stack'])
     assert [key for batch in actual for key in batch.frame_keys] == expected.frame_keys
+
+
+def _cutout_count(dataset):
+    with closing(sqlite3.connect(dataset._input_cache.path)) as connection:
+        return connection.execute('SELECT COUNT(*) FROM cutouts').fetchone()[0]
+
+
+def test_indexed_input_cache_roundtrip_sequences_multichannel_and_rgb(fred, monkeypatch):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['representation_options'] = {
+        'time_surface': {'include_activity': False},
+        'event_stack': {'bins': 5, 'split_polarity': True},
+    }
+    cfg['data']['spatial_cutout'] = {
+        'mode': 'fixed_pixels', 'size_px': [4, 4], 'event_count_normalization': 'joint_max',
+    }
+    reference = _build_dataset(cfg, 'train', folders_override=['0'])[0]
+    cfg['data']['instance_cache'] = {'enabled': True}
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert dataset._indexed_source is None and _cutout_count(dataset) == 0
+    first = dataset[0]
+    assert _cutout_count(dataset) == 3  # two time surfaces and one event stack; no RGB
+    for rep in reference.inputs:
+        torch.testing.assert_close(first.inputs[rep], reference.inputs[rep], rtol=0, atol=0)
+    # Mutation of a fetched tensor must not change future cache hits.
+    first.inputs['event_stack'].fill_(42)
+    warm = _build_dataset(cfg, 'train', folders_override=['0'])
+    original = warm._input_image
+    native_reads = []
+
+    def native_only(rep, ref):
+        assert not warm._is_indexed_rep(rep), 'cache hit must bypass RAW decoding and rendering'
+        native_reads.append(rep)
+        return original(rep, ref)
+
+    monkeypatch.setattr(warm, '_input_image', native_only)
+    restored = warm[0]
+    assert native_reads == ['padded_rgb']
+    assert warm._indexed_source is None
+    for rep in reference.inputs:
+        torch.testing.assert_close(restored.inputs[rep], reference.inputs[rep], rtol=0, atol=0)
+    for name in ('past_boxes', 'future_boxes', 'past_times_s', 'future_times_s'):
+        torch.testing.assert_close(getattr(restored, name), getattr(reference, name), rtol=0, atol=0)
+    assert restored.frame_key == reference.frame_key
+    assert restored.input_paths == reference.input_paths
+    dataset[1]
+    assert _cutout_count(dataset) == 5  # overlapping sequence frame shares an entry
+
+
+def test_indexed_input_cache_only_selected_samples_and_extends(fred, monkeypatch):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['event_stack'], representation_sequences={}, max_samples=2,
+                       instance_cache={'enabled': True})
+    small = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    assert _cutout_count(small) == 0
+    expected = [small[i] for i in range(len(small))]
+    assert _cutout_count(small) == 2
+    cfg['data']['max_samples'] = 4
+    large = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    assert _cutout_count(large) == 2
+    original = large._input_image
+    reads = []
+
+    def observe(rep, ref):
+        reads.append(ref)
+        return original(rep, ref)
+
+    monkeypatch.setattr(large, '_input_image', observe)
+    for i, reference in enumerate(expected):
+        assert large[i].frame_key == reference.frame_key
+        torch.testing.assert_close(large[i].inputs['event_stack'], reference.inputs['event_stack'])
+    assert reads == []
+    large[2]
+    large[3]
+    assert len(reads) == 2 and _cutout_count(large) == 4
+    cfg['data']['max_samples'] = 1
+    smaller = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    smaller[0]
+    assert smaller._indexed_source is None and _cutout_count(smaller) == 4
+    # A decorrelated subset also creates entries only for its final selection.
+    cfg['data']['instance_cache']['dir'] = str(root / 'decorrelated_cache')
+    cfg['data']['max_samples'] = 10
+    cfg['data']['decorrelation'] = {'enabled': True, 'method': 'random', 'target_samples': 2,
+                                  'min_samples': 1}
+    selected = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    assert len(selected) == 2 and _cutout_count(selected) == 0
+    for i in range(len(selected)):
+        selected[i]
+    assert _cutout_count(selected) == 2
+
+
+@pytest.mark.parametrize('change', [
+    {'image_window_ms': 70},
+    {'temporal_bins': 10},
+    {'time_surface_tau_ms': 5},
+    {'representation_options': {'time_surface': {'include_activity': False}}},
+    {'image_sizes': {'time_surface': [6, 6]}},
+    {'spatial_cutout': {'mode': 'fixed_pixels', 'size_px': [4, 4]}},
+    {'spatial_cutout': {'event_count_normalization': 'joint_max'}},
+])
+def test_indexed_input_cache_invalidates_preprocessing(fred, change):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['time_surface'], representation_sequences={},
+                       instance_cache={'enabled': True})
+    original = _build_dataset(cfg, 'train', folders_override=['0'])
+    original[0]
+    cfg['data'].update(change)
+    changed = _build_dataset(cfg, 'train', folders_override=['0'])
+    changed[0]
+    assert changed._indexed_source is not None and _cutout_count(changed) == 2
+
+
+def test_indexed_input_cache_invalidates_source_and_anchor(fred):
+    import os
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['event_stack'], representation_sequences={},
+                       instance_cache={'enabled': True},
+                       spatial_cutout={'mode': 'fixed_pixels', 'size_px': [4, 4]})
+    original = _build_dataset(cfg, 'train', folders_override=['0'])
+    original[0]
+    for source in ('events.raw', 'events.raw.tmp_index'):
+        path = root / '0/Event' / source
+        stat = path.stat()
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        changed = _build_dataset(cfg, 'train', folders_override=['0'])
+        changed[0]
+        assert changed._indexed_source is not None
+    changed.samples[0]['past_boxes'][-1, 0] += .1
+    changed[0]
+    assert _cutout_count(changed) == 4
+
+
+@pytest.mark.parametrize('rep,cutout', [
+    ('event_stack', {}),
+    ('event_stack', {'mode': 'fixed_pixels', 'size_px': [4, 4]}),
+    ('xt', {'mode': 'fixed_pixels', 'size_px': [4, 4]}),
+    ('yt', {'mode': 'fixed_pixels', 'size_px': [4, 4]}),
+    ('event_stack', {'mode': 'box_scale', 'scale': 1}),
+])
+def test_indexed_input_cache_deduplicates_equivalent_pixel_crops(fred, monkeypatch, rep, cutout):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=[rep], representation_sequences={}, image_sizes={rep: [8, 8]},
+                       instance_cache={'enabled': True}, spatial_cutout=cutout)
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    dataset.samples[0]['past_boxes'][-1, :2] += .025  # away from integer mask boundaries
+    first = dataset[0].inputs[rep].clone()
+    box = dataset.samples[0]['past_boxes'][-1]
+    # All changes keep the actual pixel crop unchanged.
+    box[:2] += .001
+    if cutout.get('mode') != 'box_scale':
+        box[2:] *= 2
+    if rep == 'xt':
+        box[1] += .5
+    if rep == 'yt':
+        box[0] += .5
+
+    def unexpected_render(*args):
+        pytest.fail('identical pixel cutout should reuse the existing entry')
+
+    monkeypatch.setattr(dataset, '_input_image', unexpected_render)
+    torch.testing.assert_close(dataset[0].inputs[rep], first, rtol=0, atol=0)
+    assert _cutout_count(dataset) == 1
+
+
+def test_indexed_input_cache_concurrent_cold_workers(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['time_surface', 'event_stack'], max_samples=6)
+    reference = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    expected = _collate([reference[i] for i in range(len(reference))])
+    cfg['data']['instance_cache'] = {'enabled': True}
+    dataset = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    # Repeated indices deliberately send duplicate cache misses to both workers.
+    from torch.utils.data import DataLoader
+    loader = DataLoader(dataset, batch_size=2, num_workers=2, collate_fn=_collate,
+                        sampler=[0, 1, 0, 1, 2, 3, 4, 5], multiprocessing_context='spawn')
+    batches = list(loader)
+    for rep in expected.inputs:
+        actual = torch.cat([batch.inputs[rep] for batch in batches])
+        torch.testing.assert_close(actual, expected.inputs[rep][[0, 1, 0, 1, 2, 3, 4, 5]], rtol=0, atol=0)
+    assert _cutout_count(dataset) > 0
+    # Warm main-process reads use worker-created entries without opening RAW.
+    for i in range(len(dataset)):
+        dataset[i]
+    assert dataset._indexed_source is None
+    restored = pickle.loads(pickle.dumps(dataset))
+    torch.testing.assert_close(restored[0].inputs['event_stack'], expected.inputs['event_stack'][0])
+    assert restored._indexed_source is None
+
+
+@pytest.mark.parametrize('overrides, message', [
+    ({'box_augmentation': {'enabled': True, 'live': True}}, 'box_augmentation'),
+    ({'event_image_source': 'rendered'}, 'event_image_source'),
+    ({'cache_dir': None}, 'requires instance_cache.dir'),
+    ({'instance_cache': {'enabled': True, 'compression_level': 10}}, 'compression_level'),
+])
+def test_indexed_input_cache_validation(fred, overrides, message):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['instance_cache'] = {'enabled': True}
+    cfg['data'].update(overrides)
+    with pytest.raises(ValueError, match=message):
+        _build_dataset(cfg, 'train', folders_override=['0'])
 
 
 def test_indexed_forecasting_rejects_future_windows_and_missing_fixed_scale(fred):

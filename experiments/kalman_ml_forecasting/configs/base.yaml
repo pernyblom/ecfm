@@ -90,6 +90,14 @@ data:
   # Use indexed to render causal windows from Event/events.raw + .raw.tmp_index
   # during training; rendered preserves the pre-generated PNG workflow.
   event_image_source: rendered
+  # Optional disk cache for final indexed event tensors, after cropping and
+  # normalization. Filled lazily by selected samples; reusable/extendable when
+  # max_samples changes. RGB/native frames keep their existing readers.
+  # Requires event_image_source: indexed and box_augmentation.enabled: false.
+  instance_cache:
+    enabled: false
+    dir: null  # defaults to data.cache_dir; use a shared local SSD directory
+    compression_level: 1  # lossless zlib, 0 (fastest/largest) through 9
   # Channels are inferred from these per-representation renderer settings.
   # representation_options:
   #   voxel_grid: {bins: 5}  # five signed float channels

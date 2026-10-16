@@ -21,6 +21,7 @@ def resolve_event_image_options(data_cfg: Dict[str, Any]) -> Dict[str, Any]:
         'event_cache_bytes': data_cfg.get('event_cache_bytes', 32 * 1024 * 1024),
         'representation_options': data_cfg.get('representation_options') or {},
         'representation_channels': resolve_representation_channels(data_cfg),
+        'instance_cache': data_cfg.get('instance_cache') or {},
     }
 
 

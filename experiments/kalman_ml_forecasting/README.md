@@ -49,6 +49,47 @@ Data
   `rgb`, `padded_rgb`, and `event_frames` retain their existing file readers.
   `data.backend: raw` is the separate hierarchical MAE adapter; leave that
   setting unset when using indexed inputs with the standard residual model.
+- Enable `data.instance_cache` to reuse the final indexed event-image tensors:
+
+  ```yaml
+  data:
+    event_image_source: indexed
+    instance_cache:
+      enabled: true
+      dir: outputs/kalman_indexed_cutouts  # optional; defaults to data.cache_dir
+      compression_level: 1
+    box_augmentation:
+      enabled: false
+  ```
+
+  The cache fills on first access, after sample limits, track selection and
+  decorrelation. Only cutouts actually fetched by the loader are written; the
+  first epoch still renders cache misses. Later epochs/runs read losslessly
+  compressed float32 tensors after all resizing, cropping and normalization.
+  Raw event arrays and intermediate full images are never cached. RGB and
+  dataset-native event frames keep their usual readers. Boxes, times and other
+  sample metadata remain in the existing `data.cache_dir` sample cache.
+
+  Storage is one appendable `indexed_cutouts_v1.sqlite3` file, using standard
+  Python SQLite and zlib without extra dependencies. Individual sequence frames
+  share entries when their reference, pixel crop and preprocessing match. Keys
+  exclude sample limits, subset selection, split names and sequence lengths,
+  so smaller subsets reuse a larger cache and larger subsets append only
+  missing cutouts. Share the same directory across compatible runs. Changed
+  render/crop/normalization settings or RAW/index path, size or modification
+  time produce new entries. Source files must stay unchanged during a run.
+  Old entries are retained; stop users of a cache before deleting its directory
+  to reclaim space. Changing renderer/preprocessing code requires clearing the
+  cache or bumping `IndexedInputCache.VERSION`.
+
+  SQLite WAL supports concurrent loader readers/writers with process-local
+  connections and atomic inserts, including interrupted builds. Use a local
+  disk (preferably SSD); WAL is unsuitable for network filesystems. Compression
+  levels range from 0 to 9 (default 1 favors speed), without quantization or
+  float16 conversion. Disk use can still be substantial. Enabling the cache
+  with box augmentation on the same split raises an error.
+  See the [real-data cache benchmark](INPUT_CACHE_BENCHMARK.md) for measured
+  loading/training speedups and a repeatable benchmark command.
 - New formats are `time_surface`, `time_surface_linear`,
   `multi_channel_time_surface`, `event_stack`, and `voxel_grid`. They support
   configurable channel counts, grid aliases, and mixing with existing formats.
