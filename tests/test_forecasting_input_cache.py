@@ -7,6 +7,7 @@ import torch
 
 from ecfm.utils import file_io
 from experiments.kalman_ml_forecasting.data.input_cache import IndexedInputCache
+from experiments.kalman_ml_forecasting.data.cache_precompute import precompute_loader_options
 
 if not hasattr(sqlite3, 'SQLITE_IOERR'):
     pytest.skip('SQLite fault injection needs the error-code API from Python 3.11+', allow_module_level=True)
@@ -23,6 +24,16 @@ def sqlite_error(code):
     error = sqlite3.OperationalError('simulated file access failure')
     error.sqlite_errorcode = code
     return error
+
+
+@pytest.mark.parametrize('config', [
+    {'num_workers': -1}, {'batch_size': 0}, {'prefetch_factor': 0}, {'log_every': 0},
+    {'timeout': -1}, {'timeout': float('nan')}, {'timeout': 1},
+    {'multiprocessing_context': 'fork'}, {'multiprocessing_context': 'invalid'},
+])
+def test_precompute_rejects_invalid_loader_options(config):
+    with pytest.raises(ValueError, match='data.instance_cache.precompute'):
+        precompute_loader_options(config)
 
 
 @pytest.mark.parametrize('stage', ['open', 'PRAGMA', 'CREATE', 'SELECT', 'FETCH', 'INSERT', 'AFTER_INSERT', 'CLOSE'])

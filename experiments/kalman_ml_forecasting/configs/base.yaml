@@ -91,14 +91,25 @@ data:
   # during training; rendered preserves the pre-generated PNG workflow.
   event_image_source: rendered
   # Optional disk cache for final indexed event tensors, after cropping and
-  # normalization. Filled lazily by selected samples; reusable/extendable when
-  # max_samples changes. include_rgb also caches rgb/padded_rgb cutouts.
+  # normalization. Reusable/extendable when max_samples changes.
+  # include_rgb also caches rgb/padded_rgb cutouts.
   # Requires box_augmentation.enabled: false. Rendered mode can cache RGB only.
   instance_cache:
     enabled: false
+    mode: lazy  # lazy (first access) or eager (all selected samples before training)
     include_rgb: false  # opt in to caching rgb and padded_rgb (including sequences)
     dir: null  # defaults to data.cache_dir; use a shared local SSD directory
     compression_level: 1  # lossless zlib, 0 (fastest/largest) through 9
+    # Independent of train.*; used only in eager mode. No image batches are
+    # returned to the parent, so pin_memory is unnecessary for this pass.
+    precompute:
+      num_workers: 0  # safest/lowest memory; increase to parallelize rendering
+      batch_size: 32  # samples per progress/worker task, including the final partial batch
+      pin_memory: false
+      prefetch_factor: 1  # queued tasks per worker; only used with num_workers > 0
+      multiprocessing_context: spawn  # spawn or forkserver (where supported)
+      timeout: 0  # seconds per worker result; 0 disables; must be 0 with no workers
+      log_every: 100  # progress interval in batches
   # Channels are inferred from these per-representation renderer settings.
   # representation_options:
   #   voxel_grid: {bins: 5}  # five signed float channels
@@ -299,6 +310,8 @@ train:
   batch_size: 32
   accumulation_steps: 1
   num_workers: 2
+  multiprocessing_context: spawn  # avoids inheriting SQLite/CUDA/native thread state
+  timeout: 0  # optional worker-result timeout in seconds (0 disables)
   persistent_workers: true
   pin_memory: true
   prefetch_factor: 2

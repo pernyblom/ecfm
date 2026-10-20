@@ -168,9 +168,180 @@ def test_indexed_forecasting_spawned_training_workers(fred, cache_enabled):
     assert [key for batch in actual for key in batch.frame_keys] == expected.frame_keys
 
 
+@pytest.mark.parametrize('workers', [0, 1])
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='Pinned memory requires CUDA')
+def test_forecasting_loader_pins_custom_batch_tensors(fred, workers):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data']['max_samples'] = 3
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    expected = _collate([dataset[i] for i in range(2)])
+    loader = _make_loader(dataset, batch_size=2, shuffle=False,
+                          train_cfg={'num_workers': workers, 'pin_memory': True,
+                                     'persistent_workers': False})
+    batches = list(loader)
+    batch = batches[0]
+    assert batch.frame_keys == expected.frame_keys and batch.input_paths == expected.input_paths
+    for rep, tensor in batch.inputs.items():
+        assert tensor.is_pinned()
+        torch.testing.assert_close(tensor, expected.inputs[rep])
+    for name in ('past_boxes', 'future_boxes', 'past_times_s', 'future_times_s'):
+        tensor = getattr(batch, name)
+        assert tensor.is_pinned()
+        torch.testing.assert_close(tensor, getattr(expected, name))
+
+
 def _cutout_count(dataset):
     with closing(sqlite3.connect(dataset._input_cache.path)) as connection:
         return connection.execute('SELECT COUNT(*) FROM cutouts').fetchone()[0]
+
+
+@pytest.mark.parametrize('workers', [0, 1, 2])
+def test_eager_cutout_cache_covers_selected_subset_and_sequences(fred, monkeypatch, workers):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(max_samples=10, spatial_cutout={'mode': 'fixed_pixels', 'size_px': [4, 4]},
+                       decorrelation={'enabled': True, 'method': 'random', 'target_samples': 3,
+                                      'min_samples': 1})
+    reference = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    expected = [reference[i] for i in range(len(reference))]
+    cfg['data']['instance_cache'] = {
+        'enabled': True, 'include_rgb': True, 'mode': 'eager',
+        'precompute': {'num_workers': workers, 'batch_size': 2, 'pin_memory': False,
+                       'prefetch_factor': 1, 'timeout': 60 if workers else 0},
+    }
+    # Deliberately unusable training options: building must use only precompute.
+    cfg['train'] = {'num_workers': -1, 'batch_size': 0, 'pin_memory': True}
+    torch.manual_seed(42)
+    rng = torch.get_rng_state().clone()
+    dataset = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    assert torch.equal(torch.get_rng_state(), rng)
+    assert len(dataset) == 3 and dataset._input_cache_complete
+    assert dataset._indexed_source is None and dataset._input_cache._connection is None
+    keys = {
+        dataset._input_cache_key(rep, ref, sample['past_boxes'][-1])
+        for sample in dataset.samples
+        for rep, refs in sample['input_paths'].items()
+        for ref in (refs if isinstance(refs, list) else [refs])
+    }
+    assert _cutout_count(dataset) == len(keys)
+
+    def unexpected_read(*args):
+        pytest.fail('every selected input must already be cached')
+
+    monkeypatch.setattr(dataset, '_input_image', unexpected_read)
+    for i, expected_sample in enumerate(expected):
+        actual = dataset[i]
+        assert actual.frame_key == expected_sample.frame_key
+        for rep in expected_sample.inputs:
+            torch.testing.assert_close(actual.inputs[rep], expected_sample.inputs[rep], rtol=0, atol=0)
+    # A new eager run must also visit all samples without decoding anything.
+    monkeypatch.setattr(type(dataset), '_input_image', unexpected_read)
+    warm = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    assert _cutout_count(warm) == len(keys) and warm._input_cache_complete
+
+
+def test_eager_cache_serves_spawned_training_workers(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(max_samples=5, instance_cache={
+        'enabled': True, 'include_rgb': True, 'mode': 'eager',
+        'precompute': {'num_workers': 1, 'batch_size': 2},
+    })
+    dataset = _build_dataset(cfg, 'train', folders_override=['0', '1'])
+    expected = _collate([dataset[i] for i in range(len(dataset))])
+    # Invalid image contents retain source size/mtime fingerprints. Cache hits
+    # must bypass image decoders in child processes as well as in the parent.
+    for path in root.glob('*/PADDED_RGB/*.jpg'):
+        stat = path.stat()
+        path.write_bytes(b'X' * stat.st_size)
+        import os
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    loader = _make_loader(dataset, batch_size=2, shuffle=False,
+                          train_cfg={'num_workers': 1, 'pin_memory': False,
+                                     'persistent_workers': False, 'timeout': 60})
+    batches = list(loader)
+    for rep, tensor in expected.inputs.items():
+        torch.testing.assert_close(torch.cat([batch.inputs[rep] for batch in batches]), tensor,
+                                   rtol=0, atol=0)
+
+
+def test_eager_cache_skips_uncached_branches_and_rejects_training_misses(fred, monkeypatch):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(max_samples=3, instance_cache={'enabled': True, 'mode': 'eager'})
+    from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
+    original = TrackKalmanForecastDataset._input_image
+    reads = []
+
+    def events_only(self, rep, ref):
+        assert rep != 'padded_rgb', 'RGB is not opted in to caching'
+        reads.append(rep)
+        return original(self, rep, ref)
+
+    monkeypatch.setattr(TrackKalmanForecastDataset, '_input_image', events_only)
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert reads
+    dataset._input_cache.close()
+    with closing(sqlite3.connect(dataset._input_cache.path)) as connection:
+        connection.execute('DELETE FROM cutouts')
+        connection.commit()
+    reads.clear()
+    with pytest.raises(RuntimeError, match='Eager input cache miss'):
+        dataset[0]
+    assert not reads
+
+
+@pytest.mark.parametrize('workers', [0, 1])
+def test_eager_cache_failure_preserves_entries_and_can_resume(fred, monkeypatch, workers):
+    from experiments.kalman_ml_forecasting.data.cache_precompute import populate_instance_cache
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['padded_rgb'], representation_sequences={}, max_samples=5,
+                       instance_cache={'enabled': True, 'include_rgb': True})
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    dataset.instance_cache['precompute'] = {'num_workers': workers, 'batch_size': 1,
+                                           'timeout': 60 if workers else 0}
+    reference = Path(dataset.samples[1]['input_paths']['padded_rgb'])
+    # Leave the first sample valid so failure occurs after at least one insert.
+    dataset.samples[1]['input_paths']['padded_rgb'] = str(root / 'missing.jpg')
+    with pytest.raises(RuntimeError, match='Precomputing input cache failed at sample 1'):
+        populate_instance_cache(dataset)
+    assert not dataset._input_cache_complete
+    assert dataset._input_cache._connection is None and dataset._indexed_source is None
+    assert _cutout_count(dataset) >= 1
+    dataset.samples[1]['input_paths']['padded_rgb'] = str(reference)
+    populate_instance_cache(dataset)
+    assert dataset._input_cache_complete
+    for i in range(len(dataset)):
+        dataset[i]
+
+
+@pytest.mark.parametrize('event_source', ['indexed', 'rendered'])
+def test_eager_rgb_only_cache_and_extension(fred, monkeypatch, event_source):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=['padded_rgb'], representation_sequences={}, max_samples=2,
+                       event_image_source=event_source,
+                       instance_cache={'enabled': True, 'include_rgb': True, 'mode': 'eager'})
+    small = _build_dataset(cfg, 'train', folders_override=['0'])
+    expected = [small[i] for i in range(len(small))]
+    cfg['data']['max_samples'] = 5
+    large = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert large._input_cache_complete and len(large) == 5
+    for i, sample in enumerate(expected):
+        torch.testing.assert_close(large[i].inputs['padded_rgb'], sample.inputs['padded_rgb'])
+    assert large._indexed_source is None
+
+
+def test_eager_cache_empty_dataset_does_not_start_workers(fred):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(history_ms=100000,
+                       instance_cache={'enabled': True, 'mode': 'eager',
+                                       'precompute': {'num_workers': 2}})
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    assert len(dataset) == 0 and dataset._input_cache is None
 
 
 @pytest.mark.parametrize('include_rgb', [False, True])

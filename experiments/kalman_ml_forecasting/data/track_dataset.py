@@ -22,6 +22,7 @@ from ecfm.utils.event_representations import (
 )
 from ..utils.config import resolve_spatial_cutout_config
 from .input_cache import IndexedInputCache
+from .cache_precompute import populate_instance_cache, precompute_loader_options
 
 
 @dataclass
@@ -684,6 +685,7 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         self.box_augmentation = dict(box_augmentation or {})
         self.instance_cache = dict(instance_cache or {})
         self._input_cache = None
+        self._input_cache_complete = False
         self._input_cache_signatures = {}
         self._input_cache_sources = {}
         self.representation_sequences = {
@@ -734,6 +736,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                         raise ValueError('Indexed cstr3_fixed requires positive cstr_max_count')
         _validate_box_augmentation(self.box_augmentation)
         if bool(self.instance_cache.get("enabled", False)):
+            mode = str(self.instance_cache.get("mode", "lazy"))
+            if mode not in {"lazy", "eager"}:
+                raise ValueError("data.instance_cache.mode must be lazy or eager.")
+            if mode == "eager":
+                precompute_loader_options(dict(self.instance_cache.get("precompute") or {}))
             if self.event_image_source != "indexed" and not bool(self.instance_cache.get("include_rgb", False)):
                 raise ValueError("data.instance_cache requires data.event_image_source: indexed or include_rgb: true.")
             if bool(self.box_augmentation.get("enabled", False)):
@@ -775,7 +782,10 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             self._input_cache = IndexedInputCache(
                 directory, compression_level=int(self.instance_cache.get("compression_level", 1))
             )
-            print(f"Input cutout cache: {self._input_cache.path} (populated only as selected samples are read)")
+            mode = str(self.instance_cache.get("mode", "lazy"))
+            print(f"Input cutout cache: {self._input_cache.path} (mode={mode})")
+            if mode == "eager":
+                populate_instance_cache(self)
 
     def _labels_dir(self, folder: str) -> Path:
         return self.labels_root / folder / self.labels_subdir if self.folders is not None else self.labels_root
@@ -1689,6 +1699,12 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             cached = cache.get(key)
             if cached is not None:
                 return cached
+            if getattr(self, "_input_cache_complete", False):
+                raise RuntimeError(
+                    f"Eager input cache miss for {rep}, reference {reference!r}. "
+                    "Sources and preprocessing must stay unchanged after precomputation. "
+                    "Rebuild the dataset to populate missing cutouts."
+                )
         image = _load_image(
             self._input_image(rep, reference), self.image_sizes[rep],
             source_size=self.source_image_sizes[rep], rep=rep, frame_size=self.frame_size,

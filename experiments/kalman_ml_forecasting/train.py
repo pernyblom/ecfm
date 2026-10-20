@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import faulthandler
 from dataclasses import dataclass
 import json
 import sys
@@ -22,6 +23,7 @@ from experiments.kalman_ml_forecasting.data.track_dataset import (
     KalmanForecastSample,
     TrackKalmanForecastDataset,
 )
+from experiments.kalman_ml_forecasting.data.cache_precompute import initialize_input_worker
 from experiments.kalman_ml_forecasting.metrics import summarize_forecast_metrics
 from experiments.kalman_ml_forecasting.models.factory import build_model
 from experiments.kalman_ml_forecasting.models.kalman_filter import kalman_config_from_dict, kalman_forecast
@@ -103,6 +105,14 @@ class Batch:
     frame_times_s: List[float]
     track_ids: List[int]
     input_paths: List[Dict[str, object]]
+
+    def pin_memory(self) -> Batch:
+        self.inputs = {name: tensor.pin_memory() for name, tensor in self.inputs.items()}
+        self.past_boxes = self.past_boxes.pin_memory()
+        self.future_boxes = self.future_boxes.pin_memory()
+        self.past_times_s = self.past_times_s.pin_memory()
+        self.future_times_s = self.future_times_s.pin_memory()
+        return self
 
 
 def _collate(batch: List[KalmanForecastSample]) -> Batch:
@@ -401,6 +411,11 @@ def _make_loader(dataset, *, batch_size: int, shuffle: bool, train_cfg: Dict) ->
         "pin_memory": bool(train_cfg.get("pin_memory", torch.cuda.is_available())),
     }
     if num_workers > 0:
+        # Workers start when iteration begins, often after the model is on CUDA.
+        # Spawn avoids inheriting native thread pools, CUDA and SQLite handles.
+        kwargs["multiprocessing_context"] = train_cfg.get("multiprocessing_context", "spawn")
+        kwargs["worker_init_fn"] = initialize_input_worker
+        kwargs["timeout"] = float(train_cfg.get("timeout", 0))
         kwargs["persistent_workers"] = bool(train_cfg.get("persistent_workers", True))
         if train_cfg.get("prefetch_factor") is not None:
             kwargs["prefetch_factor"] = int(train_cfg["prefetch_factor"])
@@ -536,6 +551,7 @@ def _metric_improved(value: float, best: float | None, *, mode: str) -> bool:
 
 
 def main() -> None:
+    faulthandler.enable(all_threads=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--resume-checkpoint", type=Path, default=None)

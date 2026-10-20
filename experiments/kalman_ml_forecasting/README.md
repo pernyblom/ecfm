@@ -64,7 +64,7 @@ Data
       enabled: false
   ```
 
-  The cache fills on first access, after sample limits, track selection and
+  The default `mode: lazy` fills on first access, after sample limits, track selection and
   decorrelation. Only cutouts actually fetched by the loader are written; the
   first epoch still renders cache misses. Later epochs/runs read losslessly
   compressed float32 tensors after all resizing, cropping and normalization.
@@ -75,6 +75,52 @@ Data
   event branches and dataset-native event frames keep their usual readers.
   Existing event caches extend in place when RGB is enabled. Boxes, times and other
   sample metadata remain in the existing `data.cache_dir` sample cache.
+
+  Set `mode: eager` to finish all eligible cutouts for the **entire selected
+  dataset** before training starts, including every representation-sequence
+  frame and the final partial batch:
+
+  ```yaml
+  data:
+    instance_cache:
+      enabled: true
+      mode: eager
+      include_rgb: true
+      dir: outputs/kalman_indexed_cutouts
+      compression_level: 1
+      precompute:
+        num_workers: 0
+        batch_size: 32
+        pin_memory: false
+        prefetch_factor: 1
+        multiprocessing_context: spawn
+        timeout: 0
+        log_every: 100
+  ```
+
+  `precompute` settings are independent of `train.*`. Zero workers builds in
+  the main process and uses the least memory; increase `num_workers` to render
+  in separate processes. `batch_size` groups samples into worker tasks without
+  stacking images. Workers write cutouts directly and return only completion
+  counts, so pinning has no tensor payload to accelerate; leave `pin_memory`
+  false. `prefetch_factor` is the number of queued tasks per worker. Workers
+  always exit after this pass, before training loaders start. Spawn is the
+  default; `forkserver` is also allowed where supported. Fork is excluded to
+  avoid inheriting SQLite, CUDA, or native thread-pool state. `timeout` sets
+  seconds to wait for a worker result (including startup); zero disables it
+  and is required with zero workers. `log_every` controls progress in batches.
+
+  Precomputation runs after track selection, sample caps, random subsets and
+  decorrelation, separately for each constructed split. Training and per-epoch
+  evaluation datasets finish before the first epoch; a final-only test dataset
+  is prepared when it is constructed for final evaluation. Existing entries
+  are reused and missing entries appended, so interrupted builds resume on
+  the next run. Failures abort dataset construction with sample, representation
+  and source context. After a successful eager pass, an eligible cache miss
+  raises an error instead of rendering during training. This completion state
+  belongs to the constructed dataset, not a persistent global cache marker.
+  Rendered event branches, native event frames and RGB without `include_rgb`
+  remain on their existing readers. Empty datasets skip precomputation.
 
   Storage is one appendable `indexed_cutouts_v1.sqlite3` file, using standard
   Python SQLite and zlib without extra dependencies. Individual sequence frames
@@ -296,6 +342,21 @@ python experiments/kalman_ml_forecasting/train.py --config experiments/kalman_ml
 Set `train.log_file` to tee stdout and stderr to a log file while still
 printing to the terminal. `train.log_file_mode` accepts `w` to overwrite or `a`
 to append.
+
+Training workers default to `train.multiprocessing_context: spawn`, avoiding
+inherited CUDA/SQLite state on platforms that would otherwise fork. An optional
+`train.timeout` (seconds, default 0/disabled) bounds waits for worker results.
+`train.pin_memory` pins all tensors in the custom training batch; it can
+increase locked host-memory use, especially with prefetching and multiple
+persistent evaluation loaders. Lower worker/prefetch counts or disable pinning
+when investigating memory pressure.
+
+The trainer and its input workers enable Python's `faulthandler` for native
+crash tracebacks on stderr. For rare silent exits, launch with
+`python -X faulthandler ...` to cover interpreter/worker startup as well, and
+capture process stderr externally: native fault output bypasses the Python
+`train.log_file` tee. Eager caching separates decoding/rendering from training,
+but does not establish the cause of a native crash or an OS out-of-memory kill.
 
 Inspect Spatial Cutouts
 
