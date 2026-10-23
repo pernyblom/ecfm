@@ -550,26 +550,109 @@ def test_indexed_input_cache_only_selected_samples_and_extends(fred, monkeypatch
     assert _cutout_count(selected) == 2
 
 
-@pytest.mark.parametrize('change', [
-    {'image_window_ms': 70},
-    {'temporal_bins': 10},
-    {'time_surface_tau_ms': 5},
-    {'representation_options': {'time_surface': {'include_activity': False}}},
-    {'image_sizes': {'time_surface': [6, 6]}},
-    {'spatial_cutout': {'mode': 'fixed_pixels', 'size_px': [4, 4]}},
-    {'spatial_cutout': {'event_count_normalization': 'joint_max'}},
+@pytest.mark.parametrize('rep,change', [
+    ('time_surface', {'image_window_ms': 70}),
+    ('xt_my', {'temporal_bins': 10}),
+    ('time_surface', {'time_surface_tau_ms': 5}),
+    ('time_surface', {'representation_options': {'time_surface': {'include_activity': False}}}),
+    ('time_surface', {'image_sizes': {'time_surface': [6, 6]}}),
+    ('time_surface', {'spatial_cutout': {'mode': 'fixed_pixels', 'size_px': [4, 4]}}),
+    ('event_stack', {'spatial_cutout': {'event_count_normalization': 'joint_max'}}),
+    ('event_stack', {'representation_options': {'event_stack': {'normalization': 'none'}}}),
+    ('event_stack', {'representation_options': {'event_stack': {'bins': 5}}}),
+    ('cstr3_fixed', {'cstr_max_count': 40}),
+    ('multi_channel_time_surface', {'time_surface_tau_ms': 5}),
+    ('time_surface', {'spatial_cutout': {'event_count_normalization': {'mode': 'max', 'channels': [0]}}}),
 ])
-def test_indexed_input_cache_invalidates_preprocessing(fred, change):
+def test_indexed_input_cache_invalidates_preprocessing(fred, rep, change):
     root, _ = fred
     cfg = indexed_forecast_config(root)
-    cfg['data'].update(representations=['time_surface'], representation_sequences={},
-                       instance_cache={'enabled': True})
+    cfg['data'].update(representations=[rep], image_sizes={rep: [8, 8]}, representation_sequences={},
+                       cstr_max_count=20, instance_cache={'enabled': True})
     original = _build_dataset(cfg, 'train', folders_override=['0'])
     original[0]
     cfg['data'].update(change)
     changed = _build_dataset(cfg, 'train', folders_override=['0'])
     changed[0]
     assert changed._indexed_source is not None and _cutout_count(changed) == 2
+
+
+@pytest.mark.parametrize('rep,cutout,change', [
+    ('time_surface', {}, {'temporal_bins': 10, 'cstr_max_count': 40}),
+    ('time_surface', {}, {'spatial_cutout': {'event_count_normalization': 'joint_max'}}),
+    ('time_surface', {}, {'representation_options': {'time_surface': {'include_activity': True}}}),
+    ('time_surface', {}, {'time_surface_tau_ms': 10}),  # default is window / 3
+    ('time_surface', {}, {'image_window_ms': 30.0001}),  # same integer window
+    ('time_surface', {}, {'frame_size': [16, 16]}),
+    ('time_surface', {}, {'spatial_cutout': {'mode': 'off', 'scale': 7, 'size_px': 20, 'fill': .5}}),
+    ('time_surface_linear', {}, {'time_surface_tau_ms': 5}),
+    ('multi_channel_time_surface', {}, {'representation_options': {'multi_channel_time_surface': {'decay_ms': [2.5, 5, 10]}}}),
+    ('event_stack', {}, {'temporal_bins': 10, 'time_surface_tau_ms': 5, 'cstr_max_count': 40}),
+    ('event_stack', {}, {'representation_options': {'event_stack': {'bins': 3, 'split_polarity': False, 'normalization': 'max'}}}),
+    ('voxel_grid', {}, {'temporal_bins': 10, 'time_surface_tau_ms': 5}),
+    ('cstr3', {}, {'temporal_bins': 10, 'time_surface_tau_ms': 5, 'cstr_max_count': 40}),
+    ('xt_my', {'mode': 'fixed_pixels', 'size_px': [4, 4]},
+     {'frame_size': [16, 16], 'spatial_cutout': {'mode': 'fixed', 'size_px': [4, 7], 'scale': 3, 'min_size_px': 20, 'fill': .5}}),
+    ('yt_mx', {'mode': 'fixed_pixels', 'size_px': [4, 4]},
+     {'spatial_cutout': {'mode': 'fixed_px', 'size_px': [7, 4], 'scale': 3, 'fill_value': .5}}),
+    ('xt_2x2', {'mode': 'fixed_pixels', 'size_px': [4, 4]},
+     {'spatial_cutout': {'mode': 'fixed', 'size_px': [4, 7]}}),
+    ('padded_rgb', {}, {'temporal_bins': 10, 'image_window_ms': 70, 'time_surface_tau_ms': 5}),
+    ('padded_rgb', {}, {'spatial_cutout': {'event_count_normalization': 'max'}}),
+    ('event_stack', {'mode': 'box_scale', 'scale': 1}, {'frame_size': [16, 16]}),
+    ('event_stack', {'event_count_normalization': 'max'},
+     {'spatial_cutout': {'event_count_normalization': {'mode': 'per_channel_max', 'channels': [2, 1, 0]}}}),
+])
+def test_input_cache_reuses_equivalent_preprocessing(fred, monkeypatch, rep, cutout, change):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=[rep], image_sizes={rep: [8, 8]}, representation_sequences={},
+                       spatial_cutout=cutout, instance_cache={'enabled': True, 'include_rgb': True})
+    original = _build_dataset(cfg, 'train', folders_override=['0'])
+    reference = original.samples[0]['input_paths'][rep]
+    anchor = np.array([.5, .5, .25, .25], dtype=np.float32)
+    expected = original._prepared_input(rep, reference, anchor)
+
+    cfg['data'].update(change)
+    changed = _build_dataset(cfg, 'train', folders_override=['0'])
+    # Verify equivalence independently of cache lookup, then require a cache hit.
+    from experiments.kalman_ml_forecasting.data.track_dataset import _load_image
+    actual = _load_image(changed._input_image(rep, reference), changed.image_sizes[rep],
+                         source_size=changed.source_image_sizes[rep], rep=rep,
+                         frame_size=changed.frame_size, anchor_box=anchor,
+                         spatial_cutout=changed.spatial_cutout)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+    def unexpected_render(*args):
+        pytest.fail('equivalent preprocessing should reuse the existing cutout')
+
+    monkeypatch.setattr(changed, '_input_image', unexpected_render)
+    torch.testing.assert_close(changed._prepared_input(rep, reference, anchor), expected, rtol=0, atol=0)
+    assert _cutout_count(changed) == 1
+
+
+@pytest.mark.parametrize('rep,mode,anchor', [
+    ('event_stack', 'fixed_pixels', [0, 0, .25, .25]),
+    ('xt_my', 'fixed_pixels', [0, .5, .25, .25]),
+    ('yt_mx', 'fixed_pixels', [.5, 0, .25, .25]),
+    ('padded_rgb', 'fixed_pixels', [0, 0, .25, .25]),
+    ('event_stack', 'box_scale', [.5, .5, .25, .25]),
+])
+def test_input_cache_invalidates_fill_when_used(fred, rep, mode, anchor):
+    root, _ = fred
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=[rep], image_sizes={rep: [8, 8]}, representation_sequences={},
+                       spatial_cutout={'mode': mode, 'size_px': [4, 4]},
+                       instance_cache={'enabled': True, 'include_rgb': True})
+    original = _build_dataset(cfg, 'train', folders_override=['0'])
+    reference = original.samples[0]['input_paths'][rep]
+    anchor = np.array(anchor, dtype=np.float32)
+    expected = original._prepared_input(rep, reference, anchor)
+    cfg['data']['spatial_cutout']['fill'] = .5
+    changed = _build_dataset(cfg, 'train', folders_override=['0'])
+    actual = changed._prepared_input(rep, reference, anchor)
+    assert not torch.equal(actual, expected)
+    assert _cutout_count(changed) == 2
 
 
 def test_indexed_input_cache_invalidates_source_and_anchor(fred):

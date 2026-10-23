@@ -400,13 +400,13 @@ def _spatial_cutout_bounds(
     return x0, y0, x1, y1
 
 
-def _normalize_event_count_channels(
-    arr: np.ndarray,
+def _event_count_normalization_spec(
+    channel_count: int,
     *,
     rep: str,
     cfg: Dict[str, Any],
-) -> np.ndarray:
-    """Normalize rendered event-count channels after the spatial cutout."""
+) -> tuple[str, tuple[int, ...]]:
+    """Resolve the effective normalization for both preprocessing and cache keys."""
     normalization = cfg.get("event_count_normalization", "none")
     if isinstance(normalization, dict):
         normalization_cfg = dict(normalization)
@@ -429,7 +429,7 @@ def _normalize_event_count_channels(
     }
     mode = mode_aliases.get(mode, mode)
     if mode == "none":
-        return arr
+        return "none", ()
     if mode not in {"min_max", "max", "joint_min_max", "joint_max"}:
         raise ValueError(
             "data.spatial_cutout.event_count_normalization mode must be one of: "
@@ -438,7 +438,7 @@ def _normalize_event_count_channels(
 
     channels_value = normalization_cfg.get("channels", "auto")
     if channels_value == "auto" or channels_value is None:
-        channels = (tuple(range(arr.shape[2])) if _base_representation_name(rep).lower() == 'event_stack'
+        channels = (tuple(range(channel_count)) if _base_representation_name(rep).lower() == 'event_stack'
                     else _AUTO_EVENT_COUNT_CHANNELS.get(_base_representation_name(rep).lower(), ()))
     else:
         values = channels_value if isinstance(channels_value, (list, tuple)) else [channels_value]
@@ -451,15 +451,26 @@ def _normalize_event_count_channels(
                 channel = _CHANNEL_NAME_TO_INDEX[key]
             else:
                 channel = int(value)
-            if channel < 0 or channel >= arr.shape[2]:
+            if channel < 0 or channel >= channel_count:
                 raise ValueError(
                     f"Event-count channel {channel} is out of range for representation {rep!r} "
-                    f"with {arr.shape[2]} channels."
+                    f"with {channel_count} channels."
                 )
             if channel not in channels_list:
                 channels_list.append(channel)
         channels = tuple(channels_list)
-    if not channels:
+    return (mode, tuple(sorted(channels))) if channels else ("none", ())
+
+
+def _normalize_event_count_channels(
+    arr: np.ndarray,
+    *,
+    rep: str,
+    cfg: Dict[str, Any],
+) -> np.ndarray:
+    """Normalize rendered event-count channels after the spatial cutout."""
+    mode, channels = _event_count_normalization_spec(arr.shape[2], rep=rep, cfg=cfg)
+    if mode == "none":
         return arr
 
     out = arr.copy()
@@ -1635,24 +1646,42 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
     def _input_cache_key(self, rep: str, reference: Any, anchor_box: np.ndarray) -> bytes:
         # Selection settings (including max_samples, seed, folders and sequence
         # length) do not affect a particular image and must not partition it.
+        cfg = resolve_spatial_cutout_config(self.spatial_cutout, rep)
         if rep not in self._input_cache_signatures:
             settings = {
                 "version": IndexedInputCache.VERSION,
+                "key_version": 2,
                 "rep": rep,
                 "image_size": self.image_sizes[rep],
                 "source_image_size": self.source_image_sizes[rep],
-                "frame_size": self.frame_size,
-                "spatial_cutout": resolve_spatial_cutout_config(self.spatial_cutout, rep),
-                "representation_channels": self.representation_channels[rep],
+                "normalization": _event_count_normalization_spec(
+                    self.representation_channels[rep], rep=rep, cfg=cfg,
+                ),
             }
             if self._is_indexed_rep(rep):
-                # Preserve the v1 event key format so existing caches extend
-                # in place when RGB caching is switched on.
-                settings.update(
-                    image_window_ms=self.image_window_ms, temporal_bins=self.temporal_bins,
-                    cstr_max_count=self.cstr_max_count, time_surface_tau_ms=self.time_surface_tau_ms,
-                    representation_options=representation_options_for(rep, self.representation_options),
-                )
+                base = _base_representation_name(rep).lower()
+                opts = representation_options_for(rep, self.representation_options)
+                # Match the integer window used by _input_image. Global renderer
+                # settings only matter for representations that consume them.
+                window_us = max(1, round(self.image_window_ms * 1000))
+                settings["window_us"] = window_us
+                if base in {"xt", "yt", "xt_my", "yt_mx", "xy_p45", "xy_m45", "yt_p45", "yt_m45"}:
+                    settings["temporal_bins"] = self.temporal_bins
+                if base == "cstr3_fixed":
+                    settings["cstr_max_count"] = float(self.cstr_max_count)
+                tau_us = window_us / 3 if self.time_surface_tau_ms is None else self.time_surface_tau_ms * 1000
+                if base in {"time_surface", "time_surface_linear"}:
+                    settings["include_activity"] = opts.get("include_activity", True)
+                    if base == "time_surface":
+                        settings["tau_us"] = float(opts["tau_ms"] * 1000 if "tau_ms" in opts else tau_us)
+                elif base == "multi_channel_time_surface":
+                    settings["decay_us"] = ([float(v * 1000) for v in opts["decay_ms"]]
+                                            if "decay_ms" in opts else [tau_us / 4, tau_us / 2, tau_us])
+                    settings["split_polarity"] = opts.get("split_polarity", False)
+                elif base in {"event_stack", "voxel_grid"}:
+                    settings.update(bins=opts.get("bins", 3),
+                                    split_polarity=opts.get("split_polarity", False),
+                                    renderer_normalization=opts.get("normalization", "max"))
             self._input_cache_signatures[rep] = hashlib.sha256(
                 json.dumps(settings, sort_keys=True).encode("utf-8")
             ).digest()
@@ -1677,18 +1706,29 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         key.update(self._input_cache_sources[source_key])
         if indexed:
             key.update(str(int(reference["time_us"])).encode("ascii"))
-        cfg = resolve_spatial_cutout_config(self.spatial_cutout, rep)
         geometry = _fixed_spatial_cutout_geometry(
             self.source_image_sizes[rep], rep=rep, anchor_box=anchor_box, cfg=cfg,
         )
+        fill = None
         if geometry is None:
             geometry = _spatial_cutout_bounds(
                 rep=rep, image_size=self.image_sizes[rep], frame_size=self.frame_size,
                 anchor_box=anchor_box, cfg=cfg,
             )
+            if geometry == (0, 0, *self.image_sizes[rep]):
+                geometry = None  # A full-image mask has no effect.
+            if geometry is not None:
+                fill = float(cfg.get("fill", cfg.get("fill_value", 0.0)))
+            geometry = ("mask", geometry)
+        else:
+            left, top, width, height = geometry
+            source_w, source_h = self.source_image_sizes[rep]
+            if left < 0 or top < 0 or left + width > source_w or top + height > source_h:
+                fill = float(cfg.get("fill", cfg.get("fill_value", 0.0)))
+            geometry = ("crop", geometry)
         # Pixel geometry, rather than floating boxes, also shares identical
         # cutouts across tracks and ignores the unused XT/YT spatial axis.
-        key.update(json.dumps(geometry).encode("ascii"))
+        key.update(json.dumps((geometry, fill)).encode("ascii"))
         return key.digest()
 
     def _prepared_input(self, rep: str, reference: Any, anchor_box: np.ndarray) -> torch.Tensor:
