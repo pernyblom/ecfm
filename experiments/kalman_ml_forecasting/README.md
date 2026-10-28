@@ -311,6 +311,72 @@ data:
     clip_to_frame: true
 ```
 
+Export original-track tracklets
+
+Export a configured split without loading images or events:
+
+```bash
+python experiments/kalman_ml_forecasting/export_tracklets.py --config experiments/kalman_ml_forecasting/configs/base.yaml --split train --seed 123 --output-dir outputs/original_train_tracklets
+```
+
+This uses **only `<labels_root>/<folder>/tracks.txt`**, regardless of
+`data.tracks_file`. Folders without that exact file are skipped, including
+folders with only `cleaned_tracks.txt`. Original tracks are interpolated onto
+the `Event_YOLO` label timestamps with the same alignment and normalized
+`[cx, cy, w, h]` boxes as the forecasting dataset. Box augmentation is disabled.
+No rendered representations, RAW events, sample caches or cutout caches are
+read or created, and missing images do not exclude tracklets.
+
+`--split` selects a configured split name, including `train_eval`. Selection
+follows training: `train`/`train_eval` use the configured folder holdout when
+enabled; otherwise `train_eval` reads `data.train_eval_source_split` (default
+`train`). Split-specific `max_tracks_*`, `max_samples_*` and decorrelation
+settings apply. `--seed` overrides `data.seed`; omit it to use the config.
+The usual dataset seed offsets apply (`train`: 0, `train_eval`: 1, `val`: 2,
+`test`: 3, other names: 4). Explicit holdout/decorrelation seeds retain their
+configured values. Holdout folders are selected before folders without
+`tracks.txt` are removed, preserving the configured train/evaluation boundary.
+
+The 1.2-second requirement means **36 intervals (37 timestamps) at FRED's
+cadence**, approximately 1.2 seconds. The nominal minimum duration
+is 1.2 seconds (or `data.min_track_duration_ms` if larger), rounded to the
+nearest label interval, following the training sampler's convention.
+Configured history and forecast steps are retained; the future is extended
+only when needed to reach that interval count. At FRED's 33,333 us cadence,
+36 intervals span 1.199988 s; this small rounding difference is accepted
+without adding a 37th interval. With the default config this gives 12 history
+intervals and 24 future intervals. Other label rates use the corresponding
+rounded interval count. This also exports full-length windows when the config
+uses a shorter forecast. Actual durations are checked against the rounded
+interval span, allowing one timestamp tick per interval of quantization,
+before sample caps and decorrelation. Windows and tracks lacking the required
+intervals are excluded. These original-track, full-length exports can differ
+from training samples built from cleaned tracks, shorter prediction horizons,
+augmented boxes, or representation-availability filters.
+
+The output directory contains:
+
+- `tracklets.jsonl`: one complete tracklet per line, with past/future boxes
+  and times in seconds, interval count, label stems, anchor, folder, source file, original
+  track ID, exported track ID and tracklet ID. It can be read line by line
+  with Python's standard `json` module.
+- `tracklets.csv`: a compact index for manual inspection, with IDs, folder,
+  start/anchor/end times, duration, interval count and point counts.
+- `manifest.json`: selection settings, seeds, timestamp units, counts,
+  skipped folders, eligible/exported folders and exported track ID mappings.
+
+Original integer track IDs are preserved. If files reuse an ID, the first
+folder in sorted order keeps it and later collisions receive IDs above the
+largest original ID in the eligible split. IDs are reserved before sample
+selection so changing caps or seeds does not renumber a surviving track.
+`original_track_id` always records the source ID. Each `tl_<sha256>` tracklet
+ID identifies its folder, original track, anchor and label window, independently
+of selection order and remapped track IDs. Re-running an unchanged config and
+seed produces the same tracklet records. An empty selection writes an empty
+JSONL, a CSV header and a manifest with zero counts. Paths, including those
+inside the config, follow the training CLI convention and are relative to the
+working directory; run the command from the repository root.
+
 Render
 
 ```bash
