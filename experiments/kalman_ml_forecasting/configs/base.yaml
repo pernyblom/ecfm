@@ -307,6 +307,22 @@ kalman:
   measurement_size_std: 0.11314614
 
 
+
+# Trainen on only cleaned_tracks.txt subset
+# kalman:
+#   enabled: true
+#   motion_model: constant_velocity
+#   initial_pos_std: 9.9999977e-07
+#   initial_size_std: 0.053936101
+#   initial_vel_std: 2.717032e-06
+#   process_pos_std: 9.9999977e-07
+#   process_size_std: 1.2825201
+#   process_vel_std: 0.13746056
+#   process_size_vel_std: 3.1973501e-05
+#   measurement_pos_std: 0.010033878
+#   measurement_size_std: 0.11327392
+
+
 train:
   device: cuda
   epochs: 40
