@@ -2,7 +2,7 @@ data:
   images_root: outputs/fred_reps
   labels_root: D:/datasets/FRED
   labels_subdir: Event_YOLO
-  tracks_file: tracks.txt
+  tracks_file: cleaned_tracks.txt
   split_files:
     train: D:/datasets/FRED/dataset_splits/canonical/train_split.txt
     test: D:/datasets/FRED/dataset_splits/canonical/test_split.txt
@@ -146,7 +146,7 @@ data:
   # built. Use ["all"] to apply it to every constructed split.
   decorrelation:
     enabled: true
-    splits: ["test"]
+    splits: ["test", "train"]
     # greedy: remove samples to reduce motion-prior predictability.
     # random: skip scoring and keep a reproducible random subset only.
     method: greedy

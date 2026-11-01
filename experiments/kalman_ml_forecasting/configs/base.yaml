@@ -1,11 +1,11 @@
 data:
   images_root: outputs/fred_reps
-  labels_root: datasets/FRED
+  labels_root: D:/datasets/FRED
   labels_subdir: Event_YOLO
   tracks_file: cleaned_tracks.txt
   split_files:
-    train: datasets/FRED/dataset_splits/canonical/train_split.txt
-    test: datasets/FRED/dataset_splits/canonical/test_split.txt
+    train: D:/datasets/FRED/dataset_splits/canonical/train_split.txt
+    test: D:/datasets/FRED/dataset_splits/canonical/test_split.txt
   # Optional random folder-level holdout from split_files.train. When enabled,
   # the train dataset uses the remaining folders and train_eval uses the held-out
   # folders, so per-epoch train_eval samples are not trained on.

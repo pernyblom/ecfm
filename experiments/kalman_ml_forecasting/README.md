@@ -932,7 +932,9 @@ offset by split; set it explicitly only when you want the same candidate
 sampling seed everywhere. `random_subset_seed` and `random_seed` default to the
 same seed when left blank.
 
-The decorrelation log reports the score before/after, mean acceleration norm,
+The decorrelation log reports before/after values (`before->after`) for the
+score, mean absolute Pearson correlation (`mean_abs_corr`), mean ridge linear
+R-squared across the acceleration axes (`mean_r2`), mean acceleration norm,
 absolute fitted acceleration magnitude `|a|`, and turning acceleration
 `|a_perp|`, where `a_perp` is the acceleration component perpendicular to fitted
 velocity.

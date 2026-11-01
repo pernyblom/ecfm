@@ -1507,6 +1507,8 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
             f"kept {len(self.samples)}/{before} samples "
             f"(feature_mode={cfg.get('feature_mode', 'motion_priors')}, greedy_candidates={greedy_candidates}, "
             f"score={before_score['score']:.6g}->{current_score['score']:.6g}, "
+            f"mean_abs_corr={before_score['mean_abs_corr']:.6g}->{current_score['mean_abs_corr']:.6g}, "
+            f"mean_r2={before_score['mean_r2']:.6g}->{current_score['mean_r2']:.6g}, "
             f"mean_accel_norm={before_score['mean_accel_norm']:.3g}->{current_score['mean_accel_norm']:.3g}, "
             f"|a| mean/median/p90={before_motion['abs_accel_mean']:.3g}/"
             f"{before_motion['abs_accel_median']:.3g}/{before_motion['abs_accel_p90']:.3g}->"
