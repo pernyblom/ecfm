@@ -205,7 +205,11 @@ visualization:
 - Samples are track-aligned from `cleaned_tracks.txt` and anchor label times in
   `Event_YOLO`.
 - Each sample uses one anchor image at time `t`, past boxes up to `t`, and
-  future boxes after `t`.
+  future boxes after `t`. `(history_ms / 1000) / label_period_s` determines the
+  rounded number of observed points, including the anchor;
+  `(forecast_ms / 1000) / label_period_s` determines the rounded number of future
+  points. At FRED's cadence, 400 ms history and 800 ms forecast give 12 observed
+  points and 24 future points, spanning 35 timestamp intervals.
 - Set `data.min_track_duration_ms`, for example `1200.0`, to require both whole
   tracks and forecast-window candidates to span at least that long. This keeps
   the selected anchor samples stable when reducing `forecast_ms`; the emitted
@@ -337,18 +341,17 @@ The usual dataset seed offsets apply (`train`: 0, `train_eval`: 1, `val`: 2,
 configured values. Holdout folders are selected before folders without
 `tracks.txt` are removed, preserving the configured train/evaluation boundary.
 
-The 1.2-second requirement means **36 intervals (37 timestamps) at FRED's
-cadence**, approximately 1.2 seconds. The nominal minimum duration
-is 1.2 seconds (or `data.min_track_duration_ms` if larger), rounded to the
-nearest label interval, following the training sampler's convention.
-Configured history and forecast steps are retained; the future is extended
-only when needed to reach that interval count. At FRED's 33,333 us cadence,
-36 intervals span 1.199988 s; this small rounding difference is accepted
-without adding a 37th interval. With the default config this gives 12 history
-intervals and 24 future intervals. Other label rates use the corresponding
-rounded interval count. This also exports full-length windows when the config
-uses a shorter forecast. Actual durations are checked against the rounded
-interval span, allowing one timestamp tick per interval of quantization,
+The nominal 1.2-second export window means **36 points (35 intervals) at FRED's
+cadence**: 12 observed points including the anchor, followed by 24 future points.
+At the 33,333 us cadence, the actual first-to-last timestamp span is 1.166655 s;
+`duration_s` and `num_intervals` report that actual span and interval count.
+The nominal minimum is 1.2 seconds (or `data.min_track_duration_ms` if larger),
+converted to a rounded point count. Configured history and forecast point counts
+are retained; the future is extended only when needed to reach that total point
+count. Other label rates use the corresponding rounded point count. This also
+exports full-length windows when the config uses a shorter forecast. Actual
+durations are checked against the interval span of the minimum point count,
+allowing one timestamp tick per interval of quantization,
 before sample caps and decorrelation. Windows and tracks lacking the required
 intervals are excluded. These original-track, full-length exports can differ
 from training samples built from cleaned tracks, shorter prediction horizons,

@@ -67,6 +67,13 @@ _AUTO_EVENT_COUNT_CHANNELS = {
 _CHANNEL_NAME_TO_INDEX = {"red": 0, "r": 0, "green": 1, "g": 1, "blue": 2, "b": 2}
 
 
+def _forecast_window_steps(*, history_ms: float, forecast_ms: float, label_period_s: float) -> tuple[int, int]:
+    """Return intervals before/after the anchor, counting it as a history point."""
+    history_points = max(1, int(round((history_ms / 1000.0) / label_period_s)))
+    future_points = max(1, int(round((forecast_ms / 1000.0) / label_period_s)))
+    return history_points - 1, future_points
+
+
 def _pair(value: Any, *, name: str) -> tuple[float, float]:
     if isinstance(value, (list, tuple)):
         if len(value) != 2:
@@ -602,7 +609,7 @@ def _read_tracks(path: Path) -> Dict[int, List[Tuple[float, float, float, float,
 
 
 class TrackKalmanForecastDataset(torch.utils.data.Dataset):
-    CACHE_VERSION = 6
+    CACHE_VERSION = 7
 
     def __init__(
         self,
@@ -1070,9 +1077,11 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
         return float(np.median(diffs))
 
     def _window_spec(self, label_period_s: float) -> tuple[int, int]:
-        history_steps = max(1, int(round((self.history_ms / 1000.0) / label_period_s)))
-        future_steps = max(1, int(round((self.forecast_ms / 1000.0) / label_period_s)))
-        return history_steps, future_steps
+        return _forecast_window_steps(
+            history_ms=self.history_ms,
+            forecast_ms=self.forecast_ms,
+            label_period_s=label_period_s,
+        )
 
     def _eligibility_window(self, *, history_steps: int, future_steps: int, label_period_s: float) -> int:
         prediction_window = int(history_steps) + int(future_steps) + 1

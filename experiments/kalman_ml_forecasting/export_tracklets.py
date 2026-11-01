@@ -51,9 +51,9 @@ class ExportTrackletDataset(TrackKalmanForecastDataset):
 
     def _window_spec(self, label_period_s):
         history_steps, future_steps = super()._window_spec(label_period_s)
-        # Match the training sampler's nearest-interval convention: FRED's
-        # 36 intervals span 1.199988 s and count as a nominal 1.2 s window.
-        total_steps = max(1, int(round(self.minimum_duration_s / label_period_s)))
+        # Durations specify point counts, including the history anchor:
+        # nominal 1.2 s at FRED's cadence means 36 points / 35 intervals.
+        total_steps = max(2, int(round(self.minimum_duration_s / label_period_s))) - 1
         return history_steps, max(future_steps, total_steps - history_steps)
 
     def _build_samples(self):
@@ -81,7 +81,7 @@ class ExportTrackletDataset(TrackKalmanForecastDataset):
             duration = round((_parse_frame_time_raw(frames[-1].stem)
                               - _parse_frame_time_raw(frames[0].stem)) * self.label_time_unit, 12)
             period = periods[folder]
-            minimum_steps = max(1, int(round(self.minimum_duration_s / period)))
+            minimum_steps = max(2, int(round(self.minimum_duration_s / period))) - 1
             # Judge duration against the rounded interval count, allowing one
             # timestamp tick of quantization per interval. Genuinely truncated
             # windows are still removed before sample selection.
@@ -236,7 +236,7 @@ def export_tracklets(cfg, *, split, output_dir, seed=None, config_path=None):
         "minimum_duration_s": minimum_duration_s,
         "configured_history_ms": float(data.get("history_ms", 400.0)),
         "configured_forecast_ms": float(data.get("forecast_ms", 800.0)),
-        "window_policy": "Configured history/forecast steps; extend future to the nominal minimum rounded to the nearest label interval. Allow one timestamp tick per interval of duration quantization.",
+        "window_policy": "History includes the anchor. Convert configured durations to rounded point counts; extend future to the nominal minimum point count. N points span N-1 intervals. Allow one timestamp tick per interval of duration quantization.",
         "box_format": "normalized [cx, cy, w, h], interpolated from original tracks.txt; no augmentation",
         "frame_size": list(data["frame_size"]),
         "label_time_unit": dataset.label_time_unit,

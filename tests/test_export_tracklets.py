@@ -12,6 +12,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.kalman_ml_forecasting.export_tracklets import export_tracklets
+from experiments.kalman_ml_forecasting.data.track_dataset import TrackKalmanForecastDataset
+from experiments.kalman_ml_forecasting.acceleration_field import _collect_folder_samples
 from experiments.kalman_ml_forecasting.train import _split_train_eval_folders
 
 
@@ -70,13 +72,13 @@ def test_original_tracks_only_and_collision_ids_reserve_unique_originals(tmp_pat
     assert manifest["skipped_folders_without_tracks_txt"] == ["cleaned_only", "missing"]
     assert manifest["eligible_folders"] == ["a", "b"]
     assert manifest["tracks"] == 4
-    assert len(rows) == 36  # Nine overlapping 1.2 s windows per original track.
+    assert len(rows) == 40  # Ten overlapping 12-point windows per original track.
     mapping = {(row["folder"], row["original_track_id"]): row["track_id"] for row in rows}
     assert mapping == {("a", 7): 7, ("a", 8): 8, ("b", 7): 10, ("b", 9): 9}
     assert len({row["tracklet_id"] for row in rows}) == len(rows)
-    assert all(row["duration_s"] >= 1.2 for row in rows)
+    assert all(row["duration_s"] == 1.1 for row in rows)
     assert all(row["source_tracks_file"] == f"{row['folder']}/tracks.txt" for row in rows)
-    assert all(len(row["past_times_s"]) == len(row["past_boxes"]) == 5 for row in rows)
+    assert all(len(row["past_times_s"]) == len(row["past_boxes"]) == 4 for row in rows)
     assert all(len(row["future_times_s"]) == len(row["future_boxes"]) == 8 for row in rows)
     np.testing.assert_allclose(rows[0]["past_boxes"][0], [0.12, 0.23, 0.04, 0.06])
     assert not (tmp_path / "no_cache").exists()
@@ -85,7 +87,7 @@ def test_original_tracks_only_and_collision_ids_reserve_unique_originals(tmp_pat
     with (output / "tracklets.csv").open(newline="", encoding="utf-8") as stream:
         index = list(csv.DictReader(stream))
     assert [row["tracklet_id"] for row in index] == [row["tracklet_id"] for row in rows]
-    assert all(float(row["duration_s"]) >= 1.2 for row in index)
+    assert all(float(row["duration_s"]) == 1.1 for row in index)
 
 
 def test_actual_duration_filter_precedes_caps_and_uses_full_precision(tmp_path):
@@ -94,8 +96,8 @@ def test_actual_duration_filter_precedes_caps_and_uses_full_precision(tmp_path):
     cfg["data"]["max_samples_train"] = 1
     # At a large absolute timestamp, float32 loses the microsecond differences.
     offset = 100_000_000_000
-    times = [offset + t for t in range(0, 1_200_000, 100_000)]
-    times += [offset + 1_199_000, offset + 1_300_000]
+    times = [offset + t for t in range(0, 1_100_000, 100_000)]
+    times += [offset + 1_099_000, offset + 1_200_000]
     _sequence(Path(cfg["data"]["labels_root"]), "seq", times_us=times)
     output = tmp_path / "export"
     manifest = export_tracklets(cfg, split="train", output_dir=output)
@@ -103,29 +105,60 @@ def test_actual_duration_filter_precedes_caps_and_uses_full_precision(tmp_path):
 
     assert len(rows) == 1
     assert manifest["skipped_short_windows"] == 1
-    assert rows[0]["duration_s"] == 1.2
+    assert rows[0]["duration_s"] == 1.1
     assert rows[0]["past_times_s"][0] == pytest.approx(100000.1)
     assert np.diff(rows[0]["past_times_s"]).min() > 0.09
 
 
 @pytest.mark.parametrize("forecast_ms", [200, 800])
-def test_fred_cadence_keeps_36_intervals_with_timestamp_rounding(tmp_path, forecast_ms):
+def test_fred_cadence_keeps_12_past_and_24_future_points(tmp_path, forecast_ms):
     cfg = _config(tmp_path, ["full", "short"])
     cfg["data"]["forecast_ms"] = forecast_ms
     root = Path(cfg["data"]["labels_root"])
-    _sequence(root, "full", times_us=[i * 33333 for i in range(37)])
-    _sequence(root, "short", times_us=[i * 33333 for i in range(36)])
+    _sequence(root, "full", times_us=[i * 33333 for i in range(36)])
+    _sequence(root, "short", times_us=[i * 33333 for i in range(35)])
     output = tmp_path / "export"
     export_tracklets(cfg, split="train", output_dir=output)
     rows = _rows(output)
 
     assert len(rows) == 1
     assert rows[0]["folder"] == "full"
-    assert rows[0]["duration_s"] == 1.199988
-    assert rows[0]["num_intervals"] == 36
-    assert len(rows[0]["label_stems"]) == 37
-    assert len(rows[0]["past_times_s"]) == 13
+    assert rows[0]["duration_s"] == 1.166655
+    assert rows[0]["num_intervals"] == 35
+    assert len(rows[0]["label_stems"]) == 36
+    assert len(rows[0]["past_times_s"]) == len(rows[0]["past_boxes"]) == 12
     assert len(rows[0]["future_times_s"]) == 24
+    assert rows[0]["anchor_time_s"] == rows[0]["past_times_s"][-1]
+    assert rows[0]["anchor_stem"] == rows[0]["label_stems"][11]
+    assert rows[0]["future_times_s"][0] - rows[0]["anchor_time_s"] == pytest.approx(0.033333)
+
+
+def test_training_export_and_acceleration_samples_share_history_convention(tmp_path):
+    cfg = _config(tmp_path, ["seq"])
+    cfg["data"]["tracks_file"] = "tracks.txt"
+    root = Path(cfg["data"]["labels_root"])
+    _sequence(root, "seq", times_us=[i * 33333 for i in range(36)])
+    dataset = TrackKalmanForecastDataset(
+        images_root=root, labels_root=root, frame_size=(100, 100),
+        representations=[], image_sizes={}, folders=["seq"], tracks_file="tracks.txt",
+        history_ms=400, forecast_ms=800, time_align="none",
+        require_representations=False, verify_render_manifest=False,
+    )
+    output = tmp_path / "export"
+    export_tracklets(cfg, split="test", output_dir=output)
+    rows = _rows(output)
+    acceleration = _collect_folder_samples(
+        folder="seq", cfg=cfg, max_tracks=None, max_samples=None,
+    )
+
+    assert len(dataset) == len(rows) == len(acceleration) == 1
+    sample = dataset.samples[0]
+    assert sample["past_boxes"].shape == (12, 4)
+    assert sample["future_boxes"].shape == (24, 4)
+    assert sample["anchor_stem"] == rows[0]["anchor_stem"] == acceleration[0].anchor_stem
+    assert acceleration[0].num_points == 36
+    np.testing.assert_allclose(sample["past_times_s"], rows[0]["past_times_s"])
+    np.testing.assert_allclose(sample["future_times_s"], rows[0]["future_times_s"])
 
 
 def test_seeded_selection_decorrelation_and_tracklet_identity(tmp_path):

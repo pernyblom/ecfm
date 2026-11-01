@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.kalman_ml_forecasting.data.track_dataset import (
+    _forecast_window_steps,
     _parse_frame_time_raw,
     _read_tracks,
 )
@@ -85,9 +86,9 @@ def _align_track_times(track_times: np.ndarray, label_times: np.ndarray, *, time
 
 
 def _window_spec(*, history_ms: float, forecast_ms: float, label_period_s: float) -> tuple[int, int]:
-    history_steps = max(1, int(round((history_ms / 1000.0) / label_period_s)))
-    future_steps = max(1, int(round((forecast_ms / 1000.0) / label_period_s)))
-    return history_steps, future_steps
+    return _forecast_window_steps(
+        history_ms=history_ms, forecast_ms=forecast_ms, label_period_s=label_period_s,
+    )
 
 
 def _fit_constant_acceleration(

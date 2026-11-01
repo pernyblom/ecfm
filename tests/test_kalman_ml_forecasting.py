@@ -928,12 +928,12 @@ def test_track_kalman_dataset_builds_anchor_sample(tmp_path: Path) -> None:
         verify_render_manifest=False,
     )
 
-    assert len(dataset) == 2
+    assert len(dataset) == 3
     sample = dataset[0]
     assert sample.inputs["cstr3"].shape == (3, 8, 8)
-    assert sample.past_boxes.shape == (2, 4)
+    assert sample.past_boxes.shape == (1, 4)
     assert sample.future_boxes.shape == (1, 4)
-    assert sample.frame_key == "seq/Video_0_frame_1000000"
+    assert sample.frame_key == "seq/Video_0_frame_0"
 
 
 def test_track_kalman_dataset_builds_causal_representation_sequence(tmp_path: Path) -> None:
@@ -1013,10 +1013,10 @@ def test_track_kalman_dataset_uses_dataset_event_frames(tmp_path: Path) -> None:
         verify_render_manifest=True,
     )
 
-    assert len(dataset) == 2
+    assert len(dataset) == 3
     sample = dataset[0]
     assert sample.inputs["event_frames"].shape == (3, 8, 8)
-    assert Path(sample.input_paths["event_frames"]).parts[-3:] == ("Event", "Frames", "Video_0_frame_1000000.png")
+    assert Path(sample.input_paths["event_frames"]).parts[-3:] == ("Event", "Frames", "Video_0_frame_0.png")
 
 
 def test_track_kalman_dataset_allows_empty_representations(tmp_path: Path) -> None:
@@ -1050,5 +1050,5 @@ def test_track_kalman_dataset_allows_empty_representations(tmp_path: Path) -> No
         verify_render_manifest=True,
     )
 
-    assert len(dataset) == 2
+    assert len(dataset) == 3
     assert dataset[0].inputs == {}

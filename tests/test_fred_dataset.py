@@ -147,8 +147,10 @@ def test_indexed_forecasting_window_changes_inputs_and_cache_key(fred):
     cfg['data']['image_window_ms'] = 70
     long = _build_dataset(cfg, 'train', folders_override=['0'])
     assert short._cache_key() != long._cache_key()
-    assert short.samples[0]['anchor_stem'] == long.samples[0]['anchor_stem']
-    assert not torch.equal(short[0].inputs['event_stack'], long[0].inputs['event_stack'])
+    # The first anchor has no earlier labeled history; use the next anchor
+    # so the longer event window can include an additional event.
+    assert short.samples[1]['anchor_stem'] == long.samples[1]['anchor_stem']
+    assert not torch.equal(short[1].inputs['event_stack'], long[1].inputs['event_stack'])
 
 
 @pytest.mark.parametrize('cache_enabled', [False, True])
