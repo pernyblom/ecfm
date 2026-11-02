@@ -218,6 +218,11 @@ def main() -> None:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument(
+        "--print-params",
+        action="store_true",
+        help="Print the current Kalman parameters after every epoch, regardless of validation improvement.",
+    )
     parser.add_argument("--lr", type=float, default=1.0e-2)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--tune-val-fraction", type=float, default=0.2)
@@ -387,6 +392,9 @@ def main() -> None:
             f"train_score={train_score:.6f} val_score={val_score:.6f}{marker} "
             f"val_metrics={json.dumps(val_metrics, sort_keys=True)}"
         )
+        if args.print_params:
+            print(f"Epoch {epoch:04d} Kalman params:")
+            print(_format_yaml(row["params"]))
 
     print("Best Kalman params:")
     print(_format_yaml(best["params"]))

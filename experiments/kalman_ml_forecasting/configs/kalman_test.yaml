@@ -1,0 +1,381 @@
+data:
+  images_root: outputs/fred_reps
+  labels_root: D:/datasets/FRED
+  labels_subdir: Event_YOLO
+  tracks_file: cleaned_tracks.txt
+  split_files:
+    train: D:/datasets/FRED/dataset_splits/canonical/test_split.txt
+    test: D:/datasets/FRED/dataset_splits/canonical/test_split.txt
+  # Optional random folder-level holdout from split_files.train. When enabled,
+  # the train dataset uses the remaining folders and train_eval uses the held-out
+  # folders, so per-epoch train_eval samples are not trained on.
+  train_eval_split:
+    enabled: true
+    eval_fraction: 0.2
+    eval_count:
+    seed: 123
+  representations: ["xt_my", "yt_mx", "cstr3", "padded_rgb"]
+  # Optional causal sequences ending at the forecast anchor. Stride is in
+  # label frames; omitted representations remain single images.
+  # representation_sequences:
+  #   cstr3_fixed: {length: 12, stride: 1}
+  #   padded_rgb: {length: 12, stride: 1}
+  representation_sequences: {}
+  # Optional fixed-shape spatial masking around the final history box, just
+  # before prediction starts. fixed_pixels returns real cropped tensors with
+  # this output size. For xt* representations only the x axis is cut and the
+  # temporal axis is kept intact. For yt* representations only the y axis is cut
+  # and the temporal axis is kept intact. Other representations use both
+  # spatial axes.
+  spatial_cutout:
+    mode: fixed_pixels  # none, box_scale/box_fraction, fixed_pixels/fixed
+    scale: 1.0  # used by box_scale; 1.0 means the current box size
+    size_px: [64, 64]  # used by fixed_pixels
+    min_size_px: 1
+    fill: 0.0
+    # Normalize only known event-count channels after cropping/masking. `none`
+    # preserves rendered values. Other modes: min_max, max, joint_min_max,
+    # joint_max. Per-channel modes scale each polarity independently; joint
+    # modes preserve their relative scale.
+    event_count_normalization: none
+    # Optional per-format overrides merge onto the defaults above. Values stay
+    # in literal image [width, height] order (XT is x,t and YT is t,y).
+    # by_representation:
+    #   cstr2: {size_px: [160, 120]}
+    #   xt: {size_px: [192, 64]}
+    #   yt: {size_px: [64, 144]}
+  # Optional normalized center-size box jitter. It is disabled by default.
+  # `cache` perturbs each sample once before writing the sample cache; `live`
+  # draws fresh perturbations in Dataset.__getitem__ on every fetch. Both can
+  # be enabled together. Offsets are fractions of each box's width/height and
+  # width/height scales are sampled independently from size_scale_range.
+  box_augmentation:
+    enabled: false
+    splits: ["train"]  # split names used by train.py, or ["all"]
+    cache: false
+    live: false
+    center_offset_fraction: [0.0, 0.0]  # max absolute x/y offset
+    size_scale_range: [1.0, 1.0]
+    probability: 1.0  # independently per box unless shared_across_sequence
+    shared_across_sequence: false
+    target: all  # all, past, or future
+    clip_to_frame: true
+  # Add "event_frames" to read dataset-native frames from
+  # datasets/FRED/<folder>/Event/Frames when present.
+  # Set [] to isolate filter-state/covariance inputs; this requires
+  # model.use_filter_state_features: true or model.filter_covariance_features
+  # set to "diag" or "full".
+  frame_size: [1280, 720]
+  retain_spatial_dimensions: false
+  temporal_bins: 224
+  image_sizes:
+    xt_my: [640, 64]
+    xt: [640, 64]
+    yt_mx: [64, 360]
+    yt: [64, 360]
+    cstr2: [640, 360]
+    cstr3: [640, 360]
+    cstr3_fixed: [640, 360]
+    time_surface: [640, 360]
+    time_surface_linear: [640, 360]
+    multi_channel_time_surface: [640, 360]
+    event_stack: [640, 360]
+    voxel_grid: [640, 360]
+    rgb: [640, 360]
+    padded_rgb: [640, 360]
+  label_time_unit: 1.0e-6
+  track_time_unit: 1.0
+  time_align: auto
+  image_window_ms: 400.0
+  # Use indexed to render causal windows from Event/events.raw + .raw.tmp_index
+  # during training; rendered preserves the pre-generated PNG workflow.
+  event_image_source: rendered
+  # Optional disk cache for final indexed event tensors, after cropping and
+  # normalization. Keys use source fingerprints, effective renderer settings,
+  # pixel crop/mask geometry, fill when used, and effective normalization.
+  # Unused settings and sample selection do not partition identical cutouts.
+  # Older key formats remain on disk; use a fresh dir to reclaim that space.
+  # include_rgb also caches rgb/padded_rgb cutouts.
+  # Requires box_augmentation.enabled: false. Rendered mode can cache RGB only.
+  instance_cache:
+    enabled: false
+    mode: lazy  # lazy (first access) or eager (all selected samples before training)
+    include_rgb: false  # opt in to caching rgb and padded_rgb (including sequences)
+    dir: null  # defaults to data.cache_dir; use a shared local SSD directory
+    compression_level: 1  # lossless zlib, 0 (fastest/largest) through 9
+    # Independent of train.*; used only in eager mode. No image batches are
+    # returned to the parent, so pin_memory is unnecessary for this pass.
+    precompute:
+      num_workers: 0  # safest/lowest memory; increase to parallelize rendering
+      batch_size: 32  # samples per progress/worker task, including the final partial batch
+      pin_memory: false
+      prefetch_factor: 1  # queued tasks per worker; only used with num_workers > 0
+      multiprocessing_context: spawn  # spawn or forkserver (where supported)
+      timeout: 0  # seconds per worker result; 0 disables; must be 0 with no workers
+      log_every: 100  # progress interval in batches
+  # Channels are inferred from these per-representation renderer settings.
+  # representation_options:
+  #   voxel_grid: {bins: 5}  # five signed float channels
+  #   event_stack: {bins: 5, split_polarity: true}  # ten channels
+  #   multi_channel_time_surface: {decay_ms: [5, 10, 20, 40], split_polarity: true}
+  representation_options: {}
+  # events_root: datasets/FRED  # defaults to labels_root
+  # time_surface_tau_ms: 30.0  # default: image_window_ms / 3
+  # cstr_max_count: 20.0       # required for indexed cstr3_fixed
+  image_window_mode: trailing
+  verify_render_manifest: false
+  render_manifest_name: render_manifest.json
+  window_tolerance_ms: 5.0
+  history_ms: 400.0
+  forecast_ms: 800.0
+  # Optional minimum usable labeled duration. This filters whole tracks and
+  # forecast-window candidates, so it can require e.g. 1.2 s tracklets even when
+  # history_ms + forecast_ms is shorter. The emitted past/future tensors still
+  # use history_ms and forecast_ms.
+  min_track_duration_ms: 1200.0
+  label_period_s:
+  max_tracks:
+  max_samples_train:
+  max_samples_train_eval:
+  max_samples_val:
+  max_samples_test:
+  filter_missing_representations: true
+  # Optional sample-level decorrelation during dataset construction, applied
+  # after max_samples_* caps. This drops forecast windows, not whole tracks.
+  # Each configured split is decorrelated independently when its dataset is
+  # built. Use ["all"] to apply it to every constructed split.
+  decorrelation:
+    enabled: false
+    splits: ["train", "train_eval"]
+    # greedy: remove samples to reduce motion-prior predictability.
+    # random: skip scoring and keep a reproducible random subset only.
+    method: greedy
+    # Optional reproducible pre-subset before greedy/random selection. Use this
+    # to make different runs start from exactly the same candidate sample pool.
+    random_subset_fraction: 1.0
+    random_subset_samples:
+    random_subset_seed:
+    keep_fraction: 0.5
+    target_samples:
+    min_samples: 4
+    # raw: normalized image position + velocity
+    # centered: centered image position + velocity
+    # motion_priors: centered position + velocity + distance-to-center + speed
+    feature_mode: motion_priors
+    greedy_candidates: 64
+    # Leave blank to use the dataset seed, which is already offset per split.
+    # random_seed controls method=random; seed controls greedy candidate
+    # sampling and is also the fallback for random_subset_seed/random_seed.
+    seed:
+    random_seed:
+    ridge_lambda: 1.0e-3
+    corr_weight: 1.0
+    r2_weight: 1.0
+    # Optional raw px/s^2 penalty for global mean fitted acceleration. Keep 0.0
+    # to only reduce feature predictability; set a small positive value to also
+    # discourage constant acceleration bias such as a global downward tendency.
+    mean_accel_weight: 1.0e-4
+    progress: true
+  seed: 123
+  cache_dir: outputs/kalman_ml_forecasting_cache
+
+model:
+  backbone:
+    type: resnet18
+    in_channels: 3
+    channels: [32, 64, 128]
+    out_dim: 128
+  # Used after the shared 2-D frame encoder for representation sequences.
+  # Options: mean, max, last, gru.
+  temporal_aggregation:
+    type: gru
+    hidden_dim: 128
+    layers: 1
+    dropout: 0.0
+  # Number of box-history samples passed to the learned residual head. If the
+  # dataset history window has fewer samples, the model pads with the earliest box.
+  history_steps: 12
+  # Box-history feature mode for the learned residual head:
+  # - raw: encode normalized absolute history boxes plus relative times
+  # - relative: encode history boxes after subtracting the final history box
+  # - none: do not pass a direct box-history feature to the residual head
+  history_feature_mode: relative
+  # Set fusion_layers/state_layers/residual_layers to 0 for a linear-ish
+  # residual model over the selected learned features, flattened box history,
+  # rollout state, and dt. Defaults keep the historical nonlinear MLP behavior.
+  fusion_hidden_dim: 256
+  fusion_layers: 1
+  state_hidden_dim: 128
+  state_layers: 2
+  residual_hidden_dim: 256
+  residual_layers: 2
+  residual_scale: 1.0
+  predict_size_residuals: true
+  # Rollout initial state: "last_four" keeps the paper-style linear fit,
+  # "kalman_filter" starts the learned residual rollout from the configured
+  # Kalman filter's final history state.
+  initial_state_source: kalman_filter
+  # Future transition underneath the learned acceleration residuals.
+  # constant_velocity preserves historical behavior; configured_kalman uses
+  # the selected 8-D Kalman transition, including motion_model: coupled.
+  rollout_transition: constant_velocity
+  # If true, append the configured Kalman filter's final history state
+  # to the encoder features before image fusion.
+  use_filter_state_features: true
+  # Which Kalman state entries to append, and which covariance entries to keep
+  # when filter_covariance_features is enabled:
+  # - full: [cx, cy, w, h, vx, vy, vw, vh]
+  # - center_full: [cx, cy, vx, vy]
+  # - center_position: [cx, cy]
+  # - center_velocity: [vx, vy]
+  # - velocities: [vx, vy, vw, vh]
+  filter_state_feature_mode: full
+  # Optional transform for selected filter-state center positions only. The
+  # default "none" keeps cx/cy in [0, 1]. "frame_centered" maps cx/cy so frame
+  # center is 0 and image borders are -1/1.
+  filter_state_center_position_normalization: frame_centered
+  # Optional covariance features from the configured Kalman filter history
+  # state. Use "none", "diag" for the selected covariance diagonal entries, or
+  # "full" for the flattened selected covariance submatrix.
+  filter_covariance_features: none
+  cell_local_first_conv: false
+  cell_local_first_conv_representations: []
+
+# Device used by inference utilities. Individual scripts may provide a CLI
+# override; benchmark_inference.py defaults to this value.
+inference:
+  device: cuda
+
+# kalman:
+#   enabled: true
+#   motion_model: constant_velocity  # or constant_acceleration
+#   initial_pos_std: 0.05
+#   initial_size_std: 0.05
+#   initial_vel_std: 1.0
+#   initial_accel_std: 1.0
+#   initial_size_accel_std: 1.0
+#   process_pos_std: 0.001
+#   process_size_std: 0.001
+#   process_vel_std: 0.1
+#   process_size_vel_std: 0.1
+#   process_accel_std: 0.1
+#   process_size_accel_std: 0.1
+#   measurement_pos_std: 0.01
+#   measurement_size_std: 0.01
+# A coupled filter instead uses motion_model: coupled plus an 8x8 continuous-
+# time dynamics_generator. Generate this block from an optimizer report with
+# experiments/kalman_ml_forecasting/coupled_report_to_config.py.
+
+
+
+# Optimized 20000 train samples
+# Best val score: 111.681296
+# --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
+# kalman:
+#   enabled: true
+#   initial_pos_std: 9.7423363e-05
+#   initial_size_std: 0.041994311
+#   initial_vel_std: 0.0040328889
+#   process_pos_std: 3.7525289e-05
+#   process_size_std: 0.83824426
+#   process_vel_std: 0.13031271
+#   process_size_vel_std: 0.012997082
+#   measurement_pos_std: 0.010307864
+#   measurement_size_std: 0.07238128
+
+
+# Optimized 160000 train samples
+# Best val score: 109.78
+# --objective-weights "fde_center_px=1,ade_center_px=0.25,miou=-100"
+# kalman:
+#   enabled: true
+#   # Keep the paper's existing baseline as the default. Sweep this field to
+#   # constant_acceleration to use a 12-D [box, velocity, acceleration] state.
+#   motion_model: constant_velocity
+#   initial_pos_std: 9.6178901e-06
+#   initial_size_std: 0.020246828
+#   initial_vel_std: 0.0004936771
+#   initial_accel_std: 1.0
+#   initial_size_accel_std: 1.0
+#   process_pos_std: 4.2104816e-06
+#   process_size_std: 1.2950349
+#   process_vel_std: 0.13281414
+#   process_size_vel_std: 0.003452712
+#   process_accel_std: 0.1
+#   process_size_accel_std: 0.1
+#   measurement_pos_std: 0.010384851
+#   measurement_size_std: 0.11314614
+
+
+kalman:
+  enabled: true
+  motion_model: constant_velocity
+  initial_pos_std: 9.9999988e-07
+  initial_size_std: 1.0000074e-06
+  initial_vel_std: 9.9999988e-07
+  process_pos_std: 9.9999988e-07
+  process_size_std: 1.1522108
+  process_vel_std: 0.13920113
+  process_size_vel_std: 1.0e-6
+  measurement_pos_std: 0.009908638
+  measurement_size_std: 0.12951224
+
+  
+# Trainen on only cleaned_tracks.txt subset
+# kalman:
+#   enabled: true
+#   motion_model: constant_velocity
+#   initial_pos_std: 9.9999977e-07
+#   initial_size_std: 0.053936101
+#   initial_vel_std: 2.717032e-06
+#   process_pos_std: 9.9999977e-07
+#   process_size_std: 1.2825201
+#   process_vel_std: 0.13746056
+#   process_size_vel_std: 3.1973501e-05
+#   measurement_pos_std: 0.010033878
+#   measurement_size_std: 0.11327392
+
+
+train:
+  device: cuda
+  epochs: 40
+  batch_size: 32
+  accumulation_steps: 1
+  num_workers: 2
+  multiprocessing_context: spawn  # avoids inheriting SQLite/CUDA/native thread state
+  timeout: 0  # optional worker-result timeout in seconds (0 disables)
+  persistent_workers: true
+  pin_memory: true
+  prefetch_factor: 2
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  smooth_l1_beta: 0.05
+  residual_l2_weight: 0.0
+  grad_clip_norm: 10.0
+  log_every: 20
+  # Per-epoch evaluation splits. train_eval uses data.split_files.train with
+  # data.max_samples_train_eval; val is used for best-checkpoint selection.
+  eval_splits_each_epoch: ["train_eval"]
+  best_metric_split: train_eval
+  best_metric: loss
+  best_metric_mode: min
+  # Enable only after data.split_files.test points to a held-out test split.
+  run_test_on_best: true
+  test_split_key: test
+  test_metrics_json: outputs/kalman_ml_forecasting_ckpt/best_test_metrics.json
+  checkpoint_every: 0
+  checkpoint_dir: outputs/kalman_ml_forecasting_ckpt
+  resume_checkpoint:
+  metrics_jsonl: outputs/kalman_ml_forecasting_ckpt/metrics.jsonl
+  log_file: outputs/kalman_ml_forecasting_ckpt/train.log
+  log_file_mode: w
+
+# Display settings affect previews only. Exact representation names override
+# base names, including grid aliases. Select channels using zero-based indices.
+visualization:
+  event_images:
+    mode: auto  # auto, rgb, temporal_rgb, polarity, mean, max, grid
+    normalization: auto  # auto, none, max, min_max, per_channel_min_max
+    # by_representation:
+    #   event_stack: {mode: grid, columns: 5, labels: true}
+    #   voxel_grid: {mode: rgb, channels: [0, 2, 4]}

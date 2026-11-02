@@ -517,6 +517,10 @@ the configured `kalman:` block and optimizes the same weighted objective:
 python experiments/kalman_ml_forecasting/optimize_kalman_backprop.py --config experiments/kalman_ml_forecasting/configs/base.yaml --epochs 50 --lr 1.0e-2 --objective fde_center_px
 ```
 
+Add `--print-params` to print the current parameters in YAML-ready `kalman:`
+format after every epoch, even when the validation score does not improve.
+By default, only the best parameters are printed at the end.
+
 Weighted objectives work the same way:
 
 ```bash
