@@ -8,6 +8,9 @@ equations need, and how much freedom the uncertainty model needs. More freedom
 may improve forecasts, but the comparison must establish whether it works on
 sequences the model has not seen.
 
+For equations, matrix structures, and a worked update example, see the
+[mathematical companion](KALMAN_VARIANTS_MATH.md).
+
 ## What the filter sees and predicts
 
 Each sample supplies a short history of boxes. A box has four numbers: horizontal

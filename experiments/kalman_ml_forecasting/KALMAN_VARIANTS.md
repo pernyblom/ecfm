@@ -12,6 +12,8 @@ available. No learned 12-D generator or new 12-D covariance variants were added.
 
 For a non-specialist explanation of every combination, see
 [Understanding the Kalman variants for UAV forecasting](KALMAN_VARIANTS_GUIDE.md).
+For the state, observation, transition, and covariance matrices and the filter
+updates, see [Kalman filter equations and variant matrices](KALMAN_VARIANTS_MATH.md).
 
 ## Generate and launch the complete sweep
 

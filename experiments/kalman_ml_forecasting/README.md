@@ -471,6 +471,8 @@ Generate all twelve 8-D variant runs with
 the existing sweep generator and `D:/datasets/FRED`. See the
 [generation and batch export commands](KALMAN_VARIANTS.md#generate-and-launch-the-complete-sweep)
 and the [guide for a wider audience](KALMAN_VARIANTS_GUIDE.md).
+The [mathematical companion](KALMAN_VARIANTS_MATH.md) introduces the filter
+matrices, presents the updates, and specifies each variant's matrix structure.
 
 Tune the Kalman filter trust parameters on the training split only:
 
