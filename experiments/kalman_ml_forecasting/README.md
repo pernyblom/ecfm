@@ -466,6 +466,12 @@ fixed/separate/coupled dynamics and diagonal/local/full covariance variants,
 training commands, residual-config export, and dataset-shortcut considerations.
 The existing 12-D constant-acceleration variant remains supported.
 
+Generate all twelve 8-D variant runs with
+[`configs/kalman_variants_sweep.yaml`](configs/kalman_variants_sweep.yaml), using
+the existing sweep generator and `D:/datasets/FRED`. See the
+[generation and batch export commands](KALMAN_VARIANTS.md#generate-and-launch-the-complete-sweep)
+and the [guide for a wider audience](KALMAN_VARIANTS_GUIDE.md).
+
 Tune the Kalman filter trust parameters on the training split only:
 
 ```bash

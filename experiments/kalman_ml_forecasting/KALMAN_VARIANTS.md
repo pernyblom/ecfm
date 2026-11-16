@@ -10,6 +10,129 @@ fixed legacy scalar noise unless `--optimize-noise` is supplied.
 The existing 12-D constant-acceleration baseline and scalar optimizers remain
 available. No learned 12-D generator or new 12-D covariance variants were added.
 
+For a non-specialist explanation of every combination, see
+[Understanding the Kalman variants for UAV forecasting](KALMAN_VARIANTS_GUIDE.md).
+
+## Generate and launch the complete sweep
+
+The [variant sweep](configs/kalman_variants_sweep.yaml) uses the existing generic
+sweep generator and the FRED dataset at `D:/datasets/FRED`. It covers the twelve
+8-D combinations described below. The older
+[`kalman_motion_model_sweep.yaml`](configs/kalman_motion_model_sweep.yaml) remains
+the separate CV-versus-CA scalar-optimizer comparison.
+
+From the repository root, with the project Python environment active:
+
+```powershell
+python scripts/generate_config_sweep.py `
+    --base-config experiments/kalman_ml_forecasting/configs/base.yaml `
+    --spec experiments/kalman_ml_forecasting/configs/kalman_variants_sweep.yaml `
+    --output-dir outputs/kalman_variants
+
+& ./outputs/kalman_variants/run_all.ps1
+```
+
+Generation writes twelve YAML inputs, `manifest.json`, `manifest.csv`, and
+sequential `run_all.ps1` and `run_all.sh` launchers. Generation does not start
+training. Run the Bash launcher from the repository root on a system where the
+configured FRED paths are accessible. Each completed fit writes
+`outputs/kalman_variants/results/<name>.json`; the JSON includes training history,
+validation metrics, parameter counts, and the best fitted model. Optimizer
+progress goes to the console; the `train.*` paths in generated YAMLs are reserved
+for subsequent residual training, not optimizer log files.
+
+All fits use seed 123, 50 epochs, batch size 512, learning rate `1e-3`, sequence
+holdout with fraction 0.2, the same box-error/overlap objective, and the same
+regularization settings. They learn P0/Q/R and the selected dynamics (CV stays
+fixed). The configured device is CUDA; the optimizer falls back to CPU if CUDA
+is unavailable. The scalar initialization comes from the base config; imported
+matrices are cleared so they cannot silently warm-start one structure differently.
+All variants share the metadata cache and have distinct report/output names.
+No rendered images, RAW decoder, or event-image cache are needed for Kalman fits.
+
+The generated YAMLs are **optimizer inputs**. In particular,
+`kalman.dynamics_structure: constant_velocity` selects the optimizer's fixed-CV
+mode when `--dynamics` is omitted. The optimizer normalizes this internally;
+export its report before using the filter with runtime tools or `train.py`.
+
+To adjust the training budget, device, penalties, sample caps, or optimization
+seed, edit `command` in the sweep specification and regenerate. Sample caps are
+CLI options such as `--max-tune-train-samples 2000` and
+`--max-tune-val-samples 2000`; these are applied after the internal folder split.
+Keep `data.seed` and `--seed` consistent when changing seeds. Use a different
+output directory for each seed or ablation because optimizer reports can be
+overwritten. For an unregularized structural comparison, set both penalties to
+zero. Verify all twelve reports completed successfully before batch export.
+
+The sweep uses the canonical training split and makes its own folder holdout;
+it does not use `data.train_eval_split`. Test evaluation is disabled. Select an
+approach on validation before adding `--run-test-on-best` to a final optimizer
+run. The original test split path is retained in the generated configurations.
+
+### Export every fitted filter
+
+After all twelve fits complete, prepare a residual base config that retains the
+original base config's model and representation settings, reads event branches
+directly from FRED RAW files, and keeps test evaluation disabled during comparison.
+The default base representations are supported in indexed mode; if changing
+them, supply their required representation options as described in the README.
+This avoids using the image-free optimizer inputs as the residual base.
+
+```powershell
+@'
+from pathlib import Path
+import yaml
+
+base = Path("experiments/kalman_ml_forecasting/configs/base.yaml")
+config = yaml.safe_load(base.read_text(encoding="utf-8"))
+config["data"].update(event_image_source="indexed", events_root="D:/datasets/FRED")
+config["train"]["run_test_on_best"] = False
+destination = Path("outputs/kalman_variants/residual_base.yaml")
+destination.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+'@ | python -
+```
+
+Then export every fitted report:
+
+```powershell
+$runs = Get-Content outputs/kalman_variants/manifest.json -Raw | ConvertFrom-Json
+foreach ($run in $runs) {
+    $name = $run.name
+    $report = "outputs/kalman_variants/results/$name.json"
+    if (-not (Test-Path -LiteralPath $report)) { throw "Missing fitted report: $report" }
+}
+
+foreach ($run in $runs) {
+    $name = $run.name
+    $residualConfig = "outputs/kalman_variants/residual_configs/$name.yaml"
+    python experiments/kalman_ml_forecasting/coupled_report_to_config.py `
+        "outputs/kalman_variants/results/$name.json" `
+        --base-config outputs/kalman_variants/residual_base.yaml `
+        --use-for-residual-rollout `
+        --training-output-dir "outputs/kalman_variants/residual_runs/$name" `
+        --output $residualConfig
+    if ($LASTEXITCODE -ne 0) { throw "Export failed: $name" }
+}
+```
+
+Export refuses to overwrite an existing YAML; use a fresh destination or add
+`--force` deliberately when replacing exports. These configs inherit the base
+config's residual epoch budget, folder holdout, feature settings, and scalar data
+seed. Residual folder holdout is separate from the optimizer's internal holdout;
+do not treat the two validation scores as the same evaluation protocol.
+
+The rendered-image workflow can instead set `event_image_source: rendered` in
+the residual base if its configured images exist. After export, train any
+individual residual config, or all of them sequentially:
+
+```powershell
+foreach ($run in $runs) {
+    python experiments/kalman_ml_forecasting/train.py `
+        --config "outputs/kalman_variants/residual_configs/$($run.name).yaml"
+    if ($LASTEXITCODE -ne 0) { throw "Residual training failed: $($run.name)" }
+}
+```
+
 ## What the choices mean
 
 `P` is the evolving estimation-error covariance. The learned inputs are `P0`

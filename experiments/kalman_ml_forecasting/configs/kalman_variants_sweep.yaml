@@ -1,0 +1,129 @@
+# All twelve implemented 8-D Kalman variants. Run from the repository root:
+# python scripts/generate_config_sweep.py --base-config experiments/kalman_ml_forecasting/configs/base.yaml --spec experiments/kalman_ml_forecasting/configs/kalman_variants_sweep.yaml --output-dir outputs/kalman_variants
+# Then: & ./outputs/kalman_variants/run_all.ps1
+# The generated YAMLs are optimizer inputs; export each fitted report before
+# using it with train.py. See ../KALMAN_VARIANTS.md for batch export commands.
+command: >-
+  python experiments/kalman_ml_forecasting/optimize_coupled_kalman.py
+  --config {config} --optimize-noise
+  --epochs 50 --lr 1e-3 --batch-size 512 --device cuda
+  --tune-split sequence --tune-val-fraction 0.2 --seed 123
+  --objective-weights "ade_bbox_px=0.25,fde_bbox_px=1,miou=-25"
+  --transition-l2 0.01 --covariance-l2 0.01
+  --output-json {result_json}
+configs_dir: configs
+
+overrides:
+  data.labels_root: D:/datasets/FRED
+  data.events_root: D:/datasets/FRED
+  data.split_files:
+    train: D:/datasets/FRED/dataset_splits/canonical/train_split.txt
+    test: D:/datasets/FRED/dataset_splits/canonical/test_split.txt
+  data.tracks_file: cleaned_tracks.txt
+  data.history_ms: 400.0
+  data.forecast_ms: 800.0
+  data.min_track_duration_ms: 1200.0
+  data.seed: 123
+  # Tuning reads boxes/timestamps directly; no event rendering is needed.
+  data.representations: []
+  data.representation_sequences: {}
+  data.event_image_source: rendered
+  data.instance_cache.enabled: false
+  data.box_augmentation.enabled: false
+  data.decorrelation.enabled: false
+  data.max_tracks: null
+  data.max_tracks_train: null
+  data.max_samples_train: null
+  # Reset imported matrices so all variants start from the base scalar noise.
+  kalman.motion_model: constant_velocity
+  kalman.dynamics_generator: null
+  kalman.initial_covariance: null
+  kalman.process_covariance: null
+  kalman.measurement_covariance: null
+  train.resume_checkpoint: null
+  train.run_test_on_best: false
+
+templates:
+  # One metadata cache shared by all identical sample selections.
+  data.cache_dir: "{output_dir}/cache"
+  train.checkpoint_dir: "{output_dir}/runs/{name}/ckpt"
+  train.metrics_jsonl: "{output_dir}/runs/{name}/metrics.jsonl"
+  train.test_metrics_json: "{output_dir}/runs/{name}/best_test_metrics.json"
+  train.log_file: "{output_dir}/runs/{name}/train.log"
+
+# CoupledBoxKalmanFilter reads dynamics_structure as its optimizer mode when
+# --dynamics is omitted, including constant_velocity. Export normalizes this
+# into a runtime-valid kalman block. Covariance modes are explicit for P0/Q/R.
+cases:
+  - name: cv_legacy
+    overrides:
+      kalman.dynamics_structure: constant_velocity
+      kalman.initial_covariance_structure: legacy_diagonal
+      kalman.process_covariance_structure: legacy_diagonal
+      kalman.measurement_covariance_structure: legacy_diagonal
+  - name: cv_diagonal
+    overrides:
+      kalman.dynamics_structure: constant_velocity
+      kalman.initial_covariance_structure: diagonal
+      kalman.process_covariance_structure: diagonal
+      kalman.measurement_covariance_structure: diagonal
+  - name: cv_local
+    overrides:
+      kalman.dynamics_structure: constant_velocity
+      kalman.initial_covariance_structure: per_channel
+      kalman.process_covariance_structure: per_channel
+      kalman.measurement_covariance_structure: diagonal
+  - name: cv_full
+    overrides:
+      kalman.dynamics_structure: constant_velocity
+      kalman.initial_covariance_structure: full
+      kalman.process_covariance_structure: full
+      kalman.measurement_covariance_structure: full
+  - name: separate_legacy
+    overrides:
+      kalman.dynamics_structure: per_channel
+      kalman.initial_covariance_structure: legacy_diagonal
+      kalman.process_covariance_structure: legacy_diagonal
+      kalman.measurement_covariance_structure: legacy_diagonal
+  - name: separate_diagonal
+    overrides:
+      kalman.dynamics_structure: per_channel
+      kalman.initial_covariance_structure: diagonal
+      kalman.process_covariance_structure: diagonal
+      kalman.measurement_covariance_structure: diagonal
+  - name: separate_local
+    overrides:
+      kalman.dynamics_structure: per_channel
+      kalman.initial_covariance_structure: per_channel
+      kalman.process_covariance_structure: per_channel
+      kalman.measurement_covariance_structure: diagonal
+  - name: separate_full
+    overrides:
+      kalman.dynamics_structure: per_channel
+      kalman.initial_covariance_structure: full
+      kalman.process_covariance_structure: full
+      kalman.measurement_covariance_structure: full
+  - name: coupled_legacy
+    overrides:
+      kalman.dynamics_structure: full
+      kalman.initial_covariance_structure: legacy_diagonal
+      kalman.process_covariance_structure: legacy_diagonal
+      kalman.measurement_covariance_structure: legacy_diagonal
+  - name: coupled_diagonal
+    overrides:
+      kalman.dynamics_structure: full
+      kalman.initial_covariance_structure: diagonal
+      kalman.process_covariance_structure: diagonal
+      kalman.measurement_covariance_structure: diagonal
+  - name: coupled_local
+    overrides:
+      kalman.dynamics_structure: full
+      kalman.initial_covariance_structure: per_channel
+      kalman.process_covariance_structure: per_channel
+      kalman.measurement_covariance_structure: diagonal
+  - name: coupled_full
+    overrides:
+      kalman.dynamics_structure: full
+      kalman.initial_covariance_structure: full
+      kalman.process_covariance_structure: full
+      kalman.measurement_covariance_structure: full
