@@ -34,6 +34,48 @@ def test_stacks_preserve_every_temporal_and_polarity_channel():
     assert tensor.sum() == 2
 
 
+@pytest.mark.parametrize('rep', ['xt_event_stack', 'yt_event_stack'])
+def test_projected_stacks_count_slices_with_local_time_and_collapsed_space(rep):
+    events = [[1, 0, 0, 1], [1, 1, 0, 0], [1, 0, 29, -1],
+              [2, 1, 30, 1], [2, 1, 59, 0], [3, 1, 89, 1],
+              [0, 0, -1, 1], [0, 0, 90, 1], [4, 0, 10, 1], [0, 2, 10, 1]]
+    tensor = render_event_tensor(np.array(events), rep, width=4, height=2,
+        start_us=0, end_us=90, options={'time_bins': 3, 'normalization': 'none'})
+    expected = np.zeros((3, 3, 4) if rep.startswith('xt') else (3, 2, 3), np.float32)
+    if rep.startswith('xt'):
+        expected[0, 0, 1] = 2  # Different y coordinates collapse onto the same XT cell.
+        expected[0, 2, 1] = expected[1, 0, 2] = expected[1, 2, 2] = expected[2, 2, 3] = 1
+    else:
+        expected[0, 0, 0] = expected[0, 1, 0] = expected[0, 0, 2] = 1
+        expected[1, 1, 0] = expected[1, 1, 2] = expected[2, 1, 2] = 1
+    np.testing.assert_array_equal(tensor, expected)
+    reversed_tensor = render_event_tensor(np.array(events)[::-1], rep, width=4, height=2,
+        start_us=0, end_us=90, options={'time_bins': 3, 'normalization': 'none'})
+    np.testing.assert_array_equal(reversed_tensor, expected)
+
+
+@pytest.mark.parametrize('rep', ['xt_event_stack', 'yt_event_stack'])
+def test_projected_stack_options_polarity_grid_normalization_and_timestamps(rep):
+    origin = 2**55
+    events = np.array([[0, 0, origin, 1], [0, 0, origin, 1],
+                       [0, 0, origin+25, 0], [3, 1, origin+99, -1]], dtype=np.int64)
+    raw_opts = {'bins': 4, 'time_bins': 5, 'split_polarity': True, 'normalization': 'none'}
+    raw = render_event_tensor(events, rep, width=4, height=2, start_us=origin,
+                              end_us=origin+100, options=raw_opts)
+    assert raw.shape == ((8, 5, 4) if rep.startswith('xt') else (8, 2, 5))
+    assert raw[0].sum() == 2 and raw[5].sum() == raw[7].sum() == 1
+    assert raw.sum() == 4 and raw.dtype == np.float32
+    normalized = render_event_tensor(events, rep, width=4, height=2, start_us=origin,
+        end_us=origin+100, options={**raw_opts, 'normalization': 'max'})
+    np.testing.assert_array_equal(normalized, raw/2)
+    size = (8, 5) if rep.startswith('xt') else (10, 4)
+    grid = render_event_tensor(events, rep+'_2x1', width=4, height=2, start_us=origin,
+        end_us=origin+100, output_size=size, options={**raw_opts, 'normalization': 'max'})
+    assert grid.shape == (8, size[1], size[0]) and grid[7, :, size[0]//2:].max() == 1
+    assert not render(rep, {'bins': 1, 'time_bins': 2}, events=[]).any()
+    assert event_representation_channels(rep, raw_opts) == 8
+
+
 def test_multiscale_surfaces_have_configurable_decays_and_polarities():
     opts = {'decay_ms': [.01, .02, .04, .08], 'split_polarity': True}
     tensor = render('multi_channel_time_surface', opts)
@@ -61,6 +103,9 @@ def test_tensor_grid_resize_empty_and_large_integer_timestamps():
     ('event_stack', {'split_polarity': 'true'}), ('time_surface', {'bins': 5}),
     ('multi_channel_time_surface', {'decay_ms': []}),
     ('multi_channel_time_surface', {'decay_ms': [1, float('nan')]}),
+    ('xt_event_stack', {'bins': 0}), ('yt_event_stack', {'bins': True}),
+    ('xt_event_stack', {'time_bins': 0}), ('yt_event_stack', {'time_bins': 2.5}),
+    ('xt_event_stack', {'normalization': 'invalid'}),
 ])
 def test_invalid_representation_options_fail_before_training(rep, opts):
     with pytest.raises(ValueError):

@@ -47,7 +47,24 @@ def test_empty_resize_and_grid_alias(rep):
     assert image.shape == (4, 8, 3) and image.dtype == np.uint8
     assert np.all(image == (128 if rep == 'voxel_grid' else 0))
     events = [[0, 0, 50, 1], [3, 1, 50, 0]]
-    np.testing.assert_array_equal(render(events, rep), render(events, rep + '_2x1'))
+    grid = '1x1' if rep in {'xt_event_stack', 'yt_event_stack'} else '2x1'
+    np.testing.assert_array_equal(render(events, rep), render(events, rep + '_' + grid))
+
+
+@pytest.mark.parametrize('rep', ['xt_event_stack', 'yt_event_stack'])
+def test_projected_stack_rgb_matches_tensor_and_batch_renderer(rep):
+    from ecfm.utils.event_representations import render_event_tensor, _render_histogram_grid
+    events = np.array([[0, 0, 0, 1], [0, 1, 20, 0], [3, 1, 99, 1]])
+    for grid in ('', '_2x1', '_1x2'):
+        kwargs = dict(width=4, height=2, start_us=0, end_us=100,
+                      time_bins=6, output_size=(8, 4))
+        tensor = render_event_tensor(events, rep+grid, **kwargs)
+        image = render_event_representation(events, rep+grid, **kwargs)
+        np.testing.assert_array_equal(image, (tensor.transpose(1, 2, 0)*255).astype(np.uint8))
+        gx, gy = (map(int, grid[1:].split('x')) if grid else (1, 1))
+        batch_image = _render_histogram_grid(events, width=4, height=2, t0=0, dt=100,
+            plane=rep, time_bins=6, patch_size=4, grid_x=gx, grid_y=gy, output_size=(8, 4))
+        np.testing.assert_array_equal(batch_image, image)
 
 
 def test_voxel_grid_normalizes_fractional_splats_and_each_spatial_cell():

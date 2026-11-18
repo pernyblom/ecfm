@@ -1310,7 +1310,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="events",
         help=(
             "Representation(s) to render, separated by ';' (default: events). "
-            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, cstr3_fixed, time_surface, time_surface_linear, multi_channel_time_surface, event_stack, voxel_grid, "
+            "Options: events, xy, xt, yt, xy_p45, xy_m45, yt_p45, yt_m45, cstr2, cstr3, cstr3_fixed, time_surface, time_surface_linear, multi_channel_time_surface, event_stack, xt_event_stack, yt_event_stack, voxel_grid, "
             "xt_my, yt_mx, rgb, grayscale."
         ),
     )

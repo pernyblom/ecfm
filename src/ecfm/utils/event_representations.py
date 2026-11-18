@@ -8,7 +8,7 @@ from ecfm.utils.evt3_vis import events_to_image
 _GRID_REP_RE = re.compile(r"^(?P<base>.+)_(?P<grid_x>\d+)x(?P<grid_y>\d+)$", re.IGNORECASE)
 TEMPORAL_IMAGE_REPRESENTATIONS = {
     "time_surface", "time_surface_linear", "multi_channel_time_surface",
-    "event_stack", "voxel_grid",
+    "event_stack", "xt_event_stack", "yt_event_stack", "voxel_grid",
 }
 EVENT_REPRESENTATIONS = {
     'events', 'xy', 'xt', 'yt', 'xy_p45', 'xy_m45', 'yt_p45', 'yt_m45',
@@ -38,6 +38,8 @@ def event_representation_channels(representation, options=None):
         'time_surface_linear': {'include_activity'},
         'multi_channel_time_surface': {'decay_ms', 'split_polarity'},
         'event_stack': {'bins', 'split_polarity', 'normalization'},
+        'xt_event_stack': {'bins', 'time_bins', 'split_polarity', 'normalization'},
+        'yt_event_stack': {'bins', 'time_bins', 'split_polarity', 'normalization'},
         'voxel_grid': {'bins', 'split_polarity', 'normalization'},
     }.get(base, set())
     if set(opts) - allowed:
@@ -56,10 +58,14 @@ def event_representation_channels(representation, options=None):
         if not isinstance(decays, (list, tuple)) or not decays or not np.isfinite(decays).all() or min(decays) <= 0:
             raise ValueError('decay_ms must be a nonempty list of positive finite durations')
         return len(decays) * (2 if opts.get('split_polarity', False) else 1)
-    if base in {'event_stack', 'voxel_grid'}:
+    if base in {'event_stack', 'xt_event_stack', 'yt_event_stack', 'voxel_grid'}:
         bins = opts.get('bins', 3)
         if isinstance(bins, bool) or not isinstance(bins, (int, np.integer)) or bins < 1:
             raise ValueError('bins must be a positive integer')
+        if 'time_bins' in opts:
+            time_bins = opts['time_bins']
+            if isinstance(time_bins, bool) or not isinstance(time_bins, (int, np.integer)) or time_bins < 1:
+                raise ValueError('time_bins must be a positive integer')
         return bins * (2 if opts.get('split_polarity', False) else 1)
     return 3
 
@@ -113,6 +119,11 @@ def render_event_tensor(events, representation, *, width, height, start_us, end_
     base, gx, gy = _resolve_representation_alias(representation)
     opts = dict(options or {})
     channels = event_representation_channels(representation, opts)
+    projected_stack = base in {'xt_event_stack', 'yt_event_stack'}
+    if projected_stack:
+        time_bins = opts.get('time_bins', time_bins)
+        if isinstance(time_bins, bool) or not isinstance(time_bins, (int, np.integer)) or time_bins < 1:
+            raise ValueError('time_bins must be a positive integer')
     if base not in TEMPORAL_IMAGE_REPRESENTATIONS:
         pixels = render_event_representation(events, representation, width=width, height=height,
             start_us=start_us, end_us=end_us, output_size=output_size, time_bins=time_bins,
@@ -124,7 +135,8 @@ def render_event_tensor(events, representation, *, width, height, start_us, end_
     if events.ndim != 2 or events.shape[1] != 4:
         raise ValueError('Events must have shape [N, 4]')
     gx, gy = gx or 1, gy or 1
-    size = output_size or (width, height)
+    size = output_size or (_default_output_size_for_rep(base, sensor_width=width,
+        sensor_height=height, temporal_bins=time_bins) if projected_stack else (width, height))
     if gx > min(width, size[0]) or gy > min(height, size[1]):
         raise ValueError('Grid cannot exceed sensor or output dimensions')
     x_edges, y_edges = np.linspace(0, width, gx + 1, dtype=int), np.linspace(0, height, gy + 1, dtype=int)
@@ -139,7 +151,11 @@ def render_event_tensor(events, representation, *, width, height, start_us, end_
             sub = events[mask]
             x, y = (sub[:, 0] - x_edges[col]).astype(int), (sub[:, 1] - y_edges[row]).astype(int)
             t = (sub[:, 2] - start_us).astype(np.float64) / duration
-            image = np.zeros((channels, y_edges[row+1]-y_edges[row], x_edges[col+1]-x_edges[col]), dtype=np.float32)
+            cell_width, cell_height = x_edges[col+1]-x_edges[col], y_edges[row+1]-y_edges[row]
+            image_shape = ((time_bins, cell_width) if base == 'xt_event_stack' else
+                           (cell_height, time_bins) if base == 'yt_event_stack' else
+                           (cell_height, cell_width))
+            image = np.zeros((channels, *image_shape), dtype=np.float32)
             positive = sub[:, 3] == 1
             if base in {'time_surface', 'time_surface_linear', 'multi_channel_time_surface'}:
                 tau = time_surface_tau_us if time_surface_tau_us is not None else duration / 3
@@ -163,9 +179,19 @@ def render_event_tensor(events, representation, *, width, height, start_us, end_
                 bins = opts.get('bins', 3)
                 split = opts.get('split_polarity', False)
                 group = np.where(positive, 0, bins) if split else np.zeros(len(sub), dtype=int)
-                if base == 'event_stack':
-                    idx = np.minimum((t*bins).astype(int), bins-1) + group
-                    np.add.at(image, (idx, y, x), 1)
+                if base in {'event_stack', 'xt_event_stack', 'yt_event_stack'}:
+                    position = t * bins
+                    slice_idx = np.minimum(position.astype(int), bins-1)
+                    idx = slice_idx + group
+                    if projected_stack:
+                        # Each slice has its own full time axis, early to late.
+                        time_idx = np.clip(((position-slice_idx)*time_bins).astype(int), 0, time_bins-1)
+                        if base == 'xt_event_stack':
+                            np.add.at(image, (idx, time_idx, x), 1)
+                        else:
+                            np.add.at(image, (idx, y, time_idx), 1)
+                    else:
+                        np.add.at(image, (idx, y, x), 1)
                 else:
                     position = t * (bins-1)
                     lower = position.astype(int)
@@ -200,12 +226,16 @@ def render_event_representation(events, representation, *, width, height, start_
     events = events[(events[:, 2] >= start_us) & (events[:, 2] < end_us)
                     & (events[:, 0] >= 0) & (events[:, 0] < width)
                     & (events[:, 1] >= 0) & (events[:, 1] < height)]
-    local = np.asarray(events, dtype=np.float64).copy()
-    # Subtract integer timestamps before float conversion whenever possible.
-    local[:, 2] = np.asarray(events)[:, 2] - start_us
     if output_size is None:
         output_size = _default_output_size_for_rep(plane, sensor_width=width,
                                                    sensor_height=height, temporal_bins=time_bins)
+    if plane in {'xt_event_stack', 'yt_event_stack'}:
+        tensor = render_event_tensor(events, representation, width=width, height=height,
+            start_us=start_us, end_us=end_us, output_size=output_size, time_bins=time_bins)
+        return np.clip(tensor.transpose(1, 2, 0) * 255, 0, 255).astype(np.uint8)
+    local = np.asarray(events, dtype=np.float64).copy()
+    # Subtract integer timestamps before float conversion whenever possible.
+    local[:, 2] = np.asarray(events)[:, 2] - start_us
     if plane == 'events' and gx is None:
         return _resize_to(events_to_image(local, width, height), output_size)
     return _render_histogram_grid(local, width=width, height=height, t0=0, dt=end_us-start_us,
@@ -216,7 +246,7 @@ def render_event_representation(events, representation, *, width, height, start_
                                   time_surface_tau=time_surface_tau_us)
 
 
-def _temporal_image_patch(events, region, *, plane, output_size, time_surface_tau=None):
+def _temporal_image_patch(events, region, *, plane, output_size, time_surface_tau=None, time_bins=224):
     """Three-channel temporal images; timestamps and tau share region units.
 
     Time surfaces use the latest timestamp, independently of input ordering.
@@ -225,6 +255,14 @@ def _temporal_image_patch(events, region, *, plane, output_size, time_surface_ta
     three equal time slices. Voxel grids linearly splat signed polarity into
     three temporal bins and encode signed values around neutral byte 128.
     """
+    if plane in {'xt_event_stack', 'yt_event_stack'}:
+        local = np.asarray(events).copy()
+        local[:, 0] -= region.x
+        local[:, 1] -= region.y
+        tensor = render_event_tensor(local, plane, width=region.dx, height=region.dy,
+            start_us=region.t, end_us=region.t+region.dt, output_size=output_size,
+            time_bins=time_bins)
+        return np.clip(tensor.transpose(1, 2, 0)*255, 0, 255).astype(np.uint8)
     mask = ((events[:, 0] >= region.x) & (events[:, 0] < region.x + region.dx)
             & (events[:, 1] >= region.y) & (events[:, 1] < region.y + region.dy)
             & (events[:, 2] >= region.t) & (events[:, 2] < region.t + region.dt))
@@ -497,9 +535,9 @@ def _render_histogram_grid(
             )
         if not retain_spatial_dimensions:
             return patch_size, patch_size
-        if plane in {"xt", "xt_my"}:
+        if plane in {"xt", "xt_my", "xt_event_stack"}:
             return dx, time_bins
-        if plane in {"yt", "yt_mx"}:
+        if plane in {"yt", "yt_mx", "yt_event_stack"}:
             return time_bins, dy
         return dx, dy
 
@@ -533,6 +571,7 @@ def _render_histogram_grid(
                 patch_img = _temporal_image_patch(
                     events, region, plane=plane, output_size=(cell_w, cell_h),
                     time_surface_tau=time_surface_tau,
+                    time_bins=time_bins,
                 )
             elif plane in {"cstr2", "cstr3", "cstr3_fixed"}:
                 patch_img = _cstr_patch(

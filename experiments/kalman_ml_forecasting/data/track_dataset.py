@@ -445,7 +445,7 @@ def _event_count_normalization_spec(
 
     channels_value = normalization_cfg.get("channels", "auto")
     if channels_value == "auto" or channels_value is None:
-        channels = (tuple(range(channel_count)) if _base_representation_name(rep).lower() == 'event_stack'
+        channels = (tuple(range(channel_count)) if _base_representation_name(rep).lower() in {'event_stack', 'xt_event_stack', 'yt_event_stack'}
                     else _AUTO_EVENT_COUNT_CHANNELS.get(_base_representation_name(rep).lower(), ()))
     else:
         values = channels_value if isinstance(channels_value, (list, tuple)) else [channels_value]
@@ -1689,10 +1689,12 @@ class TrackKalmanForecastDataset(torch.utils.data.Dataset):
                     settings["decay_us"] = ([float(v * 1000) for v in opts["decay_ms"]]
                                             if "decay_ms" in opts else [tau_us / 4, tau_us / 2, tau_us])
                     settings["split_polarity"] = opts.get("split_polarity", False)
-                elif base in {"event_stack", "voxel_grid"}:
+                elif base in {"event_stack", "xt_event_stack", "yt_event_stack", "voxel_grid"}:
                     settings.update(bins=opts.get("bins", 3),
                                     split_polarity=opts.get("split_polarity", False),
                                     renderer_normalization=opts.get("normalization", "max"))
+                    if base in {"xt_event_stack", "yt_event_stack"}:
+                        settings["temporal_bins"] = opts.get("time_bins", self.temporal_bins)
             self._input_cache_signatures[rep] = hashlib.sha256(
                 json.dumps(settings, sort_keys=True).encode("utf-8")
             ).digest()

@@ -98,6 +98,29 @@ def indexed_forecast_config(root):
     }}
 
 
+@pytest.mark.parametrize('rep', ['xt_event_stack', 'yt_event_stack'])
+def test_projected_stacks_in_fred_and_forecasting_cutouts(fred, rep):
+    from experiments.kalman_ml_forecasting.data.track_dataset import _event_count_normalization_spec
+    root, _ = fred
+    opts = {'bins': 5, 'time_bins': 6, 'split_polarity': True, 'normalization': 'none'}
+    source = FREDDataset(root, sequences=['0'], modalities=(), representations=[rep],
+                         representation_options={rep: opts})
+    tensor = source.representations_at('0', 33333)[rep]
+    assert tensor.shape == ((10, 6, 8) if rep.startswith('xt') else (10, 8, 6))
+    assert tensor.sum() == 1
+    cfg = indexed_forecast_config(root)
+    cfg['data'].update(representations=[rep], image_sizes={rep: [8, 8]},
+                       representation_sequences={}, representation_options={rep: opts},
+                       spatial_cutout={'mode': 'fixed_pixels', 'size_px': [4, 4],
+                                       'event_count_normalization': 'joint_max'})
+    dataset = _build_dataset(cfg, 'train', folders_override=['0'])
+    sample = dataset[0]
+    assert sample.inputs[rep].shape == ((10, 8, 4) if rep.startswith('xt') else (10, 4, 8))
+    assert torch.isfinite(sample.inputs[rep]).all()
+    assert _event_count_normalization_spec(10, rep=rep+'_2x2',
+        cfg=cfg['data']['spatial_cutout']) == ('joint_max', tuple(range(10)))
+
+
 def test_indexed_forecasting_training_sequences_crop_and_cache(fred, monkeypatch):
     root, _ = fred
     cfg = indexed_forecast_config(root)
@@ -555,6 +578,9 @@ def test_indexed_input_cache_only_selected_samples_and_extends(fred, monkeypatch
 @pytest.mark.parametrize('rep,change', [
     ('time_surface', {'image_window_ms': 70}),
     ('xt_my', {'temporal_bins': 10}),
+    ('xt_event_stack', {'temporal_bins': 10}),
+    ('yt_event_stack', {'representation_options': {'yt_event_stack': {'time_bins': 10}}}),
+    ('xt_event_stack', {'representation_options': {'xt_event_stack': {'bins': 5, 'split_polarity': True}}}),
     ('time_surface', {'time_surface_tau_ms': 5}),
     ('time_surface', {'representation_options': {'time_surface': {'include_activity': False}}}),
     ('time_surface', {'image_sizes': {'time_surface': [6, 6]}}),
@@ -590,6 +616,7 @@ def test_indexed_input_cache_invalidates_preprocessing(fred, rep, change):
     ('time_surface_linear', {}, {'time_surface_tau_ms': 5}),
     ('multi_channel_time_surface', {}, {'representation_options': {'multi_channel_time_surface': {'decay_ms': [2.5, 5, 10]}}}),
     ('event_stack', {}, {'temporal_bins': 10, 'time_surface_tau_ms': 5, 'cstr_max_count': 40}),
+    ('xt_event_stack', {}, {'representation_options': {'xt_event_stack': {'bins': 3, 'time_bins': 224, 'normalization': 'max'}}}),
     ('event_stack', {}, {'representation_options': {'event_stack': {'bins': 3, 'split_polarity': False, 'normalization': 'max'}}}),
     ('voxel_grid', {}, {'temporal_bins': 10, 'time_surface_tau_ms': 5}),
     ('cstr3', {}, {'temporal_bins': 10, 'time_surface_tau_ms': 5, 'cstr_max_count': 40}),

@@ -24,6 +24,8 @@ Kalman residual training:
 | `time_surface_linear` | Latest positive, latest of either polarity, latest negative | `(latest_us - start_us) / window_us`; unseen pixels are zero |
 | `multi_channel_time_surface` | Latest event of either polarity at three decay scales | Exponential surfaces with decay constants `tau/4`, `tau/2`, `tau` |
 | `event_stack` | Event counts in the early, middle, late thirds of the window | Divided by the maximum count across all three channels |
+| `xt_event_stack` | XT event counts in the early, middle, late thirds; Y is summed out | Joint maximum scaling; each slice has its own vertical time axis |
+| `yt_event_stack` | YT event counts in the early, middle, late thirds; X is summed out | Joint maximum scaling; each slice has its own horizontal time axis |
 | `voxel_grid` | Signed event accumulations at three temporal bin centers | Linear interpolation in time; joint absolute maximum scaling, then `round(128 + 127 * value)` |
 
 The table describes the legacy RGB image API. Its three-channel choices preserve compatibility with the project's CNN/ResNet
@@ -45,6 +47,7 @@ take precedence over base-name settings for grid aliases.
 | `time_surface`, `time_surface_linear` | `include_activity: true` (default); exponential surfaces also accept `tau_ms` | 3 (positive/all/negative), or 2 (positive/negative) when activity is omitted |
 | `multi_channel_time_surface` | `decay_ms: [5, 10, 20, 40]`, optional `split_polarity: true` | Number of decay constants, doubled when polarity is split |
 | `event_stack` | `bins: 5`, optional `split_polarity: true` | Number of bins, doubled when polarity is split |
+| `xt_event_stack`, `yt_event_stack` | `bins: 5`, optional `time_bins: 64`, `split_polarity: true` | Number of slices, doubled when polarity is split |
 | `voxel_grid` | `bins: 5`, optional `split_polarity: true` | Number of bins, doubled when polarity is split |
 
 Defaults are three bins, unsplit polarity, and three decay constants at
@@ -57,6 +60,54 @@ voxel grids are signed floats; zero activity is exactly zero. Split voxel
 channels accumulate each polarity separately and are nonnegative. Resizing
 preserves signs, full float precision, and the channel count. Other existing
 formats retain their RGB-compatible encoding in the tensor API.
+
+Projected stacks use consecutive, equal, half-open time slices, matching
+`event_stack`. Each channel is an XT or YT count histogram for its slice,
+with time rescaled from the start to the end of that slice. `bins` controls
+the number of channels (default 3); `time_bins` controls the time-axis
+resolution within each channel (default: the renderer's `time_bins`, or
+`data.temporal_bins`, normally 224). XT time runs top to bottom, and YT time
+runs left to right. Before resizing, XT tensors have shape
+`[C, time_bins, sensor_width]` and YT tensors `[C, sensor_height, time_bins]`.
+Both accept the same `normalization: max|none` and `split_polarity` options
+as `event_stack`. The RGB API uses three unsplit slices. Grid aliases such
+as `xt_event_stack_4x3` project each spatial cell independently, normalize
+counts jointly across channels within that cell, and tile the results.
+
+```yaml
+data:
+  representations: [xt_event_stack, yt_event_stack]
+  representation_options:
+    xt_event_stack: {bins: 5, time_bins: 64, split_polarity: true}
+    yt_event_stack: {bins: 3, time_bins: 64, normalization: max}
+```
+
+Render FRED cutouts using the existing inspector and the example configuration
+(adjust dataset paths in the YAML for your machine):
+
+```bash
+python -m experiments.kalman_ml_forecasting.inspect_spatial_cutouts --config configs/fred_projected_stacks.yaml --folder 8 --count 3 --include-original --output-dir outputs/fred_projected_stacks
+```
+
+The configuration includes `event_stack`, XT, and YT reference views alongside
+the two projected stacks. Cutouts retain the complete time axis and crop only
+the spatial axis for XT/YT representations. To inspect individual channels,
+set `visualization.event_images.mode: grid`.
+
+After rendering, rebuild a side-by-side `comparison.png` from the inspector's
+`summary.json` (one row per sample and one column per representation):
+
+```bash
+python scripts/summarize_spatial_cutouts.py --input-dir outputs/fred_projected_stacks
+```
+
+Add `--recursive --samples-per-summary 1` to compare the first sample from
+each sequence export under that directory. Optional `--representations
+event_stack xt_event_stack yt_event_stack` selects and orders columns;
+`--tile-size 512 512` increases the maximum preview size. Images retain their
+aspect ratio and saved intensities. `--output path/to/comparison.png` overrides
+the default output path. Rerun the inspector after changing the YAML, then
+rerun this script to update the comparison.
 
 ```python
 tensor = render_event_tensor(

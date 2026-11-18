@@ -1,0 +1,37 @@
+# Example for inspect_spatial_cutouts.py and scripts/render_fred_tensors.py.
+data:
+  labels_root: D:/Datasets/FRED
+  events_root: D:/Datasets/FRED
+  event_image_source: indexed
+  labels_subdir: Event_YOLO
+  tracks_file: cleaned_tracks.txt
+  frame_size: [1280, 720]
+  representations: [event_stack, xt, yt, xt_event_stack, yt_event_stack]
+  image_sizes:
+    event_stack: [1280, 720]
+    xt: [1280, 224]
+    yt: [224, 720]
+    xt_event_stack: [1280, 224]
+    yt_event_stack: [224, 720]
+  temporal_bins: 224
+  representation_options:
+    xt_event_stack: {bins: 3, time_bins: 224, normalization: max}
+    yt_event_stack: {bins: 3, time_bins: 224, normalization: max}
+  image_window_ms: 100
+  image_window_mode: trailing
+  history_ms: 400
+  forecast_ms: 400
+  label_time_unit: 1.0e-6
+  track_time_unit: 1.0
+  time_align: none
+  verify_render_manifest: false
+  spatial_cutout:
+    mode: fixed_pixels
+    size_px: [256, 256]
+    event_count_normalization: joint_max
+  cache_dir: null
+  seed: 123
+visualization:
+  event_images:
+    mode: auto
+    normalization: auto
