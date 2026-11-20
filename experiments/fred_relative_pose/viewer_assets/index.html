@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FRED relative pose</title>
+  <style>
+    :root{color-scheme:dark;--bg:#10151d;--panel:#171e28;--line:#2e3a49;--muted:#aab9c8;--ink:#ecf4fc;--pose:#5ee8cf;--target:#ffc881}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,sans-serif}
+    main{max-width:1600px;margin:auto;padding:clamp(16px,3vw,42px)}
+    h1,h2,p{margin:0} h1{font-size:clamp(25px,3vw,39px);letter-spacing:-.035em} h2{font-size:16px;font-weight:650}
+    header{margin-bottom:21px;display:flex;justify-content:space-between;align-items:end;gap:14px;flex-wrap:wrap}
+    .muted,small{color:var(--muted)}
+    .toolbar,.controls,.legend,.metrics{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .toolbar{margin-bottom:14px;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+    .toolbar label:first-child{display:flex;gap:8px;align-items:center;flex:1}
+    label{white-space:nowrap}
+    button,select{color:var(--ink);background:#222d3b;border:1px solid #3b4b5e;border-radius:6px;padding:6px 9px;font:inherit}
+    button:hover,select:hover{border-color:var(--pose)}
+    button:disabled,input:disabled{opacity:.5}
+    button{cursor:pointer}
+    select{max-width:100%}
+    :focus-visible{outline:2px solid var(--pose);outline-offset:2px}
+    input[type=checkbox],input[type=range]{accent-color:var(--pose);vertical-align:middle}
+    .timeline{display:flex;align-items:center;gap:8px;flex:1;min-width:250px}
+    .timeline input{flex:1;min-width:100px}
+    .number{font-variant-numeric:tabular-nums}
+    .views{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:12px}
+    article{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;min-width:0}
+    .viewhead{padding:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;min-height:58px}
+    .viewhead h2{white-space:nowrap}
+    .viewhead select,.viewhead label{font-size:13px}
+    canvas{display:block;width:100%;height:clamp(225px,29vw,456px);background:#0b1016}
+    #orbit{touch-action:none;cursor:grab}
+    #orbit:active{cursor:grabbing}
+    .caption{padding:10px 12px;min-height:42px}
+    .legend{padding:10px 0;color:var(--muted);font-size:13px}
+    .legend span::before{content:"";display:inline-block;width:12px;height:2px;margin-right:6px;vertical-align:middle;background:currentColor}
+    .pose{color:var(--pose)} .target{color:var(--target)}
+    .details{border-top:1px solid var(--line);margin-top:4px;padding-top:13px;display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+    .metrics{flex:1;gap:16px 25px}
+    .metrics dt{color:var(--muted);font-size:12px}.metrics dd{margin:2px 0 0;font:14px ui-monospace,monospace}
+    figure{margin:0;display:flex;gap:10px;align-items:center;max-width:240px;font-size:13px}
+    figure[hidden]{display:none}
+    #event-image{width:70px;height:70px;image-rendering:pixelated;border:1px solid var(--line);background:#0b1016}
+    .notes{font-size:13px;margin-top:14px;max-width:100ch}
+    @media (max-width:880px){.views{grid-template-columns:1fr}canvas{height:clamp(225px,54vw,450px)}}
+    @media (max-width:540px){.toolbar label:first-child{flex-basis:100%}.viewhead{align-items:start}.controls{gap:5px}.notes{font-size:12px}}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>FRED relative pose</h1><p id="run" class="muted"></p></div>
+      <p id="scene" class="muted"></p>
+    </header>
+    <div class="toolbar">
+      <label>Tracklet <select id="example"></select></label>
+      <button id="play" type="button">Play</button>
+      <label class="timeline"><span class="muted">Forecast time</span>
+        <input id="time" type="range" min="0" value="0" aria-label="Forecast time">
+        <output id="elapsed" for="time" class="number">0 ms</output>
+      </label>
+    </div>
+    <div class="views">
+      <article>
+        <div class="viewhead">
+          <h2>Camera image</h2>
+          <div class="controls">
+            <select id="rgb-kind" aria-label="RGB source"><option value="padded_rgb">Aligned RGB</option><option value="rgb">Original RGB</option></select>
+            <label><input id="overlay" type="checkbox" checked> Overlay</label>
+            <label><input id="crop" type="checkbox"> Zoom UAV</label>
+          </div>
+        </div>
+        <canvas id="camera" aria-label="RGB image with predicted UAV pose and measured boxes">RGB overlay</canvas>
+        <p id="rgb-status" class="caption muted"></p>
+      </article>
+      <article>
+        <div class="viewhead">
+          <h2>Estimated 3D pose</h2>
+          <div class="controls">
+            <select id="view-mode" aria-label="3D viewpoint">
+              <option value="focus">UAV orbit</option><option value="overview">Camera and UAV orbit</option><option value="camera">Camera projection</option>
+            </select>
+            <button id="reset" type="button">Reset view</button>
+          </div>
+        </div>
+        <canvas id="orbit" aria-label="Interactive 3D trajectory, ellipsoid and up direction">3D scene</canvas>
+        <p class="caption muted">Drag to orbit. Scroll to zoom. The dashed arrow is scene up.</p>
+      </article>
+    </div>
+    <div class="legend"><span class="pose">Predicted shape, up and path</span><span class="target">Annotated box and path</span><span>Observed history</span></div>
+    <div class="details">
+      <dl class="metrics">
+        <div><dt>Position x, y, z (body diameters)</dt><dd id="position"></dd></div>
+        <div><dt>Up x, y, z</dt><dd id="up"></dd></div>
+        <div><dt>Tilt from scene up</dt><dd id="tilt"></dd></div>
+        <div><dt>Velocity (diameters/s)</dt><dd id="velocity"></dd></div>
+        <div><dt>Acceleration (diameters/s²)</dt><dd id="acceleration"></dd></div>
+        <div><dt>Tilt angular velocity (rad/s)</dt><dd id="angular-velocity"></dd></div>
+        <div><dt>Specific thrust (diameters/s²)</dt><dd id="thrust"></dd></div>
+        <div><dt>Mean / final center error</dt><dd id="error"></dd></div>
+        <div><dt>Intrinsics fx, fy / cx, cy (px)</dt><dd id="intrinsics"></dd></div>
+      </dl>
+      <figure id="event-figure"><img id="event-image" alt="Summed event cutout"><figcaption id="event-label">Event cutout at anchor</figcaption></figure>
+    </div>
+    <p class="notes muted">Axes are right, down and forward from the event camera. Up rotates at the estimated angular velocity during each rollout. Projected poses appear on aligned RGB. Original RGB shows the independent RGB annotation when available. FRED's padded RGB has approximate registration and separate timestamps.</p>
+  </main>
+  <script src="data.js"></script>
+  <script src="viewer.js"></script>
+</body>
+</html>

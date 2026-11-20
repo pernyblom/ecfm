@@ -1,0 +1,72 @@
+data:
+  labels_root: D:/Datasets/FRED
+  images_root: outputs/fred_reps
+  scene_manifest: experiments/fred_relative_pose/scenes.yaml
+  split_files:
+    train: D:/Datasets/FRED/dataset_splits/canonical/train_split.txt
+  tracks_file: cleaned_tracks.txt
+  val_fraction: 0.20
+  frame_size: [1280, 720]
+  label_period_s: 0.033333
+  time_align: none
+  history_ms: 400
+  event_window_ms: 400
+  forecast_ms: 800
+  min_anchor_size_px: 6
+  max_samples_per_sequence: {train: 160, val: 125}
+  event_image_source: indexed
+  representations: [event_stack]
+  image_sizes:
+    event_stack: [640, 360]
+  representation_options:
+    event_stack: {bins: 6, split_polarity: true, normalization: max}
+  spatial_cutout:
+    mode: fixed_pixels
+    size_px: [64, 64]
+  cache_dir: outputs/fred_relative_pose/tracklets
+  instance_cache:
+    enabled: true
+    dir: outputs/fred_relative_pose/cutouts
+    compression_level: 1
+
+camera:
+  focal_prior_px: 1000
+  focal_log_limit: 0.6
+  principal_point_limit: 0.10
+  up_prior_limit_deg: 25
+
+model:
+  use_events: true
+  use_box_motion: true
+  encode_box_history: true
+  event_dropout: 0.08
+  reference_diameter_m: 0.6
+  body_half_height: 0.24
+  tilt_limit_deg: 55
+  angular_speed_limit_deg_s: 120.0
+  linear_drag_per_s: 0.65
+  velocity_history_steps: 6
+  velocity_limit_px_s: 230
+
+loss:
+  center_scale_px: 20.0
+  size_weight: 0.65
+  anchor_weight: 0.7
+  camera_prior_weight: 0.03
+  control_prior_weight: 0.01
+  tilt_prior_weight: 0.08
+  behind_camera_weight: 1.0
+
+train:
+  output_dir: outputs/fred_relative_pose/physical_800ms
+  device: cuda
+  epochs: 22
+  seed: 314
+  batch_size: 96
+  num_workers: 4
+  torch_threads: 2
+  lr: 0.001
+  camera_lr: 0.002
+  weight_decay: 0.0001
+  grad_clip: 8.0
+  log_every: 30

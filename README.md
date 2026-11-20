@@ -31,6 +31,8 @@ encoder after their patch content has been hidden.
 - `tests`: unit and training-path regression tests
 - `docs`: extra docs
 
+The [FRED relative UAV pose experiment](experiments/fred_relative_pose/README.md) estimates camera-relative position and up direction from event tracklets and provides a 3D viewer with RGB overlays.
+
 ## Quick Start
 
 1) Create a venv and install dependencies.
