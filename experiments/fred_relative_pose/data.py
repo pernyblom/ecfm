@@ -127,7 +127,8 @@ class _ForecastTracklets(TrackKalmanForecastDataset):
 
 
 class PoseTracklets(Dataset):
-    def __init__(self, data: dict, folders: list[str], scenes: dict, *, split: str, seed: int, use_events: bool = True):
+    def __init__(self, data: dict, folders: list[str], scenes: dict, *, split: str, seed: int,
+                 use_events: bool = True, anchors: set[tuple[str, int, str]] | None = None):
         self.scene_ids = {name: index for index, name in enumerate(scenes["names"])}
         self.scene_by_folder = scenes["by_folder"]
         self.use_events = use_events
@@ -164,19 +165,21 @@ class PoseTracklets(Dataset):
             require_representations=False, verify_render_manifest=event_options["event_image_source"] == "rendered",
             cache_dir=Path(data["cache_dir"]), seed=seed, **event_options,
         )
-        self._select(data, split, seed)
+        self._select(data, split, seed, anchors)
         self.forecast.frames_by_folder.clear()
         self.forecast._folder_event_frame_indices.clear()
         print(f"{split}: {len(self)} tracklets across {len(self.count_by_folder)} sequences and "
               f"{len(self.count_by_scene)} scenes", flush=True)
 
-    def _select(self, data: dict, split: str, seed: int) -> None:
+    def _select(self, data: dict, split: str, seed: int, anchors: set[tuple[str, int, str]] | None) -> None:
         rng = np.random.default_rng(seed)
         period = float(data["label_period_s"])
         min_px = float(data.get("min_anchor_size_px", 6))
         frame = np.asarray(data["frame_size"], dtype=np.float32)
         by_folder = defaultdict(list)
         for sample in self.forecast.samples:
+            if anchors is not None and tracklet_key(sample) not in anchors:
+                continue
             by_folder[sample["folder"]].append(sample)
         selected = []
         limit = data.get("max_samples_per_sequence", {}).get(split)
@@ -250,6 +253,10 @@ class PoseTracklets(Dataset):
                 "future_time": sample.future_times_s - sample.frame_time_s,
                 "scene": self.scene_ids[scene], "folder": folder, "track_id": sample.track_id,
                 "anchor_time": sample.frame_time_s, "frame_key": sample.frame_key}
+
+
+def tracklet_key(sample: dict) -> tuple[str, int, str]:
+    return sample["folder"], sample["track_id"], sample["anchor_stem"]
 
 
 def to_device(batch: dict, device: torch.device) -> dict:

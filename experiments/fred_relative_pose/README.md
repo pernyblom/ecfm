@@ -81,6 +81,64 @@ Against the matched single-crop box-history model, pose history lowered center A
 
 For deployment, call `model.estimate_observation(box, crops, camera)` once per new box. Keep the resulting `FlightState` with the box and its timestamp in a per-target buffer. Stack the last 12 states along the history dimension and call `model.fuse_observations(past, past_time, camera, observations)` once the buffer is full. State tensors and box history use batch and time as the first two dimensions. The camera dictionary can come from `model.cameras(scene)` or measured calibration as in the [static-camera guide](static_camera_inference.md#run-the-checkpoint). `model.propagate()` uses the fused anchor state for the forecast.
 
+## Kalman forecasting with box and pose measurements
+
+The [pose Kalman optimizer](optimize_pose_kalman.py) fits a classical 800 ms forecast using the frozen pose-history checkpoint above. Like the [box Kalman variants](../kalman_ml_forecasting/KALMAN_VARIANTS.md), it can tune on training sequences and select on a sequence-level holdout. It fits the same dynamics with box-only and box-plus-pose observations on identical train and validation windows.
+
+- Each normalized center coordinate and scaled log box extent has a position, velocity, and acceleration state. The transition integrates exponentially decaying acceleration over the actual timestamp intervals.
+- At every history timestamp the box observes position. The 3D pose is projected through the checkpoint camera at the observation time and 25 ms either side. These local projections supply box position, velocity, and acceleration measurements. The filter learns a same-axis error correlation between box position and projected pose position because both use the same box.
+- The optimizer learns initial, process, and measurement noise scales and acceleration decay by minimizing box ADE divided by 30 px, box FDE divided by 65 px, and the IoU error divided by 0.65. The lowest validation objective selects each filter independently.
+- Optimization uses the checkpoint's canonical training and validation anchors that have 800 ms labels. The test scores the frozen filters on the full canonical 800 ms test split. The learned pose-history forecast and the last-four extrapolator are scored on those same windows.
+
+```powershell
+python -m experiments.fred_relative_pose.optimize_pose_kalman `
+    --checkpoint outputs/fred_relative_pose/canonical_pose_history/best.pt `
+    --output-dir outputs/fred_relative_pose/canonical_pose_kalman `
+    --run-test-on-best
+```
+
+The run saves the two fitted filters in `best.pt`, the optimization trace in `validation.json`, and the test metrics and fitted parameters in `report.json`. It caches the frozen per-box pose measurements for reuse during optimization.
+
+The run used 39,681 training and 5,595 validation windows. Both filters selected epoch 24. The test scored 101,118 windows across all 47 canonical test sequences.
+
+| 800 ms forecast | Box ADE / FDE (px) | mIoU | Center ADE / FDE (px) |
+| --- | ---: | ---: | ---: |
+| Optimized box-only Kalman | 47.34 / 103.30 | 0.316 | 44.53 / 101.13 |
+| Optimized box-plus-pose Kalman | 34.96 / 74.61 | 0.353 | 31.62 / 71.97 |
+| Frozen learned pose-history forecast | 30.31 / 66.06 | 0.383 | 26.67 / 62.89 |
+| Last-four linear extrapolation | 58.69 / 116.89 | 0.264 | 44.76 / 97.38 |
+
+The pose measurements lowered box ADE by 26.2% and box FDE by 27.8% relative to the matched box-only fit. On original tracks, box ADE dropped from 53.66 to 39.05 px. On coordinate-generated tracks, it dropped from 29.12 to 23.16 px.
+
+### Three dimensional extended Kalman filter
+
+Use `--space 3d` to filter the flight state in the camera's 3D frame. The 13-state filter tracks 3D position, velocity, and acceleration, plus two slopes for target up and their rates. It uses log range to keep depth positive and retains a full state covariance. Acceleration and tilt rate decay during prediction over the actual timestamp intervals.
+
+At each observed timestamp the frozen pose supplies position, linear velocity, up, and tilt rate. Specific thrust, up, gravity, and drag give a 3D acceleration measurement. The box-update variant also uses the observed image center, log width, and log height. Its observation model projects a 3D ellipsoid and linearizes the resulting pixel bounds about the current 3D state. It learns how much of the box error is already shared with the pose projection. The pose-only update variant still obtains its poses using the anchor boxes.
+
+The ellipsoid uses the checkpoint's assumed body diameter and half-height. Projecting the ellipsoid gives all four box coordinates after rollout. Its apparent size changes with range and tilt. Absolute size and distance share a monocular scale ambiguity, so the benchmark holds body dimensions fixed. A known target size or a range sensor would give an independent constraint for metric distance.
+
+```powershell
+python -m experiments.fred_relative_pose.optimize_pose_kalman `
+    --checkpoint outputs/fred_relative_pose/canonical_pose_history/best.pt `
+    --space 3d `
+    --output-dir outputs/fred_relative_pose/canonical_pose_ekf_3d `
+    --run-test-on-best
+```
+
+The same 800 ms image loss tunes both filters. Model and data outputs have the same layout as the image-space optimization. `PoseEKF3D.filter()` returns the posterior and covariance in filter coordinates. `PoseEKF3D.rollout()` returns Cartesian position, velocity, acceleration, and the unit up vector in body-diameter units. The existing `project_body()` maps that trajectory to the image. For a moving-camera extension, express incoming poses in a common tracking frame and use the camera extrinsics at each timestamp in the box observation model and future projection. The FRED runs use a static camera per tracklet.
+
+Both 3D variants selected epoch 24. The canonical test used the same 101,118 windows and all 47 sequences as the image-space benchmark above.
+
+| 800 ms forecast | Box ADE / FDE (px) | mIoU | Center ADE / FDE (px) |
+| --- | ---: | ---: | ---: |
+| 3D Kalman, pose updates | 37.52 / 77.21 | 0.323 | 33.07 / 72.52 |
+| 3D EKF, pose and direct box updates | 37.70 / 77.61 | 0.322 | 33.38 / 73.16 |
+| Image-space Kalman, boxes and pose | 34.96 / 74.61 | 0.353 | 31.62 / 71.97 |
+| Learned pose-history rollout | 30.31 / 66.06 | 0.383 | 26.67 / 62.89 |
+
+Direct box updates slightly worsened the combined projection scores. Box ADE went from 41.70 to 41.99 px on original tracks and from 25.49 to 25.35 px on coordinate-generated tracks. The two models use the same frozen per-box pose estimates.
+
 ## Review scenes
 
 `scenes.yaml` covers sequences 0–230. Camera groups follow the view and framing, so the courtyard has several camera groups. Sequence 21 has an obscured view and gets its own entry. Sequence 111 is dark enough to defeat local feature matching, but contrast enhancement shows the skyline landmarks.
