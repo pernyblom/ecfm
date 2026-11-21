@@ -8,7 +8,7 @@ import os
 from itertools import groupby
 from pathlib import Path
 
-from scripts.build_cleaned_tracks_from_coordinates import _read_coordinates
+from scripts.build_cleaned_tracks_from_coordinates import _read_coordinates, build_track_lines
 
 
 def coordinate_tracks(data: dict, folder: str) -> Path | None:
@@ -22,15 +22,36 @@ def coordinate_tracks(data: dict, folder: str) -> Path | None:
     period = float(data["label_period_s"])
     frame_w, frame_h = data["frame_size"]
     needed = sum(round(data[key] / (1000 * period)) for key in ("history_ms", "forecast_ms"))
-    cache_key = f"v1:{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{period}:{frame_w}:{frame_h}:{needed}"
+    method = data.get("coordinate_track_method", "conservative")
+    source_key = f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{period}"
+    if method == "cleaned_script":
+        cache_key = f"cleaned_script_v1:{source_key}"
+    elif method == "conservative":
+        cache_key = f"v1:{source_key}:{frame_w}:{frame_h}:{needed}"
+    else:
+        raise ValueError(f"Unknown coordinate_track_method: {method}")
     signature = hashlib.sha256(cache_key.encode()).hexdigest()[:20]
     output = Path(directory) / f"{folder}_{signature}.txt"
     if output.exists():
         return output if output.stat().st_size else None
 
+    if method == "cleaned_script":
+        content = "\n".join(build_track_lines(source, int(folder), dt=period))
+    else:
+        content = _conservative_tracks(source, int(folder), period, frame_w, frame_h, needed)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temp = output.with_suffix(f".{os.getpid()}.tmp")
+    temp.write_text(content, encoding="utf-8")
+    temp.replace(output)
+    return output if content else None
+
+
+def _conservative_tracks(source: Path, sequence: int, period: float, frame_w: int, frame_h: int,
+                         needed: int) -> str:
     result = []
     segment = []
-    track_id = int(folder) * 100000
+    track_id = sequence * 100000
 
     def flush():
         nonlocal track_id
@@ -62,8 +83,4 @@ def coordinate_tracks(data: dict, folder: str) -> Path | None:
         segment.append((t, x, y, w, h))
     flush()
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    temp = output.with_suffix(f".{os.getpid()}.tmp")
-    temp.write_text("".join(result), encoding="utf-8")
-    temp.replace(output)
-    return output if result else None
+    return "".join(result)

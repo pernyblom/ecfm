@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, fields
 
 import torch
 
@@ -21,6 +22,10 @@ class FlightState:
     velocity: torch.Tensor
     angular_velocity: torch.Tensor
     thrust: torch.Tensor
+
+    def map(self, transform: Callable[[torch.Tensor], torch.Tensor]) -> FlightState:
+        """Apply a batch or time-axis transformation to each state component."""
+        return FlightState(*(transform(getattr(self, field.name)) for field in fields(self)))
 
 
 @dataclass(frozen=True)

@@ -63,6 +63,23 @@ def _find_segments(samples: List[Sample], *, dt: float, gap_mult: float) -> List
     return segments
 
 
+def build_track_lines(path: Path, sequence: int, *, dt: float = 0.033333,
+                      gap_mult: float = 1.5, min_len: int = 10) -> list[str]:
+    segments = _find_segments(_read_coordinates(path), dt=dt, gap_mult=gap_mult)
+    lines = []
+    track_id = sequence * 1000
+    for segment in segments:
+        if len(segment) < min_len:
+            continue
+        for sample in segment:
+            w, h = sample.x1 - sample.x0, sample.y1 - sample.y0
+            if w < 0 or h < 0:
+                continue
+            lines.append(f"{sample.t},{track_id},{sample.x0},{sample.y0},{w},{h}")
+        track_id += 1
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build cleaned_tracks.txt from coordinates segments."
@@ -113,22 +130,8 @@ def main() -> None:
         path = folder / args.filename
         if not path.exists():
             continue
-        samples = _read_coordinates(path)
-        segments = _find_segments(samples, dt=args.frame_dt, gap_mult=args.gap_mult)
-        out_lines: List[str] = []
-        seg_id = 0
-        base_id = int(folder.name) * 1000
-        for seg in segments:
-            if len(seg) < args.min_len:
-                continue
-            track_id = base_id + seg_id
-            seg_id += 1
-            for s in seg:
-                w = s.x1 - s.x0
-                h = s.y1 - s.y0
-                if w < 0 or h < 0:
-                    continue
-                out_lines.append(f"{s.t},{track_id},{s.x0},{s.y0},{w},{h}")
+        out_lines = build_track_lines(path, int(folder.name), dt=args.frame_dt,
+                                      gap_mult=args.gap_mult, min_len=args.min_len)
         if out_lines:
             out_path = folder / args.output
             out_path.write_text("\n".join(out_lines), encoding="utf-8")

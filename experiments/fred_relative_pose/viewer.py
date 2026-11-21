@@ -113,7 +113,10 @@ def copy_rgb(rgb, output: Path, folder: str, kind: str, time_s: float):
 def save_event_preview(inputs: dict, output: Path, i: int) -> str | None:
     if not inputs:
         return None
-    events = next(iter(inputs.values())).abs().sum(0).numpy()
+    crop = next(iter(inputs.values()))
+    if crop.ndim == 4:
+        crop = crop[-1]
+    events = crop.abs().sum(0).numpy()
     positive = events[events > 0]
     if len(positive):
         events = (events / np.percentile(positive, 97)).clip(0, 1) ** 0.5

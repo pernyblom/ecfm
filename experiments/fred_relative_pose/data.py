@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -65,6 +66,16 @@ def make_splits(data: dict, scenes: dict, seed: int) -> dict:
             by_scene[scenes["by_folder"][folder]].append(folder)
         else:
             excluded[folder] = "missing or empty eligible tracks"
+    reference_file = data.get("split_reference")
+    if reference_file:
+        reference = json.loads(Path(reference_file).read_text(encoding="utf-8"))
+        train = set(reference["train"])
+        val = set(reference["val"])
+        eligible = annotation_sources.keys()
+        if train & val or (train | val) - set(source) or eligible - (train | val):
+            raise ValueError("Split reference must assign all eligible sequences to disjoint canonical splits")
+        return {"train": sorted(train & eligible, key=int), "val": sorted(val & eligible, key=int),
+                "excluded": excluded, "annotation_sources": annotation_sources}
     rng = np.random.default_rng(seed)
     fraction = float(data["val_fraction"])
     if not 0 < fraction < 1:
@@ -120,10 +131,13 @@ class PoseTracklets(Dataset):
         self.scene_ids = {name: index for index, name in enumerate(scenes["names"])}
         self.scene_by_folder = scenes["by_folder"]
         self.use_events = use_events
+        self.history_event_cutouts = bool(data.get("history_event_cutouts", False))
         self.reps = list(data["representations"])
         if not self.reps or any(rep in {"rgb", "padded_rgb", "event_frames", "event_frame"} for rep in self.reps):
             raise ValueError("Use rendered event representations for the pose model inputs")
         event_options = resolve_event_image_options(data)
+        if self.history_event_cutouts and (not use_events or event_options["event_image_source"] != "indexed"):
+            raise ValueError("History event cutouts require indexed event inputs")
         if event_options["instance_cache"].get("mode", "lazy") != "lazy":
             raise ValueError("Pose tracklets support the forecasting cutout cache in lazy mode")
         tracks_file = data.get("tracks_file", "cleaned_tracks.txt")
@@ -166,13 +180,17 @@ class PoseTracklets(Dataset):
             by_folder[sample["folder"]].append(sample)
         selected = []
         limit = data.get("max_samples_per_sequence", {}).get(split)
-        for rows in by_folder.values():
+        for folder, rows in by_folder.items():
+            if self.history_event_cutouts:
+                frames = self.forecast.frames_by_folder[folder]
+                frame_indices = {item.stem: index for index, item in enumerate(frames)}
+            folder_rng = np.random.default_rng([seed, int(folder)]) if data.get("sample_seed_by_sequence") else rng
             anchor = np.asarray([sample["past_boxes"][-1] for sample in rows])
             center, extent = np.split(anchor, 2, axis=1)
             interior = (center - extent / 2 > 1 / frame) & (center + extent / 2 < 1 - 1 / frame)
             eligible = np.flatnonzero(interior.all(1) & (extent * frame >= min_px).all(1))
             count = 0
-            for index in rng.permutation(eligible):
+            for index in folder_rng.permutation(eligible):
                 sample = rows[index]
                 times = np.concatenate((sample["past_times_s"], sample["future_times_s"]))
                 gaps = np.diff(times)
@@ -190,6 +208,13 @@ class PoseTracklets(Dataset):
                         continue
                     self.forecast._validate_manifest_entry(folder, stem)
                     sample = dict(sample, input_paths=refs)
+                    if self.history_event_cutouts:
+                        anchor_index = frame_indices[stem]
+                        first = anchor_index + 1 - len(sample["past_boxes"])
+                        # Use the original timestamp precision, as for the anchor cache key.
+                        sample["earlier_event_times_us"] = [
+                            round(item.time_s * 1e6) for item in frames[first:anchor_index]
+                        ]
                 selected.append(sample)
                 count += 1
                 if limit and count >= limit:
@@ -207,9 +232,20 @@ class PoseTracklets(Dataset):
 
     def __getitem__(self, index: int) -> dict:
         sample = self.forecast[index]
-        folder = self.forecast.samples[index]["folder"]
+        metadata = self.forecast.samples[index]
+        folder = metadata["folder"]
         scene = self.scene_by_folder[folder]
-        return {"events": sample.inputs, "past": sample.past_boxes, "future": sample.future_boxes,
+        events = sample.inputs
+        if self.history_event_cutouts:
+            boxes = metadata["past_boxes"]
+            times = metadata["earlier_event_times_us"]
+            events = {}
+            for rep, anchor in sample.inputs.items():
+                reference = metadata["input_paths"][rep]
+                crops = [self.forecast._prepared_input(rep, {**reference, "time_us": time}, box)
+                         for time, box in zip(times, boxes[:-1])]
+                events[rep] = torch.stack([*crops, anchor])
+        return {"events": events, "past": sample.past_boxes, "future": sample.future_boxes,
                 "past_time": sample.past_times_s - sample.frame_time_s,
                 "future_time": sample.future_times_s - sample.frame_time_s,
                 "scene": self.scene_ids[scene], "folder": folder, "track_id": sample.track_id,

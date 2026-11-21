@@ -47,6 +47,23 @@ with torch.inference_mode():
 
 `state.position`, `state.velocity`, and `state.thrust` use assumed body diameters, diameters/s, and diameters/s², respectively. `state.angular_velocity` is in rad/s and `state.up` is a unit vector. `trajectory.acceleration` includes the anchor when the first query is zero. You can use the anchor state on its own or pass it to the flight integrator, which receives no image or box features. Older fixed-up checkpoints load with zero angular velocity.
 
+## Train with a pose history
+
+Use `--pose-history` to render a trailing event crop for each observed box. Each crop ends at that box's timestamp and is centered on that box. With the 100 ms configuration each of the 12 boxes has a corresponding `[12, 64, 64]` crop. The loader reuses the indexed cutout cache across overlapping tracklets.
+
+The same encoder and pose head estimate position, up, velocity, tilt rate, and specific thrust independently at each observation. A second head fuses the physical states, boxes, and relative timestamps into the anchor flight state. The future projection loss trains the full chain end to end. An additional reprojection loss supervises each local state at its own timestamp and the next three labeled timestamps. Set `loss.history_rollout_steps` and `loss.history_rollout_weight` to change the default three steps and weight of 0.3.
+
+To use the canonical 100 ms configuration with script-generated tracks, start from the resolved box-history run config. A batch of 24 is a starting point for the larger input tensor.
+
+```powershell
+$baseline = 'outputs/fred_relative_pose/canonical_track_sources/script_with_history'
+$poseHistory = 'outputs/fred_relative_pose/canonical_pose_history'
+python -m experiments.fred_relative_pose.train --config "$baseline/config.yaml" --pose-history --batch-size 24 --workers 4 --output-dir "$poseHistory"
+python -m experiments.fred_relative_pose.eval --checkpoint "$baseline/best.pt" "$poseHistory/best.pt" --forecast-ms 400 --output "$poseHistory/test_400ms.json"
+```
+
+For deployment, call `model.estimate_observation(box, crops, camera)` once per new box. Keep the resulting `FlightState` with the box and its timestamp in a per-target buffer. Stack the last 12 states along the history dimension and call `model.fuse_observations(past, past_time, camera, observations)` once the buffer is full. State tensors and box history use batch and time as the first two dimensions. The camera dictionary can come from `model.cameras(scene)` or measured calibration as in the [static-camera guide](static_camera_inference.md#run-the-checkpoint). `model.propagate()` uses the fused anchor state for the forecast.
+
 ## Review scenes
 
 `scenes.yaml` covers sequences 0–230. Camera groups follow the view and framing, so the courtyard has several camera groups. Sequence 21 has an obscured view and gets its own entry. Sequence 111 is dark enough to defeat local feature matching, but contrast enhancement shows the skyline landmarks.
@@ -152,6 +169,42 @@ Both runs used 45,038 training and 6,400 validation tracklets across 143 and 40 
 The four test-only scenes contribute 4,580 tracklets. With their camera priors, center ADE / FDE are 8.86 / 17.87 px with box history and 10.43 / 20.92 px with the anchor box. The evaluation report is `outputs/fred_relative_pose/canonical_crop64_events100/test_metrics.json`.
 
 The published residual CSTR model reports 13.22 / 24.72 px center ADE / FDE and 0.531 mIoU on the 400 ms canonical test. The last-four baseline gives 20.43 / 39.38 px in the paper and 20.94 / 40.27 px here. Tracklet eligibility and annotation source affect comparisons across these results. [Residual Kalman Dynamics, Table 1](https://arxiv.org/html/2609.00839v1#S4.T1)
+
+### Annotation source and rollout horizon
+
+The original-track runs use the pre-existing `cleaned_tracks.txt` files in sequences that have `tracks.txt`. The expanded runs use those files and fall back to `coordinates.txt` where they are unavailable. The new expanded runs use the same segmentation and rows as [the coordinate conversion script](../../scripts/build_cleaned_tracks_from_coordinates.py). The experiment writes these tracks to its cache. I verified byte-for-byte parity with the original script on all 97 canonical sequences eligible for fallback. The previous expanded runs used a more conservative generator that also split tracks on abrupt motion and box-area changes and discarded timestamps with multiple boxes.
+
+The four new runs keep the previous canonical sequence assignments and use the same original anchors across training-source variants. Both pairs select checkpoints by validation center ADE at 400 ms. The original-track pair uses 26,560 training and 4,000 validation windows. The expanded pair uses 45,046 training and 6,400 validation windows. The 800 ms test rolls each frozen 400 ms checkpoint farther using its original dynamics and calibration.
+
+```powershell
+$runs = 'outputs/fred_relative_pose/canonical_track_sources'
+$previous = 'outputs/fred_relative_pose/canonical_crop64_events100'
+$variants = @('script_with_history', 'script_anchor_only', 'original_with_history', 'original_anchor_only')
+foreach ($variant in $variants) {
+    python -m experiments.fred_relative_pose.train --config "$runs/$variant/run_config.yaml"
+}
+$checkpoints = @($variants | ForEach-Object { "$runs/$_/best.pt" })
+$checkpoints += @("$previous/with_history/best.pt", "$previous/anchor_only/best.pt")
+foreach ($horizon in @(400, 800)) {
+    python -m experiments.fred_relative_pose.eval --checkpoint @checkpoints --compare-training-sources --forecast-ms $horizon --output "$runs/test_${horizon}ms.json"
+}
+```
+
+The first checkpoint supplies the test annotation configuration. Within each horizon, all models are scored on the same canonical test windows. Each JSON report includes center and box ADE/FDE and mean IoU for the original-track, coordinate-generated, and combined groups. The 400 ms test has 110,050 windows and the 800 ms test has 101,118. Both cover all 47 canonical test sequences.
+
+| Training tracks | Box input | 400 ms original | 400 ms generated | 400 ms all | 800 ms original | 800 ms generated | 800 ms all |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Original only | History | 15.56 / 29.00 | 9.90 / 19.28 | 14.05 / 26.41 | 32.81 / 74.99 | 22.91 / 52.72 | 30.26 / 69.25 |
+| Original only | Anchor | 16.45 / 29.41 | 10.74 / 20.74 | 14.93 / 27.10 | 41.88 / 115.30 | 26.49 / 65.60 | 37.92 / 102.49 |
+| Original + conversion script | History | 14.94 / 27.72 | 7.50 / 14.74 | 12.96 / 24.26 | 31.64 / 72.86 | 19.16 / 47.66 | 28.42 / 66.36 |
+| Original + conversion script | Anchor | 15.93 / 29.60 | 8.10 / 15.75 | 13.85 / 25.90 | 43.14 / 120.43 | 22.17 / 59.02 | 37.73 / 104.60 |
+| Original + conservative fallback (previous) | History | 14.98 / 27.84 | 7.38 / 14.38 | 12.96 / 24.25 | 31.71 / 73.28 | 18.60 / 46.04 | 28.33 / 66.26 |
+| Original + conservative fallback (previous) | Anchor | 16.05 / 29.79 | 8.24 / 16.12 | 13.97 / 26.15 | 43.99 / 125.46 | 22.79 / 61.15 | 38.52 / 108.88 |
+| Last-four linear baseline | Four boxes | 24.22 / 46.36 | 12.03 / 23.56 | 20.97 / 40.29 | 50.67 / 109.44 | 27.75 / 62.66 | 44.76 / 97.38 |
+
+Values are center ADE / FDE in native sensor pixels. The original and generated test groups have 80,711 and 29,339 windows at 400 ms and 75,055 and 26,063 at 800 ms. The best epochs are 8 and 7 for the original-only pair and 12 and 9 for the conversion-script pair, with history first in both pairs. The generator audit is in `generator_audit.json` alongside the test reports.
+
+The published event-frame and CSTR models report 28.62 / 61.96 px and 28.84 / 62.50 px at 800 ms. The script-expanded model with box history gives 28.42 / 66.36 px across the combined test cohort and 31.64 / 72.86 px on original tracks. The publication uses horizon-specific training and a different set of eligible test windows. [Residual Kalman Dynamics, Table 1](https://arxiv.org/html/2609.00839v1#S4.T1)
 
 ## Earlier fixed-up results
 

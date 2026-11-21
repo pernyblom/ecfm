@@ -85,6 +85,10 @@ def history_slope(values: torch.Tensor, times: torch.Tensor) -> torch.Tensor:
     return (values * dt[..., None]).sum(dim=1) / dt.square().sum(dim=1, keepdim=True).clamp_min(1e-7)
 
 
+def repeat_camera(camera: dict, steps: int) -> dict:
+    return {key: camera[key].repeat_interleave(steps, dim=0) for key in ("focal", "center", "gravity_up")}
+
+
 class EventEncoder(nn.Sequential):
     def __init__(self, channels: int):
         layers = []
@@ -124,11 +128,23 @@ class RelativePoseModel(nn.Module):
         channels = resolve_event_image_options(data)["representation_channels"]
         self.encoders = nn.ModuleDict({rep: EventEncoder(channels[rep]) for rep in data["representations"]}
                                       if model["use_events"] else {})
-        feature_dim = 4 + 3 * self.use_box_motion + 5 * self.history_steps * self.encode_box_history + 96 * len(self.encoders)
-        self.head = nn.Sequential(nn.Linear(feature_dim, 128), nn.LayerNorm(128), nn.SiLU(),
-                                  nn.Linear(128, 128), nn.SiLU(), nn.Linear(128, 11 if self.angular_limit else 9))
-        nn.init.normal_(self.head[-1].weight, std=0.002)
-        nn.init.zeros_(self.head[-1].bias)
+        box_dim = 4 + 3 * self.use_box_motion + 5 * self.history_steps * self.encode_box_history
+        event_dim = 96 * len(self.encoders)
+        self.pose_history_head = None
+        if data.get("history_event_cutouts"):
+            if not self.encoders or not self.encode_box_history or self.history_steps < 2:
+                raise ValueError("Pose history requires events and at least two encoded history boxes")
+            self.head = self._make_head(4 + event_dim)
+            self.pose_history_head = self._make_head(box_dim + 13 * self.history_steps)
+        else:
+            self.head = self._make_head(box_dim + event_dim)
+
+    def _make_head(self, features: int) -> nn.Sequential:
+        head = nn.Sequential(nn.Linear(features, 128), nn.LayerNorm(128), nn.SiLU(),
+                             nn.Linear(128, 128), nn.SiLU(), nn.Linear(128, 11 if self.angular_limit else 9))
+        nn.init.normal_(head[-1].weight, std=0.002)
+        nn.init.zeros_(head[-1].bias)
+        return head
 
     def estimate_state(self, batch: dict, *, mask_events: bool = False) -> FlightState:
         """Infer the anchor state from past boxes, event cutouts, and scene IDs."""
@@ -138,12 +154,18 @@ class RelativePoseModel(nn.Module):
         return rollout_flight(state, times_s, gravity_up, self.gravity, self.linear_drag)
 
     def _estimate_state(self, batch: dict, camera: dict, mask_events: bool) -> tuple[FlightState, torch.Tensor]:
-        past, times = batch["past"], batch["past_time"]
+        return self._infer(batch, camera, mask_events)[:2]
+
+    def _anchor_features(self, base: torch.Tensor) -> torch.Tensor:
+        size_px = (base[:, 2:] * self.cameras.frame_size).clamp_min(1)
+        return torch.cat((2 * base[:, :2] - 1, (size_px / 30).log()), dim=-1)
+
+    def _box_features(self, past: torch.Tensor, times: torch.Tensor) -> tuple[list[torch.Tensor], torch.Tensor]:
         frame = self.cameras.frame_size
         base = past[:, -1]
         base_size = (base[:, 2:] * frame).clamp_min(1)
         base_center = base[:, :2] * frame
-        features = [2 * base[:, :2] - 1, (base_size / 30).log()]
+        features = [self._anchor_features(base)]
         motion = torch.zeros_like(base[:, :3])
         if self.use_box_motion:
             history = past[:, -self.seed_history:]
@@ -157,14 +179,67 @@ class RelativePoseModel(nn.Module):
             offsets = (past[..., :2] * frame - base_center[:, None]) / 64
             relative_size = ((past[..., 2:] * frame).clamp_min(1) / base_size[:, None]).log()
             features.append(torch.cat((offsets, relative_size, times[..., None] * 2.5), dim=-1).clamp(-5, 5).flatten(1))
-        first_event = len(features)
-        for rep, encoder in self.encoders.items():
-            features.append(encoder(batch["events"][rep]) if not mask_events else base.new_zeros((len(base), 96)))
+        return features, motion
+
+    def _event_features(self, events: dict, base: torch.Tensor, mask_events: bool) -> list[torch.Tensor]:
+        features = [encoder(events[rep]) if not mask_events else base.new_zeros((len(base), 96))
+                    for rep, encoder in self.encoders.items()]
         if self.encoders and self.training and self.event_dropout:
-            # Drop whole event inputs occasionally to train the masked-event diagnostic.
             keep = (torch.rand((len(base), 1), device=base.device) >= self.event_dropout).float()
-            features[first_event:] = [feature * keep for feature in features[first_event:]]
+            features = [feature * keep for feature in features]
+        return features
+
+    def estimate_observation(self, box: torch.Tensor, events: dict, camera: dict) -> FlightState:
+        """Estimate one pose from [B,4] boxes and [B,C,H,W] crops for an online buffer."""
+        if self.pose_history_head is None:
+            raise ValueError("Individual observations require a pose-history checkpoint")
+        return self._observation(box, events, camera, False)
+
+    def _observation(self, box: torch.Tensor, events: dict, camera: dict, mask_events: bool) -> FlightState:
+        features = [self._anchor_features(box), *self._event_features(events, box, mask_events)]
         controls = self.head(torch.cat(features, dim=-1)).float()
+        return self._decode_state(box, torch.zeros_like(box[:, :3]), controls, camera)
+
+    def fuse_observations(self, past: torch.Tensor, times: torch.Tensor, camera: dict,
+                          observations: FlightState) -> FlightState:
+        """Fuse the same [B,T] history of boxes, relative times, and cached pose estimates."""
+        return self._fuse_observations(past, times, camera, observations)[0]
+
+    def _fuse_observations(self, past: torch.Tensor, times: torch.Tensor, camera: dict,
+                           observations: FlightState) -> tuple[FlightState, torch.Tensor]:
+        if self.pose_history_head is None:
+            raise ValueError("Pose fusion requires a pose-history checkpoint")
+        features, motion = self._box_features(past, times)
+        depth = observations.position[..., 2:]
+        poses = torch.cat((observations.position[..., :2] / depth, depth.log(), observations.velocity / depth,
+                           observations.up, observations.angular_velocity, observations.thrust / self.gravity), dim=-1)
+        controls = self.pose_history_head(torch.cat([*features, poses.clamp(-5, 5).flatten(1)], dim=-1)).float()
+        return self._decode_state(past[:, -1], motion, controls, camera), controls
+
+    def _infer(self, batch: dict, camera: dict, mask_events: bool) -> tuple[FlightState, torch.Tensor, FlightState | None]:
+        past, times, events = batch["past"], batch["past_time"], batch.get("events", {})
+        base = past[:, -1]
+        if self.pose_history_head is None:
+            features, motion = self._box_features(past, times)
+            event_features = self._event_features(events, base, mask_events)
+            controls = self.head(torch.cat([*features, *event_features], dim=-1)).float()
+            return self._decode_state(base, motion, controls, camera), controls, None
+
+        batch_size, steps, _ = past.shape
+        if any(crop.ndim != 5 or crop.shape[:2] != (batch_size, steps) for crop in events.values()):
+            raise ValueError("Pose history requires one [C,H,W] crop per observed box")
+        observations = self._observation(
+            past.flatten(0, 1), {rep: crop.flatten(0, 1) for rep, crop in events.items()},
+            repeat_camera(camera, steps), mask_events,
+        ).map(lambda tensor: tensor.unflatten(0, (batch_size, steps)))
+        state, controls = self._fuse_observations(past, times, camera, observations)
+        return state, controls, observations
+
+    def _decode_state(self, base: torch.Tensor, motion: torch.Tensor, controls: torch.Tensor,
+                      camera: dict) -> FlightState:
+        frame = self.cameras.frame_size
+        base_size = (base[:, 2:] * frame).clamp_min(1)
+        base_center = base[:, :2] * frame
 
         up = shifted_up(camera["gravity_up"], controls[:, :2], self.tilt_limit)
         ray_xy = (base_center + 8 * controls[:, 2:4].tanh() - camera["center"]) / camera["focal"]
@@ -189,18 +264,21 @@ class RelativePoseModel(nn.Module):
             components = controls[:, 9:11].tanh()
             components = components / components.norm(dim=-1, keepdim=True).clamp_min(1)
             omega = self.angular_limit * (components[:, :1] * right + components[:, 1:] * forward)
-        return FlightState(position, up, velocity, omega, thrust), controls
+        return FlightState(position, up, velocity, omega, thrust)
 
     def forward(self, batch: dict, *, mask_events: bool = False) -> dict:
         camera = self.cameras(batch["scene"])
-        state, controls = self._estimate_state(batch, camera, mask_events)
+        state, controls, observations = self._infer(batch, camera, mask_events)
         future = batch["future_time"]
         query = torch.cat((torch.zeros_like(future[:, :1]), future), dim=1)
         trajectory = self.propagate(state, query, camera["gravity_up"])
         constant_velocity = state.position[:, None] + state.velocity[:, None] * query[..., None]
         boxes = project_body(trajectory.position, trajectory.up, camera, self.half_height)
-        return {**camera, "state": state, "trajectory": trajectory, "position": state.position,
+        result = {**camera, "state": state, "trajectory": trajectory, "position": state.position,
                 "velocity": state.velocity, "up": state.up, "angular_velocity": state.angular_velocity,
                 "acceleration": trajectory.acceleration[:, 0], "thrust": state.thrust,
                 "rollout": trajectory.position, "boxes_px": boxes, "controls": controls,
                 "cv_rollout": constant_velocity}
+        if observations is not None:
+            result["pose_history"] = observations
+        return result

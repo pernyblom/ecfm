@@ -19,16 +19,14 @@ from experiments.kalman_ml_forecasting.models.kalman_residual import last_four_c
 from experiments.kalman_ml_forecasting.utils.config import load_config
 
 from .data import PoseTracklets, load_scenes, make_splits, to_device
-from .model import RelativePoseModel, project_body
+from .model import RelativePoseModel, project_body, repeat_camera
 
 
 DEFAULT_CONFIG = Path(__file__).with_name("configs") / "base.yaml"
 
 
-def reprojection_loss(result: dict, batch: dict, frame: torch.Tensor, config: dict) -> torch.Tensor:
-    target = torch.cat((batch["past"][:, -1:], batch["future"]), dim=1)
-    target = target * frame.repeat(2)
-    projected = result["boxes_px"]
+def box_errors(projected: torch.Tensor, target: torch.Tensor, frame: torch.Tensor,
+               config: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     center = F.smooth_l1_loss(projected[..., :2] / config["center_scale_px"],
                               target[..., :2] / config["center_scale_px"], reduction="none").mean(-1)
     size = F.smooth_l1_loss(projected[..., 2:].clamp_min(1).log(), target[..., 2:].clamp_min(1).log(),
@@ -36,6 +34,12 @@ def reprojection_loss(result: dict, batch: dict, frame: torch.Tensor, config: di
     lo = target[..., :2] - target[..., 2:] / 2
     hi = target[..., :2] + target[..., 2:] / 2
     visible = ((lo > 1) & (hi < frame - 1)).all(-1)
+    return center, size, visible
+
+
+def reprojection_loss(result: dict, batch: dict, frame: torch.Tensor, config: dict) -> torch.Tensor:
+    target = torch.cat((batch["past"][:, -1:], batch["future"]), dim=1) * frame.repeat(2)
+    center, size, visible = box_errors(result["boxes_px"], target, frame, config)
     future_size = (size[:, 1:] * visible[:, 1:]).sum() / visible[:, 1:].sum().clamp_min(1)
     anchor = center[:, 0].mean() + config["size_weight"] * size[:, 0].mean()
     prior = result["camera_offsets"].square().mean()
@@ -46,6 +50,24 @@ def reprojection_loss(result: dict, batch: dict, frame: torch.Tensor, config: di
             + config["camera_prior_weight"] * prior + config["control_prior_weight"] * controls
             + config.get("tilt_prior_weight", 0) * tilt
             + config["behind_camera_weight"] * near_penalty)
+
+
+def history_reprojection_loss(model: RelativePoseModel, result: dict, batch: dict, config: dict) -> torch.Tensor:
+    """Score each local pose at its own box and the next few labeled boxes."""
+    history_steps = batch["past"].shape[1]
+    points = 1 + min(config.get("history_rollout_steps", 3), batch["future"].shape[1])
+    times = torch.cat((batch["past_time"], batch["future_time"]), dim=1)
+    windows = times.unfold(1, points, 1)[:, :history_steps]
+    query = (windows - windows[..., :1]).flatten(0, 1)
+    state = result["pose_history"].map(lambda tensor: tensor.flatten(0, 1))
+    camera = repeat_camera(result, history_steps)
+    rollout = model.propagate(state, query, camera["gravity_up"])
+    forecast = project_body(rollout.position, rollout.up, camera, model.half_height)
+    frame = model.cameras.frame_size
+    boxes = torch.cat((batch["past"], batch["future"]), dim=1) * frame.repeat(2)
+    target = boxes.unfold(1, points, 1)[:, :history_steps].transpose(-1, -2).flatten(0, 1)
+    center, size, visible = box_errors(forecast, target, frame, config)
+    return center.mean() + config["size_weight"] * (size * visible).sum() / visible.sum().clamp_min(1)
 
 
 def metrics(result: dict, batch: dict, model: RelativePoseModel, *, compare: bool) -> dict[str, torch.Tensor]:
@@ -80,6 +102,7 @@ def epoch(model, loader, device, config, optimizer=None, *, number: int):
     scene_totals = defaultdict(lambda: defaultdict(float))
     count = 0
     started = time.perf_counter()
+    history_weight = config["loss"].get("history_rollout_weight", 0.3)
     for step, raw in enumerate(loader, 1):
         batch = to_device(raw, device)
         if training:
@@ -87,6 +110,10 @@ def epoch(model, loader, device, config, optimizer=None, *, number: int):
         with torch.set_grad_enabled(training):
             result = model(batch)
             loss = reprojection_loss(result, batch, model.cameras.frame_size, config["loss"])
+            if "pose_history" in result and history_weight:
+                history_loss = history_reprojection_loss(model, result, batch, config["loss"])
+                loss = loss + history_weight * history_loss
+                totals["history_rollout_loss"] += float(history_loss.detach()) * len(batch["past"])
         if training:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), float(train_cfg["grad_clip"]), error_if_nonfinite=True)
@@ -221,14 +248,18 @@ def main() -> None:
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--device")
     parser.add_argument("--workers", type=int)
+    parser.add_argument("--batch-size", type=int)
     parser.add_argument("--samples-per-sequence", type=int, help="Override both sample caps for a short run")
     parser.add_argument("--output-dir")
     parser.add_argument("--history-only", action="store_true", help="Train the box-only control on the same tracklets")
     parser.add_argument("--anchor-only", action="store_true", help="Withhold box motion history from the event model")
+    parser.add_argument("--pose-history", action="store_true",
+                        help="Estimate a physical pose at every box and fuse the pose and box histories")
     parser.add_argument("--all-sequences", action="store_true", help="Use every reviewed sequence and derive missing tracks from FRED coordinates")
     args = parser.parse_args()
     config = load_config(args.config)
     for key, value in (("epochs", args.epochs), ("device", args.device), ("num_workers", args.workers),
+                       ("batch_size", args.batch_size),
                        ("output_dir", args.output_dir)):
         if value is not None:
             config["train"][key] = value
@@ -247,12 +278,22 @@ def main() -> None:
     if args.anchor_only:
         config["model"]["use_box_motion"] = False
         config["model"]["velocity_limit_px_s"] = 650
+    if args.pose_history:
+        config["data"]["history_event_cutouts"] = True
+    if config["data"].get("history_event_cutouts"):
+        model = config["model"]
+        if not (model["use_events"] and model["use_box_motion"] and model.get("encode_box_history")):
+            parser.error("Pose history requires events and encoded box history")
+        if config["loss"].get("history_rollout_steps", 3) < 1 or config["loss"].get("history_rollout_weight", 0.3) < 0:
+            parser.error("History rollout needs a positive number of steps and a nonnegative loss weight")
     if args.all_sequences:
         config["data"]["all_sequences"] = True
         config["data"].setdefault("coordinate_track_cache", "outputs/fred_relative_pose/coordinate_tracks")
         config["data"].setdefault("fallback_frame_timestamps", True)
     if config["train"]["epochs"] < 1 or args.samples_per_sequence is not None and args.samples_per_sequence < 1:
         parser.error("Epoch and sample counts must be positive")
+    if config["train"]["batch_size"] < 1:
+        parser.error("Batch size must be positive")
     train(config)
 
 
