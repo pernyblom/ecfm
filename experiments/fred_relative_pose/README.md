@@ -53,14 +53,31 @@ Use `--pose-history` to render a trailing event crop for each observed box. Each
 
 The same encoder and pose head estimate position, up, velocity, tilt rate, and specific thrust independently at each observation. A second head fuses the physical states, boxes, and relative timestamps into the anchor flight state. The future projection loss trains the full chain end to end. An additional reprojection loss supervises each local state at its own timestamp and the next three labeled timestamps. Set `loss.history_rollout_steps` and `loss.history_rollout_weight` to change the default three steps and weight of 0.3.
 
-To use the canonical 100 ms configuration with script-generated tracks, start from the resolved box-history run config. A batch of 24 is a starting point for the larger input tensor.
+The canonical benchmark starts from the resolved single-crop box-history config with script-generated tracks. It uses the same batch size of 96 and the same 45,046 training and 6,400 validation tracklets.
 
 ```powershell
 $baseline = 'outputs/fred_relative_pose/canonical_track_sources/script_with_history'
 $poseHistory = 'outputs/fred_relative_pose/canonical_pose_history'
-python -m experiments.fred_relative_pose.train --config "$baseline/config.yaml" --pose-history --batch-size 24 --workers 4 --output-dir "$poseHistory"
-python -m experiments.fred_relative_pose.eval --checkpoint "$baseline/best.pt" "$poseHistory/best.pt" --forecast-ms 400 --output "$poseHistory/test_400ms.json"
+python -m experiments.fred_relative_pose.train --config "$baseline/config.yaml" --pose-history --output-dir "$poseHistory"
+foreach ($horizon in @(400, 800)) {
+    python -m experiments.fred_relative_pose.eval --checkpoint "$baseline/best.pt" "$poseHistory/best.pt" --forecast-ms $horizon --output "$poseHistory/test_${horizon}ms.json"
+}
 ```
+
+### Canonical test comparison
+
+The 18-epoch pose-history run selected epoch 12 by 400 ms validation center ADE. Validation ADE / FDE was 11.14 / 20.57 px, compared with 11.78 / 22.13 px for the single-crop model. Both test horizons have the same tracklet hashes as the earlier annotation-source comparison. The 800 ms test uses the frozen 400 ms checkpoint.
+
+| Model | 400 ms center ADE / FDE (px) | 400 ms mIoU | 800 ms center ADE / FDE (px) | 800 ms mIoU |
+| --- | ---: | ---: | ---: | ---: |
+| Pose history + box history | 12.38 / 22.76 | 0.553 | 26.67 / 62.90 | 0.383 |
+| Single crop + box history | 12.96 / 24.26 | 0.541 | 28.42 / 66.36 | 0.364 |
+| Single crop + anchor box | 13.85 / 25.90 | 0.518 | 37.73 / 104.60 | 0.339 |
+| Last-four linear extrapolation | 20.97 / 40.29 | 0.406 | 44.76 / 97.38 | 0.264 |
+
+Against the matched single-crop box-history model, pose history lowered center ADE by 4.5% at 400 ms and 6.1% at 800 ms. Original-track ADE fell from 14.94 to 14.26 px at 400 ms and from 31.64 to 29.82 px at 800 ms. On coordinate-generated tracks it fell from 7.50 to 7.23 px and from 19.16 to 17.60 px, respectively. The two JSON reports include box errors, annotation-source metrics, and camera-prior metrics.
+
+### Buffered inference
 
 For deployment, call `model.estimate_observation(box, crops, camera)` once per new box. Keep the resulting `FlightState` with the box and its timestamp in a per-target buffer. Stack the last 12 states along the history dimension and call `model.fuse_observations(past, past_time, camera, observations)` once the buffer is full. State tensors and box history use batch and time as the first two dimensions. The camera dictionary can come from `model.cameras(scene)` or measured calibration as in the [static-camera guide](static_camera_inference.md#run-the-checkpoint). `model.propagate()` uses the fused anchor state for the forecast.
 
